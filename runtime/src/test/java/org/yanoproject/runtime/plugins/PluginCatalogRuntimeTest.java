@@ -1,27 +1,5 @@
 package org.yanoproject.runtime.plugins;
 
-import org.yanoproject.x.framework.api.appchain.AppStateMachine;
-import org.yanoproject.x.framework.api.appchain.AppStateMachineContext;
-import org.yanoproject.x.framework.api.appchain.AppStateMachineProvider;
-import org.yanoproject.x.framework.api.appchain.authmap.AuthenticatedMapValueValidator;
-import org.yanoproject.x.framework.api.appchain.authmap.AuthenticatedMapValueValidatorFactory;
-import org.yanoproject.x.framework.api.appchain.authmap.ValidatorInitContext;
-import org.yanoproject.x.framework.api.appchain.authmap.ValidatorVerdict;
-import org.yanoproject.x.framework.api.appchain.effects.AppEffectExecutor;
-import org.yanoproject.x.framework.cardano.api.effects.AppEffectExecutorFactory;
-import org.yanoproject.x.framework.api.appchain.l1view.L1Observer;
-import org.yanoproject.x.framework.api.appchain.l1view.L1ObserverProvider;
-import org.yanoproject.x.framework.api.appchain.l1view.L1EpochObserver;
-import org.yanoproject.x.framework.api.appchain.l1view.L1EpochObserverProvider;
-import org.yanoproject.x.framework.api.appchain.observation.ObservationProvider;
-import org.yanoproject.x.framework.api.appchain.observation.ObservationProviderFactory;
-import org.yanoproject.x.framework.api.appchain.sequencer.SequencerContext;
-import org.yanoproject.x.framework.api.appchain.sequencer.SequencerMode;
-import org.yanoproject.x.framework.api.appchain.sequencer.SequencerModeProvider;
-import org.yanoproject.x.framework.api.appchain.signer.SignerProvider;
-import org.yanoproject.x.framework.api.appchain.signer.SignerProviderFactory;
-import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSink;
-import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSinkFactory;
 import org.yanoproject.api.config.PluginsOptions;
 import org.yanoproject.api.config.RuntimeOptions;
 import org.yanoproject.api.config.YanoConfig;
@@ -42,11 +20,6 @@ import org.yanoproject.api.plugin.PluginContext;
 import org.yanoproject.api.plugin.PluginDigestMode;
 import org.yanoproject.api.plugin.PluginSelectionStatus;
 import org.yanoproject.api.plugin.PluginSourceCategory;
-import org.yanoproject.x.framework.api.plugin.domain.DomainApi;
-import org.yanoproject.x.framework.api.plugin.domain.DomainApiContext;
-import org.yanoproject.x.framework.api.plugin.domain.DomainApiProvider;
-import org.yanoproject.x.framework.api.plugin.domain.LocalReadModelContext;
-import org.yanoproject.x.framework.api.plugin.domain.LocalReadModelProvider;
 import org.yanoproject.api.chain.ChainPoint;
 import org.yanoproject.api.utxo.index.IndexWriter;
 import org.yanoproject.api.utxo.index.UtxoChanges;
@@ -76,7 +49,10 @@ import org.yanoproject.catalog.BundleContribution;
 import org.yanoproject.catalog.BundleDependency;
 import org.yanoproject.catalog.BundleManifest;
 import org.yanoproject.catalog.CatalogDigests;
+import org.yanoproject.api.plugin.spi.ContributionKindBinding;
 import org.yanoproject.catalog.ContributionKind;
+import org.yanoproject.runtime.plugins.fixture.FixtureProduct;
+import org.yanoproject.runtime.plugins.fixture.FixtureProvider;
 import org.yanoproject.catalog.IndexedBundle;
 import org.yanoproject.catalog.IndexedLegacyProvider;
 import org.yanoproject.catalog.PluginArtifactScanner;
@@ -138,7 +114,7 @@ class PluginCatalogRuntimeTest {
     private static final String SECRET_CALLBACK_MESSAGE =
             "plugin-secret-must-not-enter-catalog-diagnostic";
     private static final String SINK_SERVICE = "META-INF/services/"
-            + FinalizedStreamSinkFactory.class.getName();
+            + FixtureProvider.class.getName();
     private static final String NODE_PLUGIN_SERVICE = "META-INF/services/" + NodePlugin.class.getName();
 
     @TempDir
@@ -148,21 +124,21 @@ class PluginCatalogRuntimeTest {
     void selectorValidationFailureClosesConstructedProvider() {
         ClosingSinkFactory provider = new ClosingSinkFactory("actual", null);
         CatalogPluginProviderRegistry.Entry entry = new CatalogPluginProviderRegistry.Entry(
-                "com.example.bundle", ContributionKind.FINALIZED_SINK, "declared",
+                "com.example.bundle", TestPluginKinds.FIXTURE, "declared",
                 provider.getClass().getName(), null, () -> provider);
-        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(
+        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(TestPluginKinds.KINDS,
                 List.of(entry), List.of("com.example.bundle"), List.of());
 
-        assertThatThrownBy(() -> registry.find(FinalizedStreamSinkFactory.class, "declared"))
+        assertThatThrownBy(() -> registry.find(FixtureProvider.class, "declared"))
                 .isInstanceOf(PluginActivationException.class)
                 .hasMessageContaining("com.example.bundle")
-                .hasMessageContaining("finalized-sink/declared")
+                .hasMessageContaining("fixture-product/declared")
                 .hasRootCauseMessage("Provider '" + provider.getClass().getName()
                         + "' selector mismatch: manifest='declared', provider='actual'")
                 .satisfies(failure -> {
                     PluginActivationException activation = (PluginActivationException) failure;
                     assertThat(activation.bundleId()).isEqualTo("com.example.bundle");
-                    assertThat(activation.contributionKind()).isEqualTo("finalized-sink");
+                    assertThat(activation.contributionKind()).isEqualTo("fixture-product");
                     assertThat(activation.selector()).isEqualTo("declared");
                     assertThat(activation.providerClass()).isEqualTo(provider.getClass().getName());
                 });
@@ -178,7 +154,7 @@ class PluginCatalogRuntimeTest {
         CatalogPluginProviderRegistry.Entry entry = new CatalogPluginProviderRegistry.Entry(
                 plugin.id(), ContributionKind.NODE_PLUGIN, plugin.id(),
                 plugin.getClass().getName(), null, () -> plugin);
-        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(
+        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(TestPluginKinds.KINDS,
                 List.of(entry), List.of(plugin.id()), List.of(plugin));
 
         assertThat(registry.nodePluginInstances()).containsExactly(plugin);
@@ -202,11 +178,11 @@ class PluginCatalogRuntimeTest {
         List<CatalogPluginProviderRegistry.Entry> entries = List.of(
                 entry("com.example.dependency", dependency),
                 entry("com.example.dependent", dependent));
-        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(
+        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(TestPluginKinds.KINDS,
                 entries, List.of("com.example.dependency", "com.example.dependent"), List.of());
 
-        registry.find(FinalizedStreamSinkFactory.class, "dependency");
-        registry.find(FinalizedStreamSinkFactory.class, "dependent");
+        registry.find(FixtureProvider.class, "dependency");
+        registry.find(FixtureProvider.class, "dependent");
         registry.close();
 
         assertThat(closes).containsExactly("dependent", "dependency");
@@ -224,10 +200,10 @@ class PluginCatalogRuntimeTest {
         List<CatalogPluginProviderRegistry.Entry> entries = List.of(
                 sinkEntry("com.example.healthy", healthy),
                 sinkEntry("com.example.throwing", throwing));
-        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(
+        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(TestPluginKinds.KINDS,
                 entries, List.of("com.example.healthy", "com.example.throwing"), List.of());
-        registry.find(FinalizedStreamSinkFactory.class, "healthy");
-        registry.find(FinalizedStreamSinkFactory.class, "throwing");
+        registry.find(FixtureProvider.class, "healthy");
+        registry.find(FixtureProvider.class, "throwing");
 
         assertThatThrownBy(registry::close)
                 .isInstanceOf(PluginActivationException.class)
@@ -252,13 +228,13 @@ class PluginCatalogRuntimeTest {
                 "fatal", fatalCloses, fatal);
         CloseProbeSinkFactory assertionProvider = new CloseProbeSinkFactory(
                 "assertion", assertionCloses, assertion);
-        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(
+        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(TestPluginKinds.KINDS,
                 List.of(
                         sinkEntry("com.example.fatal", fatalProvider),
                         sinkEntry("com.example.assertion", assertionProvider)),
                 List.of("com.example.fatal", "com.example.assertion"), List.of());
-        registry.find(FinalizedStreamSinkFactory.class, "fatal");
-        registry.find(FinalizedStreamSinkFactory.class, "assertion");
+        registry.find(FixtureProvider.class, "fatal");
+        registry.find(FixtureProvider.class, "assertion");
 
         assertThatThrownBy(registry::close).isSameAs(fatal);
         assertThat(fatal.getSuppressed()).contains(assertion);
@@ -280,13 +256,13 @@ class PluginCatalogRuntimeTest {
                 "wrapped-fatal", wrappedFatalCloses, wrapper);
         CloseProbeSinkFactory ordinaryProvider = new CloseProbeSinkFactory(
                 "ordinary", ordinaryCloses, ordinary);
-        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(
+        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(TestPluginKinds.KINDS,
                 List.of(
                         sinkEntry("com.example.wrapped-fatal", wrappedFatalProvider),
                         sinkEntry("com.example.ordinary", ordinaryProvider)),
                 List.of("com.example.wrapped-fatal", "com.example.ordinary"), List.of());
-        registry.find(FinalizedStreamSinkFactory.class, "wrapped-fatal");
-        registry.find(FinalizedStreamSinkFactory.class, "ordinary");
+        registry.find(FixtureProvider.class, "wrapped-fatal");
+        registry.find(FixtureProvider.class, "ordinary");
 
         assertThatThrownBy(registry::close).isSameAs(fatal);
         assertThat(fatal.getSuppressed()).containsExactly(ordinary);
@@ -300,15 +276,15 @@ class PluginCatalogRuntimeTest {
     void providerIdentityCannotAlsoBecomeFactoryProductOwner() {
         SelfReturningSinkFactory provider = new SelfReturningSinkFactory();
         CatalogPluginProviderRegistry.Entry entry = new CatalogPluginProviderRegistry.Entry(
-                "com.example.self-returning", ContributionKind.FINALIZED_SINK,
-                provider.scheme(), provider.getClass().getName(), null, () -> provider);
-        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(
+                "com.example.self-returning", TestPluginKinds.FIXTURE,
+                provider.id(), provider.getClass().getName(), null, () -> provider);
+        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(TestPluginKinds.KINDS,
                 List.of(entry), List.of("com.example.self-returning"), List.of());
 
-        FinalizedStreamSinkFactory exposed = registry.find(
-                FinalizedStreamSinkFactory.class, provider.scheme()).orElseThrow();
+        FixtureProvider exposed = registry.find(
+                FixtureProvider.class, provider.id()).orElseThrow();
 
-        assertThatThrownBy(() -> exposed.create("chain-a", Map.of()))
+        assertThatThrownBy(() -> exposed.createAll())
                 .isInstanceOf(PluginActivationException.class)
                 .hasRootCauseMessage(
                         "Factory returned a product instance already owned by a previous create invocation");
@@ -325,17 +301,17 @@ class PluginCatalogRuntimeTest {
         FixedProductSinkFactory producer = new FixedProductSinkFactory(eagerProvider);
         CatalogPluginProviderRegistry.Entry producerEntry =
                 new CatalogPluginProviderRegistry.Entry(
-                        "com.example.producer", ContributionKind.FINALIZED_SINK,
-                        producer.scheme(), producer.getClass().getName(), null,
+                        "com.example.producer", TestPluginKinds.FIXTURE,
+                        producer.id(), producer.getClass().getName(), null,
                         () -> producer);
-        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(
+        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(TestPluginKinds.KINDS,
                 List.of(producerEntry), List.of("com.example.producer"),
                 List.of(eagerProvider));
 
-        FinalizedStreamSinkFactory exposed = registry.find(
-                FinalizedStreamSinkFactory.class, producer.scheme()).orElseThrow();
+        FixtureProvider exposed = registry.find(
+                FixtureProvider.class, producer.id()).orElseThrow();
 
-        assertThatThrownBy(() -> exposed.create("chain-a", Map.of()))
+        assertThatThrownBy(() -> exposed.createAll())
                 .isInstanceOf(PluginActivationException.class)
                 .hasRootCauseMessage(
                         "Factory returned a product instance already owned by a previous create invocation");
@@ -669,7 +645,7 @@ class PluginCatalogRuntimeTest {
 
         try (URLClassLoader loader = new ServiceOnlyClassLoader(
                 new URL[]{jar.toUri().toURL()}, getClass().getClassLoader())) {
-            assertThatThrownBy(() -> new PluginCatalogBuilder().build(options, loader, List.of()))
+            assertThatThrownBy(() -> new PluginCatalogBuilder(TestPluginKinds.KINDS).build(options, loader, List.of()))
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessageContaining("Allow-listed plugin bundles were not discovered");
         }
@@ -695,7 +671,7 @@ class PluginCatalogRuntimeTest {
 
         try (URLClassLoader loader = new ServiceOnlyClassLoader(
                 new URL[]{jar.toUri().toURL()}, getClass().getClassLoader())) {
-            assertThatThrownBy(() -> new PluginCatalogBuilder().build(options, loader, List.of()))
+            assertThatThrownBy(() -> new PluginCatalogBuilder(TestPluginKinds.KINDS).build(options, loader, List.of()))
                     .isSameAs(firstFatal);
 
             assertThat(LegacyCleanupProbe.closeOrder).containsExactly("b", "a");
@@ -732,7 +708,7 @@ class PluginCatalogRuntimeTest {
 
         try (URLClassLoader loader = new ServiceOnlyClassLoader(
                 new URL[]{jar.toUri().toURL()}, getClass().getClassLoader())) {
-            assertThatThrownBy(() -> new PluginCatalogBuilder().build(
+            assertThatThrownBy(() -> new PluginCatalogBuilder(TestPluginKinds.KINDS).build(
                     options, loader, List.of()))
                     .isInstanceOf(
                             PluginCatalogBuilder.LegacyProviderCleanupException.class)
@@ -770,7 +746,7 @@ class PluginCatalogRuntimeTest {
 
         try (URLClassLoader loader = new ServiceOnlyClassLoader(
                 new URL[]{jar.toUri().toURL()}, getClass().getClassLoader())) {
-            assertThatThrownBy(() -> new PluginCatalogBuilder().build(
+            assertThatThrownBy(() -> new PluginCatalogBuilder(TestPluginKinds.KINDS).build(
                     PluginsOptions.defaults(), loader, List.of()))
                     .isInstanceOf(PluginCatalogBuilder.LegacyProviderMetadataException.class)
                     .hasMessageContaining("provider selector")
@@ -801,7 +777,7 @@ class PluginCatalogRuntimeTest {
             LegacyTcclPlugin.rogueLoader.set(new ClassLoader(original) { });
             Thread.currentThread().setContextClassLoader(caller);
 
-            assertThatThrownBy(() -> new PluginCatalogBuilder().build(
+            assertThatThrownBy(() -> new PluginCatalogBuilder(TestPluginKinds.KINDS).build(
                     PluginsOptions.defaults(), loader, List.of()))
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessageContaining("requires unavailable selected bundle "
@@ -850,10 +826,10 @@ class PluginCatalogRuntimeTest {
              PluginRuntimeEnvironment environment = PluginRuntimeEnvironment.classpath(
                      PluginsOptions.defaults(), loader)) {
             Throwable first = catchThrowable(() -> environment.providers().find(
-                    FinalizedStreamSinkFactory.class,
+                    FixtureProvider.class,
                     StatefulSecretLegacySinkFactory.SCHEME));
             Throwable second = catchThrowable(() -> environment.providers().find(
-                    FinalizedStreamSinkFactory.class,
+                    FixtureProvider.class,
                     StatefulSecretLegacySinkFactory.SCHEME));
 
             assertThat(first)
@@ -1028,21 +1004,21 @@ class PluginCatalogRuntimeTest {
                 Files.readAllBytes(classes.resolve(providerName.replace('.', '/') + ".class")),
                 SINK_SERVICE, providerName.getBytes(StandardCharsets.UTF_8),
                 manifestPath(bundleId), manifest(bundleId, "failing-factory", providerName)));
-        PluginIndex index = new PluginArtifactScanner().scan(jar);
+        PluginIndex index = new PluginArtifactScanner(TestPluginKinds.KINDS.registry()).scan(jar);
 
         try (URLClassLoader loader = new ServiceOnlyClassLoader(
                 new URL[]{jar.toUri().toURL()}, getClass().getClassLoader())) {
-            PluginCatalogBuilder.BuildResult runtime = new PluginCatalogBuilder().build(
+            PluginCatalogBuilder.BuildResult runtime = new PluginCatalogBuilder(TestPluginKinds.KINDS).build(
                     PluginsOptions.defaults(), loader,
                     List.of(new PluginCatalogBuilder.CatalogInput(index, PluginSourceCategory.CLASSPATH)));
             try {
-                FinalizedStreamSinkFactory factory = runtime.registry()
-                        .find(FinalizedStreamSinkFactory.class, "failing-factory").orElseThrow();
+                FixtureProvider factory = runtime.registry()
+                        .find(FixtureProvider.class, "failing-factory").orElseThrow();
                 // An ordinary configuration error inside the factory keeps its catalog attribution.
-                assertThatThrownBy(() -> factory.create("chain", Map.of()))
+                assertThatThrownBy(() -> factory.createAll())
                         .isInstanceOfSatisfying(HostPluginActivationException.class, failure -> {
                             assertThat(failure.bundleId()).isEqualTo(bundleId);
-                            assertThat(failure.contributionKind()).isEqualTo("finalized-sink");
+                            assertThat(failure.contributionKind()).isEqualTo("fixture-product");
                         })
                         .hasRootCauseMessage("missing setting");
             } finally {
@@ -1065,7 +1041,7 @@ class PluginCatalogRuntimeTest {
                     PluginsOptions.defaults(), loader);
             try {
                 assertThatThrownBy(() -> environment.providers().find(
-                        FinalizedStreamSinkFactory.class, FlakyLegacySinkFactory.INITIAL_SCHEME))
+                        FixtureProvider.class, FlakyLegacySinkFactory.INITIAL_SCHEME))
                         // A legacy entry has no manifest: its identity is plugin-derived, so no host provenance.
                         .isInstanceOf(PluginActivationException.class)
                         .isNotInstanceOf(HostPluginActivationException.class)
@@ -1076,7 +1052,7 @@ class PluginCatalogRuntimeTest {
                 assertThat(FlakyLegacySinkFactory.closeCalls).hasValue(1);
 
                 assertThatThrownBy(() -> environment.providers().find(
-                        FinalizedStreamSinkFactory.class, FlakyLegacySinkFactory.INITIAL_SCHEME))
+                        FixtureProvider.class, FlakyLegacySinkFactory.INITIAL_SCHEME))
                         .isInstanceOf(IllegalStateException.class)
                         .hasMessageContaining("Failed to activate provider");
                 assertThat(FlakyLegacySinkFactory.closeCalls).hasValue(1);
@@ -1176,7 +1152,7 @@ class PluginCatalogRuntimeTest {
                 new CatalogPluginProviderRegistry.Entry(
                         dependency.id(), ContributionKind.NODE_PLUGIN, dependency.id(),
                         dependency.getClass().getName(), null, () -> dependency));
-        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(
+        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(TestPluginKinds.KINDS,
                 entries, List.of(dependencyId, typedBridgeId, dependentId), List.of());
 
         try (var scheduler = Executors.newSingleThreadScheduledExecutor()) {
@@ -1202,7 +1178,7 @@ class PluginCatalogRuntimeTest {
         PluginIndex index = deepCatalogIndex(false);
         try (URLClassLoader loader = new ServiceOnlyClassLoader(
                 new URL[0], getClass().getClassLoader())) {
-            PluginCatalogBuilder.BuildResult result = new PluginCatalogBuilder().build(
+            PluginCatalogBuilder.BuildResult result = new PluginCatalogBuilder(TestPluginKinds.KINDS).build(
                     PluginsOptions.defaults(), loader,
                     List.of(new PluginCatalogBuilder.CatalogInput(
                             index, PluginSourceCategory.CLASSPATH)));
@@ -1224,7 +1200,7 @@ class PluginCatalogRuntimeTest {
         PluginIndex index = deepCatalogIndex(true);
         try (URLClassLoader loader = new ServiceOnlyClassLoader(
                 new URL[0], getClass().getClassLoader())) {
-            Throwable failure = catchThrowable(() -> new PluginCatalogBuilder().build(
+            Throwable failure = catchThrowable(() -> new PluginCatalogBuilder(TestPluginKinds.KINDS).build(
                     PluginsOptions.defaults(), loader,
                     List.of(new PluginCatalogBuilder.CatalogInput(
                             index, PluginSourceCategory.CLASSPATH))));
@@ -1279,7 +1255,7 @@ class PluginCatalogRuntimeTest {
         entries.put(manifestPath(bundleId), manifest(bundleId, "dynamic", providerName));
         entries.put("payload.txt", "before".getBytes(StandardCharsets.UTF_8));
         writeJar(jar, entries);
-        PluginIndex indexed = new PluginArtifactScanner().scan(jar);
+        PluginIndex indexed = new PluginArtifactScanner(TestPluginKinds.KINDS.registry()).scan(jar);
 
         entries.put("payload.txt", "after".getBytes(StandardCharsets.UTF_8));
         writeJar(jar, entries);
@@ -1287,7 +1263,7 @@ class PluginCatalogRuntimeTest {
                 new URL[]{jar.toUri().toURL()}, getClass().getClassLoader())) {
             PluginCatalogBuilder.CatalogInput input = new PluginCatalogBuilder.CatalogInput(
                     indexed, PluginSourceCategory.DIRECTORY, jar);
-            assertThatThrownBy(() -> new PluginCatalogBuilder().build(
+            assertThatThrownBy(() -> new PluginCatalogBuilder(TestPluginKinds.KINDS).build(
                     PluginsOptions.defaults(), loader, List.of(input)))
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessageContaining("artifact changed during catalog construction");
@@ -1320,7 +1296,7 @@ class PluginCatalogRuntimeTest {
 
         try (URLClassLoader loader = new ServiceOnlyClassLoader(
                 new URL[]{jar.toUri().toURL()}, getClass().getClassLoader())) {
-            PluginCatalogBuilder.BuildResult selected = new PluginCatalogBuilder().build(
+            PluginCatalogBuilder.BuildResult selected = new PluginCatalogBuilder(TestPluginKinds.KINDS).build(
                     PluginsOptions.defaults(), loader, List.of());
             try {
                 assertThat(selected.catalog().selectedBundleOrder()).containsExactly(
@@ -1340,7 +1316,7 @@ class PluginCatalogRuntimeTest {
             PluginsOptions policy = new PluginsOptions(true, false,
                     Set.of(LegacyDependencyPlugin.ID),
                     Set.of(LegacyDependencyPlugin.ID), Map.of());
-            PluginCatalogBuilder.BuildResult filtered = new PluginCatalogBuilder().build(
+            PluginCatalogBuilder.BuildResult filtered = new PluginCatalogBuilder(TestPluginKinds.KINDS).build(
                     policy, loader, List.of());
             try {
                 Map<String, PluginSelectionStatus> statuses = new LinkedHashMap<>();
@@ -1380,19 +1356,19 @@ class PluginCatalogRuntimeTest {
                 manifestPath(featureId), manifest(
                         featureId, "parity-feature", featureProvider, List.of(baseId))));
 
-        PluginArtifactScanner scanner = new PluginArtifactScanner();
+        PluginArtifactScanner scanner = new PluginArtifactScanner(TestPluginKinds.KINDS.registry());
         PluginIndex baseIndex = scanner.scan(baseJar);
         PluginIndex featureIndex = scanner.scan(featureJar);
         PluginIndex combined = new PluginIndex(
                 PluginIndex.CURRENT_SCHEMA_VERSION,
                 List.of(baseIndex.bundles().getFirst(), featureIndex.bundles().getFirst()),
                 List.of());
-        PluginCatalogInspector inspector = new PluginCatalogInspector();
+        PluginCatalogInspector inspector = new PluginCatalogInspector(TestPluginKinds.KINDS.registry());
 
         try (URLClassLoader loader = new ServiceOnlyClassLoader(
                 new URL[]{featureJar.toUri().toURL(), baseJar.toUri().toURL()},
                 getClass().getClassLoader())) {
-            PluginCatalogBuilder.BuildResult runtime = new PluginCatalogBuilder().build(
+            PluginCatalogBuilder.BuildResult runtime = new PluginCatalogBuilder(TestPluginKinds.KINDS).build(
                     PluginsOptions.defaults(), loader,
                     List.of(new PluginCatalogBuilder.CatalogInput(
                             combined, PluginSourceCategory.CLASSPATH)));
@@ -1423,7 +1399,7 @@ class PluginCatalogRuntimeTest {
                 getClass().getClassLoader())) {
             PluginsOptions options = new PluginsOptions(
                     true, false, allow, deny, Map.of());
-            PluginCatalogBuilder.BuildResult runtimeFiltered = new PluginCatalogBuilder().build(
+            PluginCatalogBuilder.BuildResult runtimeFiltered = new PluginCatalogBuilder(TestPluginKinds.KINDS).build(
                     options, loader,
                     List.of(new PluginCatalogBuilder.CatalogInput(
                             combined, PluginSourceCategory.CLASSPATH)));
@@ -1451,12 +1427,12 @@ class PluginCatalogRuntimeTest {
     void offlineRuntimeParityCoversEveryKindRangesTopologyAndDigestModes()
             throws Exception {
         ParityMatrix matrix = parityMatrix();
-        PluginCatalogInspection offline = new PluginCatalogInspector().inspect(
+        PluginCatalogInspection offline = new PluginCatalogInspector(TestPluginKinds.KINDS.registry()).inspect(
                 matrix.index(), PluginCatalogInspectionPolicy.current());
 
         try (URLClassLoader loader = new ServiceOnlyClassLoader(
                 new URL[]{matrix.services().toUri().toURL()}, getClass().getClassLoader())) {
-            PluginCatalogBuilder.BuildResult runtime = new PluginCatalogBuilder().build(
+            PluginCatalogBuilder.BuildResult runtime = new PluginCatalogBuilder(TestPluginKinds.KINDS).build(
                     PluginsOptions.defaults(), loader,
                     List.of(new PluginCatalogBuilder.CatalogInput(
                             matrix.index(), PluginSourceCategory.CLASSPATH)));
@@ -1475,7 +1451,7 @@ class PluginCatalogRuntimeTest {
                         .orElseThrow();
                 assertThat(allKinds.contributions())
                         .extracting(value -> value.kind())
-                        .containsExactlyInAnyOrder(java.util.Arrays.stream(ContributionKind.values())
+                        .containsExactlyInAnyOrder(TestPluginKinds.KINDS.registry().kinds().stream()
                                 .map(ContributionKind::manifestKey)
                                 .toArray(String[]::new));
             } finally {
@@ -1494,14 +1470,14 @@ class PluginCatalogRuntimeTest {
 
         try (URLClassLoader loader = new ServiceOnlyClassLoader(
                 new URL[]{matrix.services().toUri().toURL()}, getClass().getClassLoader())) {
-            PluginCatalogBuilder.BuildResult runtime = new PluginCatalogBuilder().build(
+            PluginCatalogBuilder.BuildResult runtime = new PluginCatalogBuilder(TestPluginKinds.KINDS).build(
                     options, loader,
                     List.of(new PluginCatalogBuilder.CatalogInput(
                             matrix.index(), PluginSourceCategory.CLASSPATH)));
             try {
                 PluginProviderRegistry.ContributionProvenance provenance = runtime.registry()
                         .contributionProvenance(
-                                AuthenticatedMapValueValidatorFactory.class,
+                                PluginHealthProvider.class,
                                 matrix.allKindsId())
                         .orElseThrow();
                 assertThat(provenance.bundleId()).isEqualTo(matrix.allKindsId());
@@ -1524,14 +1500,14 @@ class PluginCatalogRuntimeTest {
         PluginCatalogInspectionPolicy policy = new PluginCatalogInspectionPolicy(
                 PluginCatalogBuilder.PLUGIN_API_MAJOR,
                 PluginCatalogBuilder.PLUGIN_API_LEVEL, allow, deny);
-        PluginCatalogInspection offline = new PluginCatalogInspector().inspect(
+        PluginCatalogInspection offline = new PluginCatalogInspector(TestPluginKinds.KINDS.registry()).inspect(
                 matrix.index(), policy);
 
         try (URLClassLoader loader = new ServiceOnlyClassLoader(
                 new URL[]{matrix.services().toUri().toURL()}, getClass().getClassLoader())) {
             PluginsOptions options = new PluginsOptions(
                     true, false, allow, deny, Map.of());
-            PluginCatalogBuilder.BuildResult runtime = new PluginCatalogBuilder().build(
+            PluginCatalogBuilder.BuildResult runtime = new PluginCatalogBuilder(TestPluginKinds.KINDS).build(
                     options, loader, List.of(new PluginCatalogBuilder.CatalogInput(
                             matrix.index(), PluginSourceCategory.CLASSPATH)));
             try {
@@ -1581,12 +1557,7 @@ class PluginCatalogRuntimeTest {
                 new URL[0], getClass().getClassLoader())) {
             List<ReservedContribution> reserved = List.of(
                     new ReservedContribution(ContributionKind.UTXO_INDEX_CONTRIBUTOR, "wallet"),
-                    new ReservedContribution(ContributionKind.APP_STATE_MACHINE, "ordered-log"),
-                    new ReservedContribution(ContributionKind.SEQUENCER_MODE, "fixed"),
-                    new ReservedContribution(ContributionKind.SEQUENCER_MODE, "rotating"),
-                    new ReservedContribution(ContributionKind.L1_OBSERVER, "metadata-label"),
-                    new ReservedContribution(ContributionKind.L1_OBSERVER, "address-deposit"),
-                    new ReservedContribution(ContributionKind.EFFECT_EXECUTOR, "webhook"));
+                    new ReservedContribution(TestPluginKinds.FIXTURE, "system"));
             for (int index = 0; index < reserved.size(); index++) {
                 ReservedContribution value = reserved.get(index);
                 String id = "com.example.parity-reserved-" + index;
@@ -1607,23 +1578,23 @@ class PluginCatalogRuntimeTest {
         PluginIndex duplicate = index(
                 parityBundle(firstId, "1.0.0", List.of(),
                         List.of(new BundleContribution(
-                                ContributionKind.FINALIZED_SINK, duplicateName,
+                                TestPluginKinds.FIXTURE, duplicateName,
                                 ParitySinkProvider.class.getName())),
                         'f', PluginDigestMode.JAR),
                 parityBundle(secondId, "1.0.0", List.of(),
                         List.of(new BundleContribution(
-                                ContributionKind.FINALIZED_SINK, duplicateName,
+                                TestPluginKinds.FIXTURE, duplicateName,
                                 SecondParitySinkProvider.class.getName())),
                         '9', PluginDigestMode.ARTIFACT_TREE));
         Path duplicateServices = serviceJar(
                 "parity-duplicate-services.jar",
-                Map.of(ContributionKind.FINALIZED_SINK,
+                Map.of(TestPluginKinds.FIXTURE,
                         List.of(ParitySinkProvider.class, SecondParitySinkProvider.class)));
         try (URLClassLoader loader = new ServiceOnlyClassLoader(
                 new URL[]{duplicateServices.toUri().toURL()}, getClass().getClassLoader())) {
             assertParityFailure(duplicate, PluginsOptions.defaults(),
                     PluginCatalogInspectionPolicy.current(), loader,
-                    "Duplicate selected contribution 'finalized-sink/" + duplicateName + "'");
+                    "Duplicate selected contribution 'fixture-product/" + duplicateName + "'");
         }
     }
 
@@ -1641,7 +1612,7 @@ class PluginCatalogRuntimeTest {
                         PluginCatalogBuilder.PLUGIN_API_LEVEL + 1),
                 List.of(),
                 List.of(new BundleContribution(
-                        ContributionKind.FINALIZED_SINK,
+                        TestPluginKinds.FIXTURE,
                         "parity-api-level",
                         LevelGatedSinkProvider.class.getName()))),
                 digest('7'), PluginDigestMode.JAR));
@@ -1687,7 +1658,7 @@ class PluginCatalogRuntimeTest {
 
         try (URLClassLoader loader = new ServiceOnlyClassLoader(
                 new URL[]{jar.toUri().toURL()}, getClass().getClassLoader())) {
-            PluginCatalogBuilder.BuildResult result = new PluginCatalogBuilder().build(
+            PluginCatalogBuilder.BuildResult result = new PluginCatalogBuilder(TestPluginKinds.KINDS).build(
                     options, loader, List.of(new PluginCatalogBuilder.CatalogInput(
                             index, PluginSourceCategory.CLASSPATH)));
             try (var scheduler = Executors.newSingleThreadScheduledExecutor()) {
@@ -1731,7 +1702,7 @@ class PluginCatalogRuntimeTest {
 
         try (URLClassLoader loader = new ServiceOnlyClassLoader(
                 new URL[]{jar.toUri().toURL()}, getClass().getClassLoader())) {
-            PluginCatalogBuilder.BuildResult result = new PluginCatalogBuilder().build(
+            PluginCatalogBuilder.BuildResult result = new PluginCatalogBuilder(TestPluginKinds.KINDS).build(
                     PluginsOptions.defaults(), loader,
                     List.of(new PluginCatalogBuilder.CatalogInput(
                             index, PluginSourceCategory.CLASSPATH)));
@@ -1772,7 +1743,7 @@ class PluginCatalogRuntimeTest {
         try (URLClassLoader loader = new ServiceOnlyClassLoader(
                 new URL[]{jar.toUri().toURL()}, getClass().getClassLoader())) {
             PluginsOptions options = new PluginsOptions(true, false, Set.of(), Set.of(), config);
-            PluginCatalogBuilder.BuildResult result = new PluginCatalogBuilder().build(
+            PluginCatalogBuilder.BuildResult result = new PluginCatalogBuilder(TestPluginKinds.KINDS).build(
                     options, loader, List.of(new PluginCatalogBuilder.CatalogInput(
                             index, PluginSourceCategory.CLASSPATH)));
             try (var scheduler = Executors.newSingleThreadScheduledExecutor()) {
@@ -1798,7 +1769,7 @@ class PluginCatalogRuntimeTest {
                 new URL[]{jar.toUri().toURL()}, getClass().getClassLoader())) {
             PluginsOptions options = new PluginsOptions(true, false, Set.of(),
                     Set.of(ChildConfigPlugin.ID), config);
-            PluginCatalogBuilder.BuildResult result = new PluginCatalogBuilder().build(
+            PluginCatalogBuilder.BuildResult result = new PluginCatalogBuilder(TestPluginKinds.KINDS).build(
                     options, loader, List.of(new PluginCatalogBuilder.CatalogInput(
                             index, PluginSourceCategory.CLASSPATH)));
             try {
@@ -1821,7 +1792,7 @@ class PluginCatalogRuntimeTest {
         try (URLClassLoader loader = new ServiceOnlyClassLoader(
                 new URL[]{parentOnlyJar.toUri().toURL()}, getClass().getClassLoader())) {
             PluginsOptions options = new PluginsOptions(true, false, Set.of(), Set.of(), config);
-            PluginCatalogBuilder.BuildResult result = new PluginCatalogBuilder().build(
+            PluginCatalogBuilder.BuildResult result = new PluginCatalogBuilder(TestPluginKinds.KINDS).build(
                     options, loader, List.of(new PluginCatalogBuilder.CatalogInput(
                             parentOnlyIndex, PluginSourceCategory.CLASSPATH)));
             try {
@@ -1850,7 +1821,7 @@ class PluginCatalogRuntimeTest {
             PluginsOptions compatible = new PluginsOptions(true, false, Set.of(), Set.of(),
                     Map.of(bracketedBundleConfigKey(
                             FirstConfigPlugin.ID, "endpoint"), "compatible"));
-            PluginCatalogBuilder.BuildResult result = new PluginCatalogBuilder().build(
+            PluginCatalogBuilder.BuildResult result = new PluginCatalogBuilder(TestPluginKinds.KINDS).build(
                     compatible, loader, List.of(new PluginCatalogBuilder.CatalogInput(
                             index, PluginSourceCategory.CLASSPATH)));
             try {
@@ -1873,7 +1844,7 @@ class PluginCatalogRuntimeTest {
                 quotedSecretKey, secondSecret);
         try (URLClassLoader loader = new ServiceOnlyClassLoader(
                 new URL[]{jar.toUri().toURL()}, getClass().getClassLoader())) {
-            assertThatThrownBy(() -> new PluginCatalogBuilder().build(
+            assertThatThrownBy(() -> new PluginCatalogBuilder(TestPluginKinds.KINDS).build(
                     new PluginsOptions(true, false, Set.of(), Set.of(), conflicting),
                     loader, List.of(new PluginCatalogBuilder.CatalogInput(
                             index, PluginSourceCategory.CLASSPATH))))
@@ -1903,7 +1874,7 @@ class PluginCatalogRuntimeTest {
 
         try (URLClassLoader loader = new ServiceOnlyClassLoader(
                 new URL[]{jar.toUri().toURL()}, getClass().getClassLoader())) {
-            PluginCatalogBuilder.BuildResult result = new PluginCatalogBuilder().build(
+            PluginCatalogBuilder.BuildResult result = new PluginCatalogBuilder(TestPluginKinds.KINDS).build(
                     new PluginsOptions(true, false, Set.of(), Set.of(), config),
                     loader, List.of(new PluginCatalogBuilder.CatalogInput(
                             index, PluginSourceCategory.CLASSPATH)));
@@ -1931,7 +1902,7 @@ class PluginCatalogRuntimeTest {
 
         try (URLClassLoader loader = new ServiceOnlyClassLoader(
                 new URL[]{jar.toUri().toURL()}, getClass().getClassLoader())) {
-            assertThatThrownBy(() -> new PluginCatalogBuilder().build(
+            assertThatThrownBy(() -> new PluginCatalogBuilder(TestPluginKinds.KINDS).build(
                     new PluginsOptions(true, false, Set.of(), Set.of(), config),
                     loader, List.of(new PluginCatalogBuilder.CatalogInput(
                             index, PluginSourceCategory.CLASSPATH))))
@@ -2012,7 +1983,7 @@ class PluginCatalogRuntimeTest {
                 currentApiRange(),
                 List.of(new BundleDependency(OpaqueVersionLegacyPlugin.ID,
                         SemVersion.parse("1.0.0"), null)),
-                List.of(new BundleContribution(ContributionKind.FINALIZED_SINK,
+                List.of(new BundleContribution(TestPluginKinds.FIXTURE,
                         OpaqueVersionDependentSink.SCHEME,
                         OpaqueVersionDependentSink.class.getName())));
         PluginIndex index = new PluginIndex(PluginIndex.CURRENT_SCHEMA_VERSION,
@@ -2021,7 +1992,7 @@ class PluginCatalogRuntimeTest {
 
         try (URLClassLoader loader = new ServiceOnlyClassLoader(
                 new URL[]{jar.toUri().toURL()}, getClass().getClassLoader())) {
-            assertThatThrownBy(() -> new PluginCatalogBuilder().build(
+            assertThatThrownBy(() -> new PluginCatalogBuilder(TestPluginKinds.KINDS).build(
                     PluginsOptions.defaults(), loader,
                     List.of(new PluginCatalogBuilder.CatalogInput(
                             index, PluginSourceCategory.CLASSPATH))))
@@ -2291,7 +2262,7 @@ class PluginCatalogRuntimeTest {
                 "budget-first", firstProvider, "first", List.of(), 0);
         writeCollisionJar(secondJar, secondClasses, "com.example.budget.second",
                 "budget-second", secondProvider, "second", List.of(), 0);
-        PluginArtifactScanner scanner = new PluginArtifactScanner();
+        PluginArtifactScanner scanner = new PluginArtifactScanner(TestPluginKinds.KINDS.registry());
         DirectoryPluginArtifactValidator.DeploymentValidationBudget budget =
                 new DirectoryPluginArtifactValidator.DeploymentValidationBudget(1);
 
@@ -2300,12 +2271,12 @@ class PluginCatalogRuntimeTest {
         try (URLClassLoader parent = new ServiceOnlyClassLoader(
                 new URL[0], getClass().getClassLoader())) {
             thread.setContextClassLoader(parent);
-            DirectoryPluginArtifactValidator.validate(
+            DirectoryPluginArtifactValidator.validate(TestPluginKinds.KINDS,
                     firstJar.toRealPath(), scanner.scan(firstJar), parent, budget);
             assertThat(budget.discoveredProviders()).isEqualTo(1);
             assertThat(thread.getContextClassLoader()).isSameAs(parent);
 
-            assertThatThrownBy(() -> DirectoryPluginArtifactValidator.validate(
+            assertThatThrownBy(() -> DirectoryPluginArtifactValidator.validate(TestPluginKinds.KINDS,
                     secondJar.toRealPath(), scanner.scan(secondJar), parent, budget))
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessageContaining("deployment-wide limit of 1")
@@ -2571,7 +2542,7 @@ class PluginCatalogRuntimeTest {
                         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
                         while (System.nanoTime() < deadline) {
                             try {
-                                result.registry().names(FinalizedStreamSinkFactory.class);
+                                result.registry().names(FixtureProvider.class);
                                 Thread.onSpinWait();
                             } catch (IllegalStateException closing) {
                                 snapshotPresentDuringRegistryClose.set(
@@ -2645,7 +2616,7 @@ class PluginCatalogRuntimeTest {
                         return 0;
                     }
                 });
-        assertThatThrownBy(() -> new PluginCatalogBuilder().build(
+        assertThatThrownBy(() -> new PluginCatalogBuilder(TestPluginKinds.KINDS).build(
                 PluginsOptions.defaults(), oversized, List.of()))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("Legacy provider class resource exceeds ")
@@ -2665,7 +2636,7 @@ class PluginCatalogRuntimeTest {
                         return 0;
                     }
                 });
-        assertThatThrownBy(() -> new PluginCatalogBuilder().build(
+        assertThatThrownBy(() -> new PluginCatalogBuilder(TestPluginKinds.KINDS).build(
                 PluginsOptions.defaults(), zeroProgress, List.of()))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("Legacy provider class resource made no read progress");
@@ -2858,7 +2829,7 @@ class PluginCatalogRuntimeTest {
                 SemVersion.parse("1.0.0"),
                 currentApiRange(),
                 List.of(),
-                List.of(new BundleContribution(ContributionKind.FINALIZED_SINK,
+                List.of(new BundleContribution(TestPluginKinds.FIXTURE,
                         OpaqueVersionDependentSink.SCHEME,
                         OpaqueVersionDependentSink.class.getName())));
         PluginIndex manifested = new PluginIndex(PluginIndex.CURRENT_SCHEMA_VERSION,
@@ -2867,7 +2838,7 @@ class PluginCatalogRuntimeTest {
         PluginIndex legacy = new PluginIndex(PluginIndex.CURRENT_SCHEMA_VERSION,
                 List.of(),
                 List.of(new IndexedLegacyProvider(
-                        ContributionKind.FINALIZED_SINK,
+                        TestPluginKinds.FIXTURE,
                         OpaqueVersionDependentSink.class.getName(),
                         digest('f'), PluginDigestMode.LEGACY_CLASS)));
         List<PluginCatalogBuilder.CatalogInput> manifestedFirst = List.of(
@@ -2882,7 +2853,7 @@ class PluginCatalogRuntimeTest {
                 : List.of(manifestedFirst, legacyFirst)) {
             try (URLClassLoader loader = new ServiceOnlyClassLoader(
                     new URL[]{jar.toUri().toURL()}, getClass().getClassLoader())) {
-                assertThatThrownBy(() -> new PluginCatalogBuilder().build(
+                assertThatThrownBy(() -> new PluginCatalogBuilder(TestPluginKinds.KINDS).build(
                         PluginsOptions.defaults(), loader, inputs, false))
                         .isInstanceOf(IllegalStateException.class)
                         .hasMessageContaining(OpaqueVersionDependentSink.class.getName())
@@ -2911,7 +2882,7 @@ class PluginCatalogRuntimeTest {
                 new URL[0], getClass().getClassLoader())) {
             for (List<PluginCatalogBuilder.CatalogInput> inputs
                     : List.of(List.of(first, second), List.of(second, first))) {
-                assertThatThrownBy(() -> new PluginCatalogBuilder().build(
+                assertThatThrownBy(() -> new PluginCatalogBuilder(TestPluginKinds.KINDS).build(
                         filtered, loader, inputs, false))
                         .isInstanceOf(IllegalStateException.class)
                         .hasMessageContaining(provider)
@@ -2932,7 +2903,7 @@ class PluginCatalogRuntimeTest {
         PluginIndex legacyIndex = new PluginIndex(
                 PluginIndex.CURRENT_SCHEMA_VERSION, List.of(),
                 List.of(new IndexedLegacyProvider(
-                        ContributionKind.FINALIZED_SINK, provider,
+                        TestPluginKinds.FIXTURE, provider,
                         digest('4'), PluginDigestMode.LEGACY_CLASS)));
         PluginCatalogBuilder.CatalogInput legacy = new PluginCatalogBuilder.CatalogInput(
                 legacyIndex, PluginSourceCategory.CLASSPATH);
@@ -2943,7 +2914,7 @@ class PluginCatalogRuntimeTest {
                 new URL[0], getClass().getClassLoader())) {
             for (List<PluginCatalogBuilder.CatalogInput> inputs
                     : List.of(List.of(manifested, legacy), List.of(legacy, manifested))) {
-                assertThatThrownBy(() -> new PluginCatalogBuilder().build(
+                assertThatThrownBy(() -> new PluginCatalogBuilder(TestPluginKinds.KINDS).build(
                         filtered, loader, inputs, false))
                         .isInstanceOf(IllegalStateException.class)
                         .hasMessageContaining(provider)
@@ -3006,7 +2977,7 @@ class PluginCatalogRuntimeTest {
                         bundleId, LegacyClosingPlugin.class, 'd')),
                 List.of());
         writeJar(jar, Map.of(
-                PluginIndex.RESOURCE_PATH, new PluginIndexCodec().write(weakIndex)));
+                PluginIndex.RESOURCE_PATH, new PluginIndexCodec(TestPluginKinds.KINDS.registry()).write(weakIndex)));
 
         try (URLClassLoader loader = new ServiceOnlyClassLoader(
                 new URL[]{jar.toUri().toURL()}, getClass().getClassLoader())) {
@@ -3097,14 +3068,18 @@ class PluginCatalogRuntimeTest {
                                 .isEqualTo(firstFingerprint);
                     }
 
-                    FinalizedStreamSinkFactory provider = environment.providers()
-                            .find(FinalizedStreamSinkFactory.class, scheme)
+                    FixtureProvider provider = environment.providers()
+                            .find(FixtureProvider.class, scheme)
                             .orElseThrow();
-                    assertThat(provider.scheme()).isEqualTo(scheme);
-                    assertThat(provider.create("strict-chain", Map.of(
-                            "use-marker", useMarker.toString(),
-                            "close-marker", closeMarker.toString())))
-                            .isEmpty();
+                    assertThat(provider.id()).isEqualTo(scheme);
+                    System.setProperty("yano.test.use-marker", useMarker.toString());
+                    System.setProperty("yano.test.close-marker", closeMarker.toString());
+                    try {
+                        assertThat(provider.createAll()).isEmpty();
+                    } finally {
+                        System.clearProperty("yano.test.use-marker");
+                        System.clearProperty("yano.test.close-marker");
+                    }
                     assertThat(Files.readString(useMarker)).isEqualTo("strict-chain");
                 }
 
@@ -3131,16 +3106,16 @@ class PluginCatalogRuntimeTest {
     private static CatalogPluginProviderRegistry.Entry entry(
             String bundleId, ClosingSinkFactory provider) {
         return new CatalogPluginProviderRegistry.Entry(
-                bundleId, ContributionKind.FINALIZED_SINK, provider.scheme(),
+                bundleId, TestPluginKinds.FIXTURE, provider.id(),
                 provider.getClass().getName(), null, () -> provider);
     }
 
     private static CatalogPluginProviderRegistry.Entry sinkEntry(
             String bundleId,
-            FinalizedStreamSinkFactory provider
+            FixtureProvider provider
     ) {
         return new CatalogPluginProviderRegistry.Entry(
-                bundleId, ContributionKind.FINALIZED_SINK, provider.scheme(),
+                bundleId, TestPluginKinds.FIXTURE, provider.id(),
                 provider.getClass().getName(), null, () -> provider);
     }
 
@@ -3153,7 +3128,8 @@ class PluginCatalogRuntimeTest {
                     plugin.getClass().getName(), null, () -> plugin));
             order.add(plugin.id());
         }
-        return new CatalogPluginProviderRegistry(entries, order, List.of());
+        return new CatalogPluginProviderRegistry(TestPluginKinds.KINDS,
+                entries, order, List.of());
     }
 
     private static IndexedBundle indexedNodeBundle(
@@ -3182,7 +3158,7 @@ class PluginCatalogRuntimeTest {
                 currentApiRange(),
                 List.of(),
                 List.of(new BundleContribution(
-                        ContributionKind.FINALIZED_SINK, selector, provider)));
+                        TestPluginKinds.FIXTURE, selector, provider)));
         return new PluginIndex(
                 PluginIndex.CURRENT_SCHEMA_VERSION,
                 List.of(new IndexedBundle(
@@ -3201,7 +3177,7 @@ class PluginCatalogRuntimeTest {
         String allKindsId = "com.example.parity-c-all-kinds";
         List<BundleContribution> allKinds = new ArrayList<>();
         Map<ContributionKind, List<Class<?>>> providers = new LinkedHashMap<>();
-        for (ContributionKind kind : ContributionKind.values()) {
+        for (ContributionKind kind : TestPluginKinds.KINDS.registry().kinds()) {
             Class<?> provider = parityProvider(kind);
             String name = kind.manifestRequired()
                     ? allKindsId : "parity-" + kind.manifestKey();
@@ -3234,7 +3210,7 @@ class PluginCatalogRuntimeTest {
     ) throws IOException {
         Map<String, byte[]> entries = new LinkedHashMap<>();
         providers.forEach((kind, types) -> entries.put(
-                "META-INF/services/" + kind.serviceType().getName(),
+                "META-INF/services/" + kind.serviceInterface(),
                 (types.stream().map(Class::getName)
                         .collect(java.util.stream.Collectors.joining("\n")) + "\n")
                         .getBytes(StandardCharsets.UTF_8)));
@@ -3382,22 +3358,13 @@ class PluginCatalogRuntimeTest {
     }
 
     private static Class<?> parityProvider(ContributionKind kind) {
-        return switch (kind) {
-            case NODE_PLUGIN -> ParityNodePlugin.class;
-            case APP_STATE_MACHINE -> ParityStateMachineProvider.class;
-            case AUTHENTICATED_MAP_VALIDATOR -> ParityMapValidatorProvider.class;
-            case SEQUENCER_MODE -> ParitySequencerProvider.class;
-            case L1_OBSERVER -> ParityL1ObserverProvider.class;
-            case L1_EPOCH_OBSERVER -> ParityL1EpochObserverProvider.class;
-            case OBSERVATION_PROVIDER -> ParityObservationProvider.class;
-            case SIGNER_PROVIDER -> ParitySignerProvider.class;
-            case EFFECT_EXECUTOR -> ParityEffectProvider.class;
-            case FINALIZED_SINK -> ParitySinkProvider.class;
-            case DOMAIN_API -> ParityDomainApiProvider.class;
-            case LOCAL_READ_MODEL -> ParityLocalReadModelProvider.class;
-            case UTXO_INDEX_CONTRIBUTOR -> ParityUtxoIndexProvider.class;
-            case HEALTH -> ParityHealthProvider.class;
-            case METRICS -> ParityMetricsProvider.class;
+        return switch (kind.manifestKey()) {
+            case "node-plugin" -> ParityNodePlugin.class;
+            case "utxo-index-contributor" -> ParityUtxoIndexProvider.class;
+            case "health" -> ParityHealthProvider.class;
+            case "metrics" -> ParityMetricsProvider.class;
+            case "fixture-product" -> ParitySinkProvider.class;
+            default -> throw new AssertionError("unexpected test kind " + kind);
         };
     }
 
@@ -3442,11 +3409,11 @@ class PluginCatalogRuntimeTest {
             String messageFragment
     ) {
         Throwable offline = catchThrowable(() ->
-                new PluginCatalogInspector().inspect(index, policy));
+                new PluginCatalogInspector(TestPluginKinds.KINDS.registry()).inspect(index, policy));
         AtomicReference<PluginCatalogBuilder.BuildResult> unexpected =
                 new AtomicReference<>();
         Throwable runtime = catchThrowable(() -> unexpected.set(
-                new PluginCatalogBuilder().build(options, loader,
+                new PluginCatalogBuilder(TestPluginKinds.KINDS).build(options, loader,
                         List.of(new PluginCatalogBuilder.CatalogInput(
                                 index, PluginSourceCategory.CLASSPATH)))));
         if (unexpected.get() != null) {
@@ -3580,16 +3547,16 @@ class PluginCatalogRuntimeTest {
                         .isEqualTo("selected");
             }
 
-            FinalizedStreamSinkFactory factory = environment.providers()
-                    .find(FinalizedStreamSinkFactory.class, "selected")
+            FixtureProvider factory = environment.providers()
+                    .find(FixtureProvider.class, "selected")
                     .orElseThrow();
             assertThat(Thread.currentThread().getContextClassLoader()).isSameAs(parent);
             assertThat(factory.getClass().getClassLoader()).isNotSameAs(executable);
-            FinalizedStreamSink sink = factory.create("chain", Map.of()).getFirst();
+            FixtureProduct sink = factory.createAll().getFirst();
             assertThat(Thread.currentThread().getContextClassLoader()).isSameAs(parent);
             String sinkId = sink.id();
             assertThat(Thread.currentThread().getContextClassLoader()).isSameAs(parent);
-            assertThat(sink.deliver(null)).isTrue();
+            assertThat(sink.call("delivered")).isEqualTo("delivered");
             assertThat(Thread.currentThread().getContextClassLoader()).isSameAs(parent);
             return new DirectoryProjection(
                     environment.catalog().fingerprint(), sinkId,
@@ -3617,37 +3584,34 @@ class PluginCatalogRuntimeTest {
         Files.createDirectories(providerSource.getParent());
         Files.writeString(providerSource, """
                 package %s;
-                import org.yanoproject.x.framework.api.appchain.AppBlock;
-import org.yanoproject.x.framework.api.appchain.AppBlockExecutionContext;
-                import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSink;
-                import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSinkFactory;
+                import org.yanoproject.runtime.plugins.fixture.FixtureProduct;
+                import org.yanoproject.runtime.plugins.fixture.FixtureProvider;
                 import java.io.InputStream;
                 import java.nio.charset.StandardCharsets;
                 import java.nio.file.Files;
                 import java.nio.file.Path;
                 import java.util.List;
                 import java.util.Map;
-                public final class %s implements FinalizedStreamSinkFactory {
+                public final class %s implements FixtureProvider {
                     %s
                     public %s() {
                         verifyTccl();
                         %s
                     }
-                    public String scheme() {
+                    public String id() {
                         verifyTccl();
                         return "%s";
                     }
-                    public List<FinalizedStreamSink> create(
-                            String chainId, Map<String, String> config) {
+                    public List<FixtureProduct> createAll() {
                         verifyTccl();
-                        return List.of(new FinalizedStreamSink() {
+                        return List.of(new FixtureProduct() {
                             public String id() {
                                 verifyTccl();
                                 return observation();
                             }
-                            public boolean deliver(AppBlock block) {
+                            public String call(String input) {
                                 verifyTccl();
-                                return true;
+                                return input;
                             }
                         });
                     }
@@ -3697,7 +3661,7 @@ import org.yanoproject.x.framework.api.appchain.AppBlockExecutionContext;
                     public static String value() { return "%s"; }
                 }
                 """.formatted(packageName, helperValue));
-        String apiPath = Path.of(FinalizedStreamSinkFactory.class.getProtectionDomain()
+        String apiPath = Path.of(FixtureProvider.class.getProtectionDomain()
                 .getCodeSource().getLocation().toURI()).toString();
         int result = ToolProvider.getSystemJavaCompiler().run(null, null, null,
                 "-classpath", apiPath, "-d", classes.toString(),
@@ -3750,19 +3714,19 @@ import org.yanoproject.x.framework.api.appchain.AppBlockExecutionContext;
         Files.createDirectories(source.getParent());
         Files.writeString(source, """
                 package com.example.dynamic;
-                import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSink;
-                import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSinkFactory;
+                import org.yanoproject.runtime.plugins.fixture.FixtureProduct;
+                import org.yanoproject.runtime.plugins.fixture.FixtureProvider;
                 import java.util.List;
                 import java.util.Map;
-                public final class DynamicSink implements FinalizedStreamSinkFactory {
-                    public String scheme() { return "dynamic"; }
-                    public List<FinalizedStreamSink> create(String chainId, Map<String, String> config) {
+                public final class DynamicSink implements FixtureProvider {
+                    public String id() { return "dynamic"; }
+                    public List<FixtureProduct> createAll() {
                         return List.of();
                     }
                     public String marker() { return "%s"; }
                 }
                 """.formatted(marker));
-        String apiPath = Path.of(FinalizedStreamSinkFactory.class.getProtectionDomain()
+        String apiPath = Path.of(FixtureProvider.class.getProtectionDomain()
                 .getCodeSource().getLocation().toURI()).toString();
         int result = ToolProvider.getSystemJavaCompiler().run(null, null, null,
                 "-classpath", apiPath, "-d", classes.toString(), source.toString());
@@ -3778,18 +3742,18 @@ import org.yanoproject.x.framework.api.appchain.AppBlockExecutionContext;
         Files.createDirectories(source.getParent());
         Files.writeString(source, """
                 package %s;
-                import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSink;
-                import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSinkFactory;
+                import org.yanoproject.runtime.plugins.fixture.FixtureProduct;
+                import org.yanoproject.runtime.plugins.fixture.FixtureProvider;
                 import java.util.List;
                 import java.util.Map;
-                public final class %s implements FinalizedStreamSinkFactory {
-                    public String scheme() { return "%s"; }
-                    public List<FinalizedStreamSink> create(String chainId, Map<String, String> config) {
+                public final class %s implements FixtureProvider {
+                    public String id() { return "%s"; }
+                    public List<FixtureProduct> createAll() {
                         throw new IllegalStateException("missing setting");
                     }
                 }
                 """.formatted(providerName.substring(0, separator), providerName.substring(separator + 1), scheme));
-        String apiPath = Path.of(FinalizedStreamSinkFactory.class.getProtectionDomain()
+        String apiPath = Path.of(FixtureProvider.class.getProtectionDomain()
                 .getCodeSource().getLocation().toURI()).toString();
         int result = ToolProvider.getSystemJavaCompiler().run(null, null, null,
                 "-classpath", apiPath, "-d", classes.toString(), source.toString());
@@ -3810,21 +3774,21 @@ import org.yanoproject.x.framework.api.appchain.AppBlockExecutionContext;
         Files.createDirectories(source.getParent());
         Files.writeString(source, """
                 package %s;
-                import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSink;
-                import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSinkFactory;
+                import org.yanoproject.runtime.plugins.fixture.FixtureProduct;
+                import org.yanoproject.runtime.plugins.fixture.FixtureProvider;
                 import java.io.IOException;
                 import java.nio.file.Files;
                 import java.nio.file.Path;
                 import java.util.List;
                 import java.util.Map;
-                public final class %s implements FinalizedStreamSinkFactory, AutoCloseable {
+                public final class %s implements FixtureProvider, AutoCloseable {
                     private String closeMarker;
-                    public String scheme() { return "%s"; }
-                    public List<FinalizedStreamSink> create(
-                            String chainId, Map<String, String> config) {
+                    public String id() { return "%s"; }
+                    public List<FixtureProduct> createAll() {
                         try {
-                            Files.writeString(Path.of(config.get("use-marker")), chainId);
-                            closeMarker = config.get("close-marker");
+                            Files.writeString(Path.of(System.getProperty("yano.test.use-marker")),
+                                    "strict-chain");
+                            closeMarker = System.getProperty("yano.test.close-marker");
                             return List.of();
                         } catch (IOException e) {
                             throw new IllegalStateException(e);
@@ -3840,7 +3804,7 @@ import org.yanoproject.x.framework.api.appchain.AppBlockExecutionContext;
                     }
                 }
                 """.formatted(packageName, simpleName, scheme));
-        String apiPath = Path.of(FinalizedStreamSinkFactory.class.getProtectionDomain()
+        String apiPath = Path.of(FixtureProvider.class.getProtectionDomain()
                 .getCodeSource().getLocation().toURI()).toString();
         int result = ToolProvider.getSystemJavaCompiler().run(null, null, null,
                 "-classpath", apiPath, "-d", classes.toString(), source.toString());
@@ -3858,16 +3822,15 @@ import org.yanoproject.x.framework.api.appchain.AppBlockExecutionContext;
         Files.createDirectories(providerSource.getParent());
         Files.writeString(providerSource, """
                 package com.example.snapshot;
-                import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSink;
-                import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSinkFactory;
+                import org.yanoproject.runtime.plugins.fixture.FixtureProduct;
+                import org.yanoproject.runtime.plugins.fixture.FixtureProvider;
                 import java.io.InputStream;
                 import java.nio.charset.StandardCharsets;
                 import java.util.List;
                 import java.util.Map;
-                public final class SnapshotSink implements FinalizedStreamSinkFactory {
-                    public String scheme() { return "snapshot"; }
-                    public List<FinalizedStreamSink> create(
-                            String chainId, Map<String, String> config) {
+                public final class SnapshotSink implements FixtureProvider {
+                    public String id() { return "snapshot"; }
+                    public List<FixtureProduct> createAll() {
                         return List.of();
                     }
                     public String marker() {
@@ -3889,7 +3852,7 @@ import org.yanoproject.x.framework.api.appchain.AppBlockExecutionContext;
                     public static String value() { return "%s"; }
                 }
                 """.formatted(lazyMarker));
-        String apiPath = Path.of(FinalizedStreamSinkFactory.class.getProtectionDomain()
+        String apiPath = Path.of(FixtureProvider.class.getProtectionDomain()
                 .getCodeSource().getLocation().toURI()).toString();
         int result = ToolProvider.getSystemJavaCompiler().run(null, null, null,
                 "-classpath", apiPath, "-d", classes.toString(),
@@ -3911,7 +3874,7 @@ import org.yanoproject.x.framework.api.appchain.AppBlockExecutionContext;
     private PluginBundleInfo legacyBundle(Path jar) throws Exception {
         try (URLClassLoader loader = new ServiceOnlyClassLoader(
                 new URL[]{jar.toUri().toURL()}, getClass().getClassLoader())) {
-            PluginCatalogBuilder.BuildResult result = new PluginCatalogBuilder().build(
+            PluginCatalogBuilder.BuildResult result = new PluginCatalogBuilder(TestPluginKinds.KINDS).build(
                     PluginsOptions.defaults(), loader, List.of());
             try {
                 return result.catalog().bundles().getFirst();
@@ -3971,7 +3934,7 @@ import org.yanoproject.x.framework.api.appchain.AppBlockExecutionContext;
                   "yanoApi": {"min": %d, "max": %d, "minLevel": %d},
                   "dependencies": [%s],
                   "contributions": [
-                    {"kind": "finalized-sink", "name": "%s", "provider": "%s"}
+                    {"kind": "fixture-product", "name": "%s", "provider": "%s"}
                   ]
                 }
                 """.formatted(id,
@@ -4093,114 +4056,32 @@ import org.yanoproject.x.framework.api.appchain.AppBlockExecutionContext;
         @Override public void close() { throw unexpectedParityActivation(); }
     }
 
-    public static final class ParityStateMachineProvider implements AppStateMachineProvider {
-        @Override public String id() { throw unexpectedParityActivation(); }
-        @Override public AppStateMachine create() { throw unexpectedParityActivation(); }
-    }
-
-    public static final class ParityMapValidatorProvider
-            implements AuthenticatedMapValueValidatorFactory {
-        @Override public String id() { return "com.example.parity-c-all-kinds"; }
-        @Override public String contractVersion() { return "parity-v1"; }
-        @Override public AuthenticatedMapValueValidator create(ValidatorInitContext context) {
-            return (collection, key, value) -> ValidatorVerdict.ACCEPT;
-        }
-    }
-
-    public static final class ParitySequencerProvider implements SequencerModeProvider {
+    public static final class ParitySinkProvider implements FixtureProvider {
         @Override public String id() { throw unexpectedParityActivation(); }
         @Override
-        public SequencerMode create(SequencerContext context) {
+        public List<FixtureProduct> createAll() {
             throw unexpectedParityActivation();
         }
     }
 
-    public static final class ParityL1ObserverProvider implements L1ObserverProvider {
-        @Override public String type() { throw unexpectedParityActivation(); }
+    public static final class SecondParitySinkProvider implements FixtureProvider {
+        @Override public String id() { throw unexpectedParityActivation(); }
         @Override
-        public L1Observer create(String observerId, Map<String, String> settings) {
+        public List<FixtureProduct> createAll() {
             throw unexpectedParityActivation();
         }
     }
 
-    public static final class ParityL1EpochObserverProvider implements L1EpochObserverProvider {
-        @Override public String type() { throw unexpectedParityActivation(); }
-        @Override
-        public L1EpochObserver create(String observerId, Map<String, String> settings) {
-            throw unexpectedParityActivation();
-        }
-    }
-
-    public static final class ParityObservationProvider implements ObservationProviderFactory {
-        @Override public String type() { throw unexpectedParityActivation(); }
-        @Override
-        public ObservationProvider create(String definitionId, Map<String, String> settings) {
-            throw unexpectedParityActivation();
-        }
-    }
-
-    public static final class ParitySignerProvider implements SignerProviderFactory {
-        @Override public String scheme() { throw unexpectedParityActivation(); }
-        @Override
-        public SignerProvider create(String keyReference) {
-            throw unexpectedParityActivation();
-        }
-    }
-
-    public static final class ParityEffectProvider implements AppEffectExecutorFactory {
-        @Override public String scheme() { throw unexpectedParityActivation(); }
-        @Override
-        public List<AppEffectExecutor> create(
-                String chainId,
-                Map<String, String> config
-        ) {
-            throw unexpectedParityActivation();
-        }
-    }
-
-    public static final class ParitySinkProvider implements FinalizedStreamSinkFactory {
-        @Override public String scheme() { throw unexpectedParityActivation(); }
-        @Override
-        public List<FinalizedStreamSink> create(
-                String chainId,
-                Map<String, String> config
-        ) {
-            throw unexpectedParityActivation();
-        }
-    }
-
-    public static final class SecondParitySinkProvider implements FinalizedStreamSinkFactory {
-        @Override public String scheme() { throw unexpectedParityActivation(); }
-        @Override
-        public List<FinalizedStreamSink> create(
-                String chainId,
-                Map<String, String> config
-        ) {
-            throw unexpectedParityActivation();
-        }
-    }
-
-    public static final class LevelGatedSinkProvider implements FinalizedStreamSinkFactory {
+    public static final class LevelGatedSinkProvider implements FixtureProvider {
         private static final AtomicInteger constructorCalls = new AtomicInteger();
 
         public LevelGatedSinkProvider() {
             constructorCalls.incrementAndGet();
         }
 
-        @Override public String scheme() { throw unexpectedParityActivation(); }
-        @Override
-        public List<FinalizedStreamSink> create(
-                String chainId,
-                Map<String, String> config
-        ) {
-            throw unexpectedParityActivation();
-        }
-    }
-
-    public static final class ParityDomainApiProvider implements DomainApiProvider {
         @Override public String id() { throw unexpectedParityActivation(); }
         @Override
-        public DomainApi create(DomainApiContext context) {
+        public List<FixtureProduct> createAll() {
             throw unexpectedParityActivation();
         }
     }
@@ -4212,14 +4093,6 @@ import org.yanoproject.x.framework.api.appchain.AppBlockExecutionContext;
                 @Override public void stageApply(UtxoChanges changes, IndexWriter writer) { }
                 @Override public void stageRollback(ChainPoint target, IndexWriter writer) { }
             };
-        }
-    }
-
-    public static final class ParityLocalReadModelProvider
-            implements LocalReadModelProvider {
-        @Override public String id() { throw unexpectedParityActivation(); }
-        @Override public AutoCloseable start(LocalReadModelContext context) {
-            throw unexpectedParityActivation();
         }
     }
 
@@ -4239,7 +4112,7 @@ import org.yanoproject.x.framework.api.appchain.AppBlockExecutionContext;
         }
     }
 
-    public static final class ParentShadowSink implements FinalizedStreamSinkFactory {
+    public static final class ParentShadowSink implements FixtureProvider {
         static final AtomicInteger constructorCalls = new AtomicInteger();
 
         public ParentShadowSink() {
@@ -4247,32 +4120,29 @@ import org.yanoproject.x.framework.api.appchain.AppBlockExecutionContext;
         }
 
         @Override
-        public String scheme() {
+        public String id() {
             return "shadow";
         }
 
         @Override
-        public List<FinalizedStreamSink> create(String chainId, Map<String, String> config) {
+        public List<FixtureProduct> createAll() {
             return List.of();
         }
     }
 
     public static final class FlakyLegacySinkFactory
-            implements FinalizedStreamSinkFactory, AutoCloseable {
+            implements FixtureProvider, AutoCloseable {
         static final String INITIAL_SCHEME = "initial";
         static final AtomicInteger schemeCalls = new AtomicInteger();
         static final AtomicInteger closeCalls = new AtomicInteger();
 
         @Override
-        public String scheme() {
+        public String id() {
             return schemeCalls.incrementAndGet() == 1 ? INITIAL_SCHEME : "changed";
         }
 
         @Override
-        public List<FinalizedStreamSink> create(
-                String chainId,
-                Map<String, String> config
-        ) {
+        public List<FixtureProduct> createAll() {
             return List.of();
         }
 
@@ -4283,7 +4153,7 @@ import org.yanoproject.x.framework.api.appchain.AppBlockExecutionContext;
     }
 
     public static final class ReentrantLegacySinkFactory
-            implements FinalizedStreamSinkFactory, AutoCloseable {
+            implements FixtureProvider, AutoCloseable {
         private static final AtomicReference<PluginRuntimeEnvironment> environment =
                 new AtomicReference<>();
         private static final AtomicReference<Throwable> reentryFailure =
@@ -4297,12 +4167,12 @@ import org.yanoproject.x.framework.api.appchain.AppBlockExecutionContext;
         }
 
         @Override
-        public String scheme() {
+        public String id() {
             return "reentrant-provider-close";
         }
 
         @Override
-        public List<FinalizedStreamSink> create(String chainId, Map<String, String> config) {
+        public List<FixtureProduct> createAll() {
             return List.of();
         }
 
@@ -4322,7 +4192,7 @@ import org.yanoproject.x.framework.api.appchain.AppBlockExecutionContext;
     }
 
     public static final class MemoizedCloseFailureSinkFactory
-            implements FinalizedStreamSinkFactory, AutoCloseable {
+            implements FixtureProvider, AutoCloseable {
         private static final AtomicReference<Error> closeFailure = new AtomicReference<>();
         private static final AtomicInteger closeCalls = new AtomicInteger();
 
@@ -4332,12 +4202,12 @@ import org.yanoproject.x.framework.api.appchain.AppBlockExecutionContext;
         }
 
         @Override
-        public String scheme() {
+        public String id() {
             return "memoized-close-failure";
         }
 
         @Override
-        public List<FinalizedStreamSink> create(String chainId, Map<String, String> config) {
+        public List<FixtureProduct> createAll() {
             return List.of();
         }
 
@@ -4442,37 +4312,31 @@ import org.yanoproject.x.framework.api.appchain.AppBlockExecutionContext;
     }
 
     public static final class SecretSelectorLegacySinkFactory
-            implements FinalizedStreamSinkFactory {
+            implements FixtureProvider {
         @Override
-        public String scheme() {
+        public String id() {
             throw new AssertionError(SECRET_CALLBACK_MESSAGE);
         }
 
         @Override
-        public List<FinalizedStreamSink> create(
-                String chainId,
-                Map<String, String> config
-        ) {
+        public List<FixtureProduct> createAll() {
             return List.of();
         }
     }
 
     public static final class SecretConstructorLegacySinkFactory
-            implements FinalizedStreamSinkFactory {
+            implements FixtureProvider {
         public SecretConstructorLegacySinkFactory() {
             throw new AssertionError(SECRET_CALLBACK_MESSAGE);
         }
 
         @Override
-        public String scheme() {
+        public String id() {
             return "unreachable";
         }
 
         @Override
-        public List<FinalizedStreamSink> create(
-                String chainId,
-                Map<String, String> config
-        ) {
+        public List<FixtureProduct> createAll() {
             return List.of();
         }
     }
@@ -4569,13 +4433,13 @@ import org.yanoproject.x.framework.api.appchain.AppBlockExecutionContext;
     }
 
     public static final class StatefulSecretLegacySinkFactory
-            implements FinalizedStreamSinkFactory, AutoCloseable {
+            implements FixtureProvider, AutoCloseable {
         private static final String SCHEME = "stateful-secret";
         private static final AtomicInteger schemeCalls = new AtomicInteger();
         private static final AtomicInteger closeCalls = new AtomicInteger();
 
         @Override
-        public String scheme() {
+        public String id() {
             if (schemeCalls.incrementAndGet() == 1) {
                 return SCHEME;
             }
@@ -4583,10 +4447,7 @@ import org.yanoproject.x.framework.api.appchain.AppBlockExecutionContext;
         }
 
         @Override
-        public List<FinalizedStreamSink> create(
-                String chainId,
-                Map<String, String> config
-        ) {
+        public List<FixtureProduct> createAll() {
             return List.of();
         }
 
@@ -5028,13 +4889,13 @@ import org.yanoproject.x.framework.api.appchain.AppBlockExecutionContext;
         @Override public void close() { }
     }
 
-    public static final class OpaqueVersionDependentSink implements FinalizedStreamSinkFactory {
+    public static final class OpaqueVersionDependentSink implements FixtureProvider {
         static final String ID = "com.example.version-dependent";
         static final String SCHEME = "version-dependent";
 
-        @Override public String scheme() { return SCHEME; }
+        @Override public String id() { return SCHEME; }
         @Override
-        public List<FinalizedStreamSink> create(String chainId, Map<String, String> config) {
+        public List<FixtureProduct> createAll() {
             return List.of();
         }
     }
@@ -5178,7 +5039,7 @@ import org.yanoproject.x.framework.api.appchain.AppBlockExecutionContext;
     }
 
     private static final class ClosingSinkFactory
-            implements FinalizedStreamSinkFactory, AutoCloseable {
+            implements FixtureProvider, AutoCloseable {
         private final String name;
         private final List<String> closes;
         private final AtomicInteger closeCalls = new AtomicInteger();
@@ -5189,12 +5050,12 @@ import org.yanoproject.x.framework.api.appchain.AppBlockExecutionContext;
         }
 
         @Override
-        public String scheme() {
+        public String id() {
             return name;
         }
 
         @Override
-        public List<FinalizedStreamSink> create(String chainId, Map<String, String> config) {
+        public List<FixtureProduct> createAll() {
             return List.of();
         }
 
@@ -5208,27 +5069,17 @@ import org.yanoproject.x.framework.api.appchain.AppBlockExecutionContext;
     }
 
     private static final class SelfReturningSinkFactory
-            implements FinalizedStreamSinkFactory, FinalizedStreamSink {
+            implements FixtureProvider, FixtureProduct {
         private final AtomicInteger closeCalls = new AtomicInteger();
 
         @Override
-        public String scheme() {
+        public String id() {
             return "self-returning";
         }
 
         @Override
-        public List<FinalizedStreamSink> create(String chainId, Map<String, String> config) {
+        public List<FixtureProduct> createAll() {
             return List.of(this);
-        }
-
-        @Override
-        public String id() {
-            return "self-returning-product";
-        }
-
-        @Override
-        public boolean deliver(org.yanoproject.x.framework.api.appchain.AppBlock block) {
-            return true;
         }
 
         @Override
@@ -5238,29 +5089,26 @@ import org.yanoproject.x.framework.api.appchain.AppBlockExecutionContext;
     }
 
     private static final class FixedProductSinkFactory
-            implements FinalizedStreamSinkFactory {
-        private final FinalizedStreamSink product;
+            implements FixtureProvider {
+        private final FixtureProduct product;
 
-        private FixedProductSinkFactory(FinalizedStreamSink product) {
+        private FixedProductSinkFactory(FixtureProduct product) {
             this.product = product;
         }
 
         @Override
-        public String scheme() {
+        public String id() {
             return "fixed-product";
         }
 
         @Override
-        public List<FinalizedStreamSink> create(
-                String chainId,
-                Map<String, String> config
-        ) {
+        public List<FixtureProduct> createAll() {
             return List.of(product);
         }
     }
 
     private static final class CloseProbeSinkFactory
-            implements FinalizedStreamSinkFactory, AutoCloseable {
+            implements FixtureProvider, AutoCloseable {
         private final String name;
         private final AtomicInteger closeCalls;
         private final Error closeFailure;
@@ -5276,15 +5124,12 @@ import org.yanoproject.x.framework.api.appchain.AppBlockExecutionContext;
         }
 
         @Override
-        public String scheme() {
+        public String id() {
             return name;
         }
 
         @Override
-        public List<FinalizedStreamSink> create(
-                String chainId,
-                Map<String, String> config
-        ) {
+        public List<FixtureProduct> createAll() {
             return List.of();
         }
 
@@ -5366,25 +5211,30 @@ import org.yanoproject.x.framework.api.appchain.AppBlockExecutionContext;
 
         @Override
         public Enumeration<URL> getResources(String name) throws IOException {
-            if (name.startsWith("META-INF/services/")) {
+            if (pluginService(name)) {
                 return findResources(name);
             }
             return super.getResources(name);
         }
     }
 
+    /** Plugin ServiceLoader registrations; host kind bindings belong to the trusted parent. */
+    private static boolean pluginService(String name) {
+        return name.startsWith("META-INF/services/")
+                && !name.equals("META-INF/services/" + ContributionKindBinding.class.getName());
+    }
+
     /**
      * Parent loader that resolves classes (SPI types) from the test classpath
-     * but hides its ServiceLoader registrations. Since ADR-025.2 Phase E the
-     * classpath carries a manifest-required domain-api provider (stdlib), and
-     * a directory-only catalog without an embedded index must not see it.
+     * but hides its plugin ServiceLoader registrations, so a directory-only
+     * catalog without an embedded index sees only directory providers.
      */
     private static ClassLoader serviceFilteringParent() {
         return new ClassLoader(PluginCatalogRuntimeTest.class.getClassLoader()) {
             @Override
             public java.util.Enumeration<java.net.URL> getResources(String name)
                     throws java.io.IOException {
-                if (name.startsWith("META-INF/services/")) {
+                if (pluginService(name)) {
                     return java.util.Collections.emptyEnumeration();
                 }
                 return super.getResources(name);
@@ -5392,7 +5242,7 @@ import org.yanoproject.x.framework.api.appchain.AppBlockExecutionContext;
 
             @Override
             public java.net.URL getResource(String name) {
-                if (name.startsWith("META-INF/services/")) {
+                if (pluginService(name)) {
                     return null;
                 }
                 return super.getResource(name);

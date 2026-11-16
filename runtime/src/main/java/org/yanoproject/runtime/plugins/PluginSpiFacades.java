@@ -1,92 +1,9 @@
 package org.yanoproject.runtime.plugins;
 
-import org.yanoproject.x.framework.api.appchain.AppCapabilityManifest;
-import org.yanoproject.x.framework.api.appchain.proof.ProofSubjectDescriptorV1;
-import org.yanoproject.x.framework.api.appchain.proof.ProofSubjectProvider;
-import org.yanoproject.x.framework.cardano.api.effects.AppChainEffectContext;
-
-
-import com.bloxbean.cardano.yaci.core.model.Block;
-import com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage;
-import org.yanoproject.x.framework.api.appchain.AppBlock;
-import org.yanoproject.x.framework.api.appchain.AppBlockExecutionContext;
-import org.yanoproject.x.framework.api.appchain.AppChainInfo;
-import org.yanoproject.x.framework.api.appchain.AppQueryContext;
-import org.yanoproject.x.framework.api.appchain.AppStateMachine;
-import org.yanoproject.x.framework.api.appchain.AppStateMachineContext;
-import org.yanoproject.x.framework.api.appchain.AppStateMachineProvider;
-import org.yanoproject.x.framework.api.appchain.AppStateReader;
-import org.yanoproject.x.framework.api.appchain.AppStateWriter;
-import org.yanoproject.x.framework.api.appchain.codec.MessageCodec;
-import org.yanoproject.x.framework.api.appchain.transition.CommandDescriptor;
-import org.yanoproject.x.framework.api.appchain.transition.ConfigurationDescriptor;
-import org.yanoproject.x.framework.api.appchain.transition.EventDescriptor;
-import org.yanoproject.x.framework.api.appchain.transition.RuleFact;
-import org.yanoproject.x.framework.api.appchain.transition.RuleValueView;
-import org.yanoproject.x.framework.api.appchain.transition.TransitionContext;
-import org.yanoproject.x.framework.api.appchain.transition.TransitionDecision;
-import org.yanoproject.x.framework.api.appchain.transition.TransitionKernel;
-import org.yanoproject.x.framework.api.appchain.transition.TransitionWorkBudget;
-import org.yanoproject.x.framework.api.appchain.transition.TransitionWorkReference;
-import org.yanoproject.x.framework.api.appchain.transition.TransitionWorkRequest;
-import org.yanoproject.x.framework.api.appchain.authmap.AuthenticatedMapValueValidator;
-import org.yanoproject.x.framework.api.appchain.authmap.AuthenticatedMapValueValidatorFactory;
-import org.yanoproject.x.framework.api.appchain.authmap.ValidatorInitContext;
-import org.yanoproject.x.framework.api.appchain.authmap.ValidatorVerdict;
-import org.yanoproject.x.framework.api.appchain.effects.AppEffectEmitter;
-import org.yanoproject.x.framework.api.appchain.effects.AppEffectExecutor;
-import org.yanoproject.x.framework.cardano.api.effects.AppEffectExecutorFactory;
-import org.yanoproject.x.framework.api.appchain.effects.EffectExecution;
-import org.yanoproject.x.framework.api.appchain.effects.EffectExecutionContext;
-import org.yanoproject.x.framework.api.appchain.effects.EffectExecutorOperationalSnapshot;
-import org.yanoproject.x.framework.api.appchain.effects.EffectResult;
-import org.yanoproject.x.framework.api.appchain.observation.AppObservationEmitter;
-import org.yanoproject.x.framework.api.appchain.observation.ObservationResult;
-import org.yanoproject.x.framework.api.appchain.effects.PendingEffect;
-import org.yanoproject.x.framework.api.appchain.l1view.EpochObservationManifest;
-import org.yanoproject.x.framework.api.appchain.l1view.L1EpochBoundary;
-import org.yanoproject.x.framework.api.appchain.l1view.L1EpochObservationSink;
-import org.yanoproject.x.framework.api.appchain.l1view.L1EpochObserver;
-import org.yanoproject.x.framework.api.appchain.l1view.L1EpochObserverProvider;
-import org.yanoproject.x.framework.api.appchain.l1view.L1EpochState;
-import org.yanoproject.x.framework.api.appchain.l1view.L1Observation;
-import org.yanoproject.x.framework.api.appchain.l1view.L1Observer;
-import org.yanoproject.x.framework.api.appchain.l1view.L1ObserverConsensusIdentity;
-import org.yanoproject.x.framework.api.appchain.l1view.L1ObserverProvider;
-import org.yanoproject.x.framework.api.appchain.observation.ObservationCandidate;
-import org.yanoproject.x.framework.api.appchain.observation.ObservationProvider;
-import org.yanoproject.x.framework.api.appchain.observation.ObservationProviderFactory;
-import org.yanoproject.x.framework.api.appchain.observation.ObservationRequest;
-import org.yanoproject.x.framework.api.appchain.sequencer.SequencerContext;
-import org.yanoproject.x.framework.api.appchain.sequencer.SequencerMode;
-import org.yanoproject.x.framework.api.appchain.sequencer.SequencerMode.ProposalEligibility;
-import org.yanoproject.x.framework.api.appchain.sequencer.SequencerModeProvider;
-import org.yanoproject.x.framework.api.appchain.signer.SignerProvider;
-import org.yanoproject.x.framework.api.appchain.signer.SignerProviderFactory;
-import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSink;
-import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSinkFactory;
-import org.yanoproject.x.framework.api.appchain.snapshot.AuthenticatedSnapshotSeriesDescriptorV1;
-import org.yanoproject.x.framework.api.appchain.snapshot.AuthenticatedSnapshotSourceCommitmentV1;
-import org.yanoproject.x.framework.api.appchain.snapshot.SnapshotDescriptorDraftV1;
-import org.yanoproject.x.framework.api.appchain.snapshot.SnapshotEntry;
-import org.yanoproject.api.plugin.NodePlugin;
-import org.yanoproject.api.plugin.PluginActivationException;
-import org.yanoproject.x.framework.api.plugin.domain.DomainApi;
-import org.yanoproject.x.framework.api.plugin.domain.DomainApiContext;
-import org.yanoproject.x.framework.api.plugin.domain.DomainApiProvider;
-import org.yanoproject.x.framework.api.plugin.domain.DomainApiRequest;
-import org.yanoproject.x.framework.api.plugin.domain.DomainApiResponse;
-import org.yanoproject.x.framework.api.plugin.domain.DomainApiRoute;
-import org.yanoproject.x.framework.api.plugin.domain.LocalReadModelContext;
-import org.yanoproject.x.framework.api.plugin.domain.LocalReadModelProvider;
 import org.yanoproject.api.chain.ChainPoint;
 import org.yanoproject.api.genesis.GenesisUtxo;
-import org.yanoproject.api.utxo.index.IndexRequirements;
-import org.yanoproject.api.utxo.index.IndexWriter;
-import org.yanoproject.api.utxo.index.UtxoChanges;
-import org.yanoproject.api.utxo.index.UtxoIndexContext;
-import org.yanoproject.api.utxo.index.UtxoIndexContributor;
-import org.yanoproject.api.utxo.index.UtxoIndexContributorProvider;
+import org.yanoproject.api.plugin.NodePlugin;
+import org.yanoproject.api.plugin.PluginActivationException;
 import org.yanoproject.api.plugin.operations.PluginHealthCheckDescriptor;
 import org.yanoproject.api.plugin.operations.PluginHealthContext;
 import org.yanoproject.api.plugin.operations.PluginHealthProvider;
@@ -97,211 +14,52 @@ import org.yanoproject.api.plugin.operations.PluginMetricSnapshot;
 import org.yanoproject.api.plugin.operations.PluginMetricsContext;
 import org.yanoproject.api.plugin.operations.PluginMetricsProvider;
 import org.yanoproject.api.plugin.operations.PluginMetricsSource;
+import org.yanoproject.api.plugin.spi.ContributionKindBinding;
+import org.yanoproject.api.plugin.spi.FacadeSupport;
+import org.yanoproject.api.plugin.spi.PluginCallbackScope;
+import org.yanoproject.api.utxo.index.IndexRequirements;
+import org.yanoproject.api.utxo.index.IndexWriter;
+import org.yanoproject.api.utxo.index.UtxoChanges;
+import org.yanoproject.api.utxo.index.UtxoIndexContext;
+import org.yanoproject.api.utxo.index.UtxoIndexContributor;
+import org.yanoproject.api.utxo.index.UtxoIndexContributorProvider;
 import org.yanoproject.catalog.ContributionKind;
 import org.yanoproject.runtime.util.LifecycleFailures;
 
 import java.lang.ref.ReferenceQueue;
 import java.lang.ref.WeakReference;
 import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.Iterator;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Optional;
-import java.util.Set;
 import java.util.function.Function;
 import java.util.function.Supplier;
+import java.util.function.UnaryOperator;
 
-/** Typed facades that establish the plugin TCCL for every provider/product callback. */
+/**
+ * Callback plumbing shared by every contribution kind, the {@link PluginCallbackScope}
+ * through which kind bindings build their facades, and the bindings of the built-in kinds.
+ */
 final class PluginSpiFacades {
-
-    /** Status is diagnostic metadata, not an unbounded plugin data plane. */
-    static final int MAX_STATUS_ENTRIES = 256;
-    static final int MAX_STATUS_NODES = 4_096;
-    static final int MAX_STATUS_DEPTH = 8;
-    static final int MAX_STATUS_STRING_LENGTH = 4_096;
-    static final int MAX_STATUS_TOTAL_CHARACTERS = 65_536;
-    /** One observer callback may expose many block observations, but remains bounded. */
-    static final int MAX_OBSERVATIONS_PER_CALLBACK = 4_096;
-    static final int MAX_OBSERVATION_CLAIM_BYTES = 1_048_576;
-    static final int MAX_OBSERVATION_AGGREGATE_CLAIM_BYTES = 4 * 1_048_576;
-    /** ADR-028 epoch chunks use a dedicated 6 MiB app-message profile. */
-    static final int MAX_EPOCH_OBSERVATION_CLAIM_BYTES = 5 * 1_048_576;
-    static final int MAX_OBSERVER_ID_LENGTH = 160;
-    /** A factory activation is intentionally limited to a small, operable product set. */
-    static final int MAX_FACTORY_PRODUCTS_PER_CALLBACK = 256;
+    /** Bindings of the built-in kinds, keyed by manifest key. */
+    static final Map<String, ContributionKindBinding<?>> BUILT_IN_BINDINGS = Map.of(
+            ContributionKind.NODE_PLUGIN.manifestKey(), new BuiltInBinding<>(
+                    ContributionKind.NODE_PLUGIN, NodePlugin.class, NodePlugin::id,
+                    (provider, scope) -> provider),
+            ContributionKind.UTXO_INDEX_CONTRIBUTOR.manifestKey(), new BuiltInBinding<>(
+                    ContributionKind.UTXO_INDEX_CONTRIBUTOR, UtxoIndexContributorProvider.class,
+                    UtxoIndexContributorProvider::id, UtxoIndexProviderFacade::new),
+            ContributionKind.HEALTH.manifestKey(), new BuiltInBinding<>(
+                    ContributionKind.HEALTH, PluginHealthProvider.class, PluginHealthProvider::id,
+                    HealthProviderFacade::new),
+            ContributionKind.METRICS.manifestKey(), new BuiltInBinding<>(
+                    ContributionKind.METRICS, PluginMetricsProvider.class, PluginMetricsProvider::id,
+                    MetricsProviderFacade::new));
 
     private PluginSpiFacades() {
-    }
-
-    private static <T> List<T> snapshotList(
-            List<T> values,
-            ClassLoader loader,
-            CallbackTracker callbacks,
-            int maximumSize,
-            String overflowMessage
-    ) {
-        if (values == null) {
-            return null;
-        }
-        List<T> snapshot = new ArrayList<>();
-        Iterator<T> iterator = pluginCall(callbacks, loader, values::iterator);
-        while (pluginCall(callbacks, loader, iterator::hasNext)) {
-            if (snapshot.size() == maximumSize) {
-                throw new IllegalStateException(overflowMessage);
-            }
-            snapshot.add(pluginCall(callbacks, loader, iterator::next));
-        }
-        return Collections.unmodifiableList(snapshot);
-    }
-
-    private static Map<String, Object> snapshotMap(
-            Map<String, Object> values,
-            ClassLoader loader,
-            CallbackTracker callbacks
-    ) {
-        if (values == null) {
-            throw new IllegalStateException("Plugin status must not be null");
-        }
-        StatusBudget budget = new StatusBudget();
-        Object normalized = normalizeStatusValue(
-                values, loader, callbacks, budget, new IdentityHashMap<>(), 0);
-        @SuppressWarnings("unchecked")
-        Map<String, Object> snapshot = (Map<String, Object>) normalized;
-        return snapshot;
-    }
-
-    private static Object normalizeStatusValue(
-            Object value,
-            ClassLoader loader,
-            CallbackTracker callbacks,
-            StatusBudget budget,
-            IdentityHashMap<Object, Boolean> activeContainers,
-            int depth
-    ) {
-        budget.addNode();
-        if (value == null || value instanceof Boolean) {
-            return value;
-        }
-        if (value instanceof String text) {
-            budget.addText(text);
-            return text;
-        }
-        if (isPlatformNumber(value)) {
-            if ((value instanceof Double doubleValue && !Double.isFinite(doubleValue))
-                    || (value instanceof Float floatValue && !Float.isFinite(floatValue))) {
-                throw new IllegalArgumentException(
-                        "Plugin status numbers must be finite");
-            }
-            return value;
-        }
-        if (depth >= MAX_STATUS_DEPTH) {
-            throw new IllegalArgumentException(
-                    "Plugin status nesting exceeds " + MAX_STATUS_DEPTH);
-        }
-        if (value instanceof Map<?, ?> map) {
-            requireAcyclicContainer(value, activeContainers);
-            try {
-                Map<String, Object> snapshot = new LinkedHashMap<>();
-                Object entries = pluginCall(callbacks, loader, map::entrySet);
-                @SuppressWarnings("unchecked")
-                Iterator<Map.Entry<?, ?>> iterator = (Iterator<Map.Entry<?, ?>>) pluginCall(
-                        callbacks, loader, () -> ((Set<?>) entries).iterator());
-                int traversedEntries = 0;
-                while (pluginCall(callbacks, loader, iterator::hasNext)) {
-                    if (traversedEntries++ == MAX_STATUS_ENTRIES) {
-                        throw new IllegalStateException(
-                                "Plugin status must contain at most "
-                                        + MAX_STATUS_ENTRIES + " entries");
-                    }
-                    Map.Entry<?, ?> entry = Objects.requireNonNull(
-                            pluginCall(callbacks, loader, iterator::next),
-                            "Plugin status map must not contain null entries");
-                    Object rawKey = pluginCall(callbacks, loader, entry::getKey);
-                    if (!(rawKey instanceof String key)) {
-                        throw new IllegalArgumentException(
-                                "Plugin status map keys must be strings");
-                    }
-                    budget.addText(key);
-                    Object rawValue = pluginCall(callbacks, loader, entry::getValue);
-                    snapshot.put(key, normalizeStatusValue(
-                            rawValue, loader, callbacks, budget,
-                            activeContainers, depth + 1));
-                }
-                return Collections.unmodifiableMap(snapshot);
-            } finally {
-                activeContainers.remove(value);
-            }
-        }
-        if (value instanceof List<?> list) {
-            requireAcyclicContainer(value, activeContainers);
-            try {
-                List<Object> snapshot = new ArrayList<>();
-                Iterator<?> iterator = pluginCall(callbacks, loader, list::iterator);
-                while (pluginCall(callbacks, loader, iterator::hasNext)) {
-                    if (snapshot.size() == MAX_STATUS_ENTRIES) {
-                        throw new IllegalArgumentException(
-                                "Plugin status list must contain at most "
-                                        + MAX_STATUS_ENTRIES + " entries");
-                    }
-                    Object item = pluginCall(callbacks, loader, iterator::next);
-                    snapshot.add(normalizeStatusValue(
-                            item, loader, callbacks, budget,
-                            activeContainers, depth + 1));
-                }
-                return Collections.unmodifiableList(new ArrayList<>(snapshot));
-            } finally {
-                activeContainers.remove(value);
-            }
-        }
-        throw new IllegalArgumentException(
-                "Plugin status values must be JSON primitives, maps, or lists");
-    }
-
-    private static void requireAcyclicContainer(
-            Object value,
-            IdentityHashMap<Object, Boolean> activeContainers
-    ) {
-        if (activeContainers.put(value, Boolean.TRUE) != null) {
-            throw new IllegalArgumentException(
-                    "Plugin status must not contain container cycles");
-        }
-    }
-
-    private static boolean isPlatformNumber(Object value) {
-        Class<?> type = value.getClass();
-        return type == Byte.class || type == Short.class || type == Integer.class
-                || type == Long.class || type == Float.class || type == Double.class;
-    }
-
-    private static final class StatusBudget {
-        private int nodes;
-        private int characters;
-
-        private void addNode() {
-            if (++nodes > MAX_STATUS_NODES) {
-                throw new IllegalArgumentException(
-                        "Plugin status exceeds " + MAX_STATUS_NODES + " values");
-            }
-        }
-
-        private void addText(String text) {
-            if (text.length() > MAX_STATUS_STRING_LENGTH) {
-                throw new IllegalArgumentException(
-                        "Plugin status text exceeds "
-                                + MAX_STATUS_STRING_LENGTH + " characters");
-            }
-            if (characters > MAX_STATUS_TOTAL_CHARACTERS - text.length()) {
-                throw new IllegalArgumentException(
-                        "Plugin status text exceeds aggregate character limit");
-            }
-            characters += text.length();
-        }
     }
 
     private static <T, X extends Throwable> T pluginCall(
@@ -348,10 +106,10 @@ final class PluginSpiFacades {
         try {
             Iterator<T> iterator = pluginCall(callbacks, loader, values::iterator);
             while (pluginCall(callbacks, loader, iterator::hasNext)) {
-                if (snapshot.size() == MAX_FACTORY_PRODUCTS_PER_CALLBACK) {
+                if (snapshot.size() == FacadeSupport.MAX_FACTORY_PRODUCTS_PER_CALLBACK) {
                     throw new IllegalStateException(
                             "Plugin factory result must contain at most "
-                                    + MAX_FACTORY_PRODUCTS_PER_CALLBACK + " products");
+                                    + FacadeSupport.MAX_FACTORY_PRODUCTS_PER_CALLBACK + " products");
                 }
                 snapshot.add(pluginCall(callbacks, loader, iterator::next));
             }
@@ -365,51 +123,24 @@ final class PluginSpiFacades {
         }
     }
 
-    static Object provider(
-            ContributionKind kind,
+    static <P> P provider(
+            ContributionKindBinding<P> binding,
             Object delegate,
             ClassLoader loader,
             String bundleId,
             String selector,
             String providerClass
     ) {
-        return provider(kind, delegate, loader, bundleId, selector, providerClass,
-                new ProductReservations(), new CallbackTracker());
-    }
-
-    static Object provider(
-            ContributionKind kind,
-            Object delegate,
-            ClassLoader loader,
-            String bundleId,
-            String selector,
-            String providerClass,
-            ProductReservations products
-    ) {
-        return provider(kind, delegate, loader, bundleId, selector, providerClass,
-                products, new CallbackTracker());
-    }
-
-    static Object provider(
-            ContributionKind kind,
-            Object delegate,
-            ClassLoader loader,
-            String bundleId,
-            String selector,
-            String providerClass,
-            ProductReservations products,
-            CallbackTracker callbacks
-    ) {
-        return provider(kind, delegate, loader, bundleId, selector, providerClass, products, callbacks,
-                false);
+        return provider(binding, delegate, loader, bundleId, selector, providerClass,
+                new ProductReservations(), new CallbackTracker(), false);
     }
 
     /**
      * @param manifestIdentity true only when {@code bundleId} is a validated catalog manifest's id; callback
      *                         failures then carry it as host provenance ({@link HostPluginActivationException})
      */
-    static Object provider(
-            ContributionKind kind,
+    static <P> P provider(
+            ContributionKindBinding<P> binding,
             Object delegate,
             ClassLoader loader,
             String bundleId,
@@ -419,57 +150,16 @@ final class PluginSpiFacades {
             CallbackTracker callbacks,
             boolean manifestIdentity
     ) {
-        Objects.requireNonNull(kind, "kind");
+        Objects.requireNonNull(binding, "binding");
         Objects.requireNonNull(delegate, "delegate");
         Objects.requireNonNull(products, "products");
         Objects.requireNonNull(callbacks, "callbacks");
         ClassLoader effectiveLoader = PluginThreadContext.effective(loader);
         ActivationContext activation = new ActivationContext(
-                bundleId, kind.manifestKey(), selector, providerClass, manifestIdentity);
-        return switch (kind) {
-            case NODE_PLUGIN -> delegate;
-            case APP_STATE_MACHINE -> new StateMachineProviderFacade(
-                    (AppStateMachineProvider) delegate, effectiveLoader, activation,
-                    products, callbacks);
-            case AUTHENTICATED_MAP_VALIDATOR -> new AuthenticatedMapValidatorFactoryFacade(
-                    (AuthenticatedMapValueValidatorFactory) delegate, effectiveLoader,
-                    activation, products, callbacks);
-            case SEQUENCER_MODE -> new SequencerProviderFacade(
-                    (SequencerModeProvider) delegate, effectiveLoader, activation,
-                    products, callbacks);
-            case L1_OBSERVER -> new ObserverProviderFacade(
-                    (L1ObserverProvider) delegate, effectiveLoader, activation,
-                    products, callbacks);
-            case L1_EPOCH_OBSERVER -> new EpochObserverProviderFacade(
-                    (L1EpochObserverProvider) delegate, effectiveLoader, activation,
-                    products, callbacks);
-            case OBSERVATION_PROVIDER -> new ObservationProviderFactoryFacade(
-                    (ObservationProviderFactory) delegate, effectiveLoader, activation,
-                    products, callbacks);
-            case SIGNER_PROVIDER -> new SignerFactoryFacade(
-                    (SignerProviderFactory) delegate, effectiveLoader, activation,
-                    products, callbacks);
-            case EFFECT_EXECUTOR -> new EffectExecutorFactoryFacade(
-                    (AppEffectExecutorFactory) delegate, effectiveLoader, activation,
-                    products, callbacks);
-            case FINALIZED_SINK -> new SinkFactoryFacade(
-                    (FinalizedStreamSinkFactory) delegate, effectiveLoader, activation,
-                    products, callbacks);
-            case DOMAIN_API -> new DomainApiProviderFacade(
-                    (DomainApiProvider) delegate, effectiveLoader, activation,
-                    products, callbacks);
-            case LOCAL_READ_MODEL -> new LocalReadModelProviderFacade(
-                    (LocalReadModelProvider) delegate, effectiveLoader, activation,
-                    products, callbacks);
-            case UTXO_INDEX_CONTRIBUTOR -> new UtxoIndexProviderFacade(
-                    (UtxoIndexContributorProvider) delegate, effectiveLoader, activation, products, callbacks);
-            case HEALTH -> new HealthProviderFacade(
-                    (PluginHealthProvider) delegate, effectiveLoader, activation,
-                    products, callbacks);
-            case METRICS -> new MetricsProviderFacade(
-                    (PluginMetricsProvider) delegate, effectiveLoader, activation,
-                    products, callbacks);
-        };
+                bundleId, binding.manifestKey(), selector, providerClass, manifestIdentity);
+        return Objects.requireNonNull(binding.facade(binding.serviceType().cast(delegate),
+                        new CatalogCallbackScope(effectiveLoader, activation, products, callbacks)),
+                "Contribution kind binding returned a null facade");
     }
 
     /**
@@ -991,102 +681,121 @@ final class PluginSpiFacades {
         return new IllegalStateException(message, failure);
     }
 
-    private record DomainApiProviderFacade(
-            DomainApiProvider delegate,
+    /** One catalog provider's view of the shared admission, TCCL, activation and reservation plumbing. */
+    private record CatalogCallbackScope(
             ClassLoader loader,
-            ActivationContext activation,
-            ProductReservations products,
+            ActivationContext activationContext,
+            ProductReservations reservations,
             CallbackTracker callbacks
-    ) implements DomainApiProvider {
-        private DomainApiProviderFacade {
-            Objects.requireNonNull(delegate, "delegate");
+    ) implements PluginCallbackScope {
+        @Override
+        public String bundleId() {
+            return activationContext.bundleId();
         }
 
         @Override
-        public String id() {
-            return activation.call("read domain-api provider identity",
-                    () -> pluginCall(callbacks, loader, delegate::id));
+        public String selector() {
+            return activationContext.selector();
         }
 
         @Override
-        public DomainApi create(DomainApiContext context) {
-            Objects.requireNonNull(context, "context");
-            return activation.call("create domain-api product", () -> callbacks.call(() -> {
-                DomainApi value = PluginThreadContext.call(
-                        loader, () -> delegate.create(context));
-                return products.facadeForNewInvocation(
-                        value, api -> new DomainApiFacade(
-                                api, loader, activation, callbacks));
-            }));
+        public <T, X extends Throwable> T call(Callback<T, X> callback) throws X {
+            return pluginCall(callbacks, loader, callback::get);
         }
+
+        @Override
+        public <X extends Throwable> void run(Action<X> action) throws X {
+            pluginRun(callbacks, loader, action::run);
+        }
+
+        @Override
+        public <X extends Throwable> void runCleanup(Action<X> action) throws X {
+            pluginCleanupRun(callbacks, loader, action::run);
+        }
+
+        @Override
+        public <T> T activation(String action, Supplier<T> callback) {
+            return activationContext.call(action, callback);
+        }
+
+        @Override
+        public <T> T product(T value, UnaryOperator<T> facade) {
+            return reservations.facadeForNewInvocation(value, facade);
+        }
+
+        @Override
+        public <T> List<T> products(List<T> values, UnaryOperator<T> facade) {
+            if (values == null) {
+                return null;
+            }
+            List<T> snapshot = snapshotFactoryProducts(values, loader, callbacks, reservations);
+            try {
+                return reservations.facadesForNewInvocation(snapshot, facade);
+            } catch (CrossInvocationProductReuseException failure) {
+                closeUnclaimedProducts(failure, loader, callbacks);
+                throw failure;
+            }
+        }
+    }
+
+    private record BuiltInBinding<P>(
+            ContributionKind kind,
+            Class<P> serviceType,
+            Function<P, String> selectorFunction,
+            FacadeFactory<P> facadeFactory
+    ) implements ContributionKindBinding<P> {
+        @Override
+        public String manifestKey() {
+            return kind.manifestKey();
+        }
+
+        @Override
+        public String selector(P provider) {
+            return selectorFunction.apply(provider);
+        }
+
+        @Override
+        public P facade(P provider, PluginCallbackScope scope) {
+            return facadeFactory.create(provider, scope);
+        }
+    }
+
+    @FunctionalInterface
+    private interface FacadeFactory<P> {
+        P create(P provider, PluginCallbackScope scope);
     }
 
     private record UtxoIndexProviderFacade(
-            UtxoIndexContributorProvider delegate, ClassLoader loader, ActivationContext activation,
-            ProductReservations products, CallbackTracker callbacks
+            UtxoIndexContributorProvider delegate, PluginCallbackScope scope
     ) implements UtxoIndexContributorProvider {
-        @Override public String id() { return pluginCall(callbacks, loader, delegate::id); }
-        @Override public int schemaVersion() { return pluginCall(callbacks, loader, delegate::schemaVersion); }
-        @Override public IndexRequirements requirements() { return pluginCall(callbacks, loader, delegate::requirements); }
+        @Override public String id() { return scope.call(delegate::id); }
+        @Override public int schemaVersion() { return scope.call(delegate::schemaVersion); }
+        @Override public IndexRequirements requirements() { return scope.call(delegate::requirements); }
         @Override public UtxoIndexContributor create(UtxoIndexContext context) {
-            return activation.call("create UTxO index contributor", () -> callbacks.call(() -> {
-                UtxoIndexContributor value = PluginThreadContext.call(loader, () -> delegate.create(context));
-                return products.facadeForNewInvocation(value, product -> new UtxoIndexContributor() {
-                    @Override public void stageApply(UtxoChanges changes, IndexWriter writer) {
-                        pluginRun(callbacks, loader, () -> product.stageApply(changes, writer));
-                    }
-                    @Override public void stageRollback(ChainPoint target, IndexWriter writer) {
-                        pluginRun(callbacks, loader, () -> product.stageRollback(target, writer));
-                    }
-                    @Override public void stageGenesis(String identity, List<GenesisUtxo> outputs, IndexWriter writer) {
-                        pluginRun(callbacks, loader, () -> product.stageGenesis(identity, outputs, writer));
-                    }
-                    @Override public void stagePruneUndo(ChainPoint point, IndexWriter writer) {
-                        pluginRun(callbacks, loader, () -> product.stagePruneUndo(point, writer));
-                    }
-                    @Override public void reinitialize() { pluginRun(callbacks, loader, product::reinitialize); }
-                    @Override public void close() { pluginCleanupRun(callbacks, loader, product::close); }
-                });
-            }));
-        }
-    }
-
-    private record LocalReadModelProviderFacade(
-            LocalReadModelProvider delegate,
-            ClassLoader loader,
-            ActivationContext activation,
-            ProductReservations products,
-            CallbackTracker callbacks
-    ) implements LocalReadModelProvider {
-        private LocalReadModelProviderFacade {
-            Objects.requireNonNull(delegate, "delegate");
-        }
-
-        @Override
-        public String id() {
-            return activation.call("read local read-model provider identity",
-                    () -> pluginCall(callbacks, loader, delegate::id));
-        }
-
-        @Override
-        public AutoCloseable start(LocalReadModelContext context) {
-            Objects.requireNonNull(context, "context");
-            return activation.call("start local read-model product", () -> callbacks.call(() -> {
-                AutoCloseable value = PluginThreadContext.call(
-                        loader, () -> delegate.start(context));
-                return products.facadeForNewInvocation(
-                        value, lifecycle -> () -> pluginRun(
-                                callbacks, loader, lifecycle::close));
-            }));
+            return scope.activation("create UTxO index contributor", () -> scope.call(() -> scope.product(
+                    delegate.create(context), product -> new UtxoIndexContributor() {
+                        @Override public void stageApply(UtxoChanges changes, IndexWriter writer) {
+                            scope.run(() -> product.stageApply(changes, writer));
+                        }
+                        @Override public void stageRollback(ChainPoint target, IndexWriter writer) {
+                            scope.run(() -> product.stageRollback(target, writer));
+                        }
+                        @Override public void stageGenesis(
+                                String identity, List<GenesisUtxo> outputs, IndexWriter writer) {
+                            scope.run(() -> product.stageGenesis(identity, outputs, writer));
+                        }
+                        @Override public void stagePruneUndo(ChainPoint point, IndexWriter writer) {
+                            scope.run(() -> product.stagePruneUndo(point, writer));
+                        }
+                        @Override public void reinitialize() { scope.run(product::reinitialize); }
+                        @Override public void close() { scope.runCleanup(product::close); }
+                    })));
         }
     }
 
     private record HealthProviderFacade(
             PluginHealthProvider delegate,
-            ClassLoader loader,
-            ActivationContext activation,
-            ProductReservations products,
-            CallbackTracker callbacks
+            PluginCallbackScope scope
     ) implements PluginHealthProvider {
         private HealthProviderFacade {
             Objects.requireNonNull(delegate, "delegate");
@@ -1094,28 +803,20 @@ final class PluginSpiFacades {
 
         @Override
         public String id() {
-            return activation.call("read health provider identity",
-                    () -> pluginCall(callbacks, loader, delegate::id));
+            return scope.activation("read health provider identity", () -> scope.call(delegate::id));
         }
 
         @Override
         public PluginHealthSource create(PluginHealthContext context) {
             Objects.requireNonNull(context, "context");
-            return activation.call("create health source", () -> callbacks.call(() -> {
-                PluginHealthSource value = PluginThreadContext.call(
-                        loader, () -> delegate.create(context));
-                return products.facadeForNewInvocation(
-                        value, source -> new HealthSourceFacade(
-                                source, loader, activation, callbacks));
-            }));
+            return scope.activation("create health source", () -> scope.call(() -> scope.product(
+                    delegate.create(context), source -> new HealthSourceFacade(source, scope))));
         }
     }
 
     private record HealthSourceFacade(
             PluginHealthSource delegate,
-            ClassLoader loader,
-            ActivationContext activation,
-            CallbackTracker callbacks
+            PluginCallbackScope scope
     ) implements PluginHealthSource {
         private HealthSourceFacade {
             Objects.requireNonNull(delegate, "delegate");
@@ -1123,11 +824,10 @@ final class PluginSpiFacades {
 
         @Override
         public List<PluginHealthCheckDescriptor> checks() {
-            return activation.call("enumerate health checks", () -> callbacks.call(() -> {
+            return scope.activation("enumerate health checks", () -> scope.call(() -> {
                 List<PluginHealthCheckDescriptor> values = Objects.requireNonNull(
-                        PluginThreadContext.call(loader, delegate::checks),
-                        "PluginHealthSource.checks() must not return null");
-                return snapshotList(values, loader, callbacks,
+                        delegate.checks(), "PluginHealthSource.checks() must not return null");
+                return FacadeSupport.snapshotList(values, scope,
                         PluginHealthCheckDescriptor.MAX_CHECKS_PER_BUNDLE,
                         "PluginHealthSource must declare at most 16 checks");
             }));
@@ -1135,23 +835,19 @@ final class PluginSpiFacades {
 
         @Override
         public PluginHealthSnapshot snapshot() {
-            return Objects.requireNonNull(
-                    pluginCall(callbacks, loader, delegate::snapshot),
+            return Objects.requireNonNull(scope.call(delegate::snapshot),
                     "PluginHealthSource.snapshot() must not return null");
         }
 
         @Override
         public void close() {
-            pluginCleanupRun(callbacks, loader, delegate::close);
+            scope.runCleanup(delegate::close);
         }
     }
 
     private record MetricsProviderFacade(
             PluginMetricsProvider delegate,
-            ClassLoader loader,
-            ActivationContext activation,
-            ProductReservations products,
-            CallbackTracker callbacks
+            PluginCallbackScope scope
     ) implements PluginMetricsProvider {
         private MetricsProviderFacade {
             Objects.requireNonNull(delegate, "delegate");
@@ -1159,28 +855,20 @@ final class PluginSpiFacades {
 
         @Override
         public String id() {
-            return activation.call("read metrics provider identity",
-                    () -> pluginCall(callbacks, loader, delegate::id));
+            return scope.activation("read metrics provider identity", () -> scope.call(delegate::id));
         }
 
         @Override
         public PluginMetricsSource create(PluginMetricsContext context) {
             Objects.requireNonNull(context, "context");
-            return activation.call("create metrics source", () -> callbacks.call(() -> {
-                PluginMetricsSource value = PluginThreadContext.call(
-                        loader, () -> delegate.create(context));
-                return products.facadeForNewInvocation(
-                        value, source -> new MetricsSourceFacade(
-                                source, loader, activation, callbacks));
-            }));
+            return scope.activation("create metrics source", () -> scope.call(() -> scope.product(
+                    delegate.create(context), source -> new MetricsSourceFacade(source, scope))));
         }
     }
 
     private record MetricsSourceFacade(
             PluginMetricsSource delegate,
-            ClassLoader loader,
-            ActivationContext activation,
-            CallbackTracker callbacks
+            PluginCallbackScope scope
     ) implements PluginMetricsSource {
         private MetricsSourceFacade {
             Objects.requireNonNull(delegate, "delegate");
@@ -1188,11 +876,10 @@ final class PluginSpiFacades {
 
         @Override
         public List<PluginMetricDescriptor> descriptors() {
-            return activation.call("enumerate metric descriptors", () -> callbacks.call(() -> {
+            return scope.activation("enumerate metric descriptors", () -> scope.call(() -> {
                 List<PluginMetricDescriptor> values = Objects.requireNonNull(
-                        PluginThreadContext.call(loader, delegate::descriptors),
-                        "PluginMetricsSource.descriptors() must not return null");
-                return snapshotList(values, loader, callbacks,
+                        delegate.descriptors(), "PluginMetricsSource.descriptors() must not return null");
+                return FacadeSupport.snapshotList(values, scope,
                         PluginMetricDescriptor.MAX_SERIES_PER_BUNDLE,
                         "PluginMetricsSource must declare at most 64 metrics");
             }));
@@ -1200,1320 +887,13 @@ final class PluginSpiFacades {
 
         @Override
         public PluginMetricSnapshot snapshot() {
-            return Objects.requireNonNull(
-                    pluginCall(callbacks, loader, delegate::snapshot),
+            return Objects.requireNonNull(scope.call(delegate::snapshot),
                     "PluginMetricsSource.snapshot() must not return null");
         }
 
         @Override
         public void close() {
-            pluginCleanupRun(callbacks, loader, delegate::close);
-        }
-    }
-
-    private record DomainApiFacade(
-            DomainApi delegate,
-            ClassLoader loader,
-            ActivationContext activation,
-            CallbackTracker callbacks
-    ) implements DomainApi {
-        private DomainApiFacade {
-            Objects.requireNonNull(delegate, "delegate");
-        }
-
-        @Override
-        public List<DomainApiRoute> routes() {
-            return activation.call("enumerate domain-api routes", () -> {
-                List<DomainApiRoute> values = Objects.requireNonNull(
-                        pluginCall(callbacks, loader, delegate::routes),
-                        "DomainApi.routes() must not return null");
-                Iterator<DomainApiRoute> iterator = Objects.requireNonNull(
-                        pluginCall(callbacks, loader, values::iterator),
-                        "DomainApi route iterator must not be null");
-                List<DomainApiRoute> snapshot = new ArrayList<>();
-                while (pluginCall(callbacks, loader, iterator::hasNext)) {
-                    if (snapshot.size() == DomainApi.MAX_ROUTES) {
-                        throw new IllegalStateException(
-                                "DomainApi must declare at most "
-                                        + DomainApi.MAX_ROUTES + " routes");
-                    }
-                    snapshot.add(Objects.requireNonNull(
-                            pluginCall(callbacks, loader, iterator::next),
-                            "DomainApi routes must not contain null entries"));
-                }
-                return List.copyOf(snapshot);
-            });
-        }
-
-        @Override
-        public DomainApiResponse handle(DomainApiRequest request) throws Exception {
-            Objects.requireNonNull(request, "request");
-            return Objects.requireNonNull(
-                    pluginCall(callbacks, loader, () -> delegate.handle(request)),
-                    "DomainApi.handle() must not return null");
-        }
-
-        @Override
-        public void close() {
-            pluginCleanupRun(callbacks, loader, delegate::close);
-        }
-    }
-
-    private record StateMachineProviderFacade(
-            AppStateMachineProvider delegate,
-            ClassLoader loader,
-            ActivationContext activation,
-            ProductReservations products,
-            CallbackTracker callbacks
-    ) implements AppStateMachineProvider {
-        private StateMachineProviderFacade {
-            Objects.requireNonNull(delegate, "delegate");
-        }
-
-        @Override
-        public String id() {
-            return activation.call("read state-machine provider identity",
-                    () -> pluginCall(callbacks, loader, delegate::id));
-        }
-
-        @Override
-        public AppStateMachine create() {
-            return activation.call("create state-machine product", () -> callbacks.call(() -> {
-                AppStateMachine value = PluginThreadContext.call(
-                        loader, delegate::create);
-                return products.facadeForNewInvocation(
-                        value, machine -> new StateMachineFacade(
-                                machine, loader, activation, callbacks));
-            }));
-        }
-
-        @Override
-        public AppStateMachine create(AppStateMachineContext context) {
-            return activation.call("create state-machine product", () -> callbacks.call(() -> {
-                AppStateMachine value = PluginThreadContext.call(
-                        loader, () -> delegate.create(context));
-                return products.facadeForNewInvocation(
-                        value, machine -> new StateMachineFacade(
-                                machine, loader, activation, callbacks));
-            }));
-        }
-    }
-
-    private record AuthenticatedMapValidatorFactoryFacade(
-            AuthenticatedMapValueValidatorFactory delegate,
-            ClassLoader loader,
-            ActivationContext activation,
-            ProductReservations products,
-            CallbackTracker callbacks
-    ) implements AuthenticatedMapValueValidatorFactory {
-        private AuthenticatedMapValidatorFactoryFacade {
-            Objects.requireNonNull(delegate, "delegate");
-        }
-
-        @Override
-        public String id() {
-            return activation.call("read authenticated-map validator provider identity",
-                    () -> pluginCall(callbacks, loader, delegate::id));
-        }
-
-        @Override
-        public String contractVersion() {
-            return activation.call("read authenticated-map validator contract version",
-                    () -> pluginCall(callbacks, loader, delegate::contractVersion));
-        }
-
-        @Override
-        public AuthenticatedMapValueValidator create(ValidatorInitContext context) {
-            Objects.requireNonNull(context, "context");
-            ValidatorInitContext input = new ValidatorInitContext(
-                    context.descriptorId(), context.providerId(), context.contractVersion(),
-                    context.parameters(), context.collectionIds());
-            return activation.call("create authenticated-map validator product",
-                    () -> callbacks.call(() -> {
-                        AuthenticatedMapValueValidator value = PluginThreadContext.call(
-                                loader, () -> delegate.create(input));
-                        return products.facadeForNewInvocation(
-                                value, validator -> new AuthenticatedMapValidatorFacade(
-                                        validator, loader, callbacks));
-                    }));
-        }
-    }
-
-    private record AuthenticatedMapValidatorFacade(
-            AuthenticatedMapValueValidator delegate,
-            ClassLoader loader,
-            CallbackTracker callbacks
-    ) implements AuthenticatedMapValueValidator {
-        private AuthenticatedMapValidatorFacade {
-            Objects.requireNonNull(delegate, "delegate");
-        }
-
-        @Override
-        public ValidatorVerdict validate(
-                String collectionId,
-                byte[] applicationKey,
-                byte[] value
-        ) {
-            Objects.requireNonNull(collectionId, "collectionId");
-            byte[] keyInput = Objects.requireNonNull(applicationKey, "applicationKey").clone();
-            byte[] valueInput = Objects.requireNonNull(value, "value").clone();
-            return Objects.requireNonNull(pluginCall(callbacks, loader,
-                    () -> delegate.validate(collectionId, keyInput, valueInput)),
-                    "AuthenticatedMapValueValidator.validate() must not return null");
-        }
-    }
-
-    private record KernelFacade<C, F>(TransitionKernel<C, F> delegate,
-                                       ClassLoader loader, CallbackTracker callbacks)
-            implements TransitionKernel<C, F> {
-        @Override public MessageCodec<C> codec() {
-            MessageCodec<C> codec = pluginCall(callbacks, loader, delegate::codec);
-            return new MessageCodec<>() {
-                @Override public byte[] encode(C value) {
-                    return pluginCall(callbacks, loader, () -> codec.encode(value)).clone();
-                }
-                @Override public C decode(byte[] body) {
-                    byte[] input = body.clone();
-                    return pluginCall(callbacks, loader, () -> codec.decode(input));
-                }
-                @Override public Class<C> type() { return pluginCall(callbacks, loader, codec::type); }
-            };
-        }
-        @Override public AppStateMachine.AdmissionResult admit(C command) {
-            return pluginCall(callbacks, loader, () -> delegate.admit(command));
-        }
-        @Override public AppStateMachine.AdmissionResult admit(C command, TransitionContext context) {
-            return pluginCall(callbacks, loader, () -> delegate.admit(command, context));
-        }
-        @Override public F facts(C command, TransitionContext context, AppStateReader state) {
-            return pluginCall(callbacks, loader, () -> delegate.facts(command, context, state));
-        }
-        @Override public List<String> readParticipants() {
-            return snapshotList(pluginCall(callbacks, loader, delegate::readParticipants), loader, callbacks,
-                    256, "too many kernel read participants");
-        }
-        @Override public List<TransitionWorkBudget> workBudgets() {
-            return snapshotList(pluginCall(callbacks, loader, delegate::workBudgets), loader, callbacks,
-                    TransitionWorkBudget.MAX_DECLARATIONS, "too many kernel work budgets");
-        }
-        @Override public List<TransitionWorkReference> workReferences() {
-            return snapshotList(pluginCall(callbacks, loader, delegate::workReferences), loader, callbacks,
-                    TransitionWorkBudget.MAX_DECLARATIONS, "too many kernel work references");
-        }
-        @Override public Optional<TransitionWorkRequest> workRequest(C command, TransitionContext context) {
-            return Objects.requireNonNull(pluginCall(callbacks, loader,
-                    () -> delegate.workRequest(command, context)), "kernel work request must not return null");
-        }
-        @Override public F facts(C command, TransitionContext context, AppStateReader state,
-                                 Map<String, AppStateReader> participants) {
-            Map<String, AppStateReader> views = Map.copyOf(participants);
-            return pluginCall(callbacks, loader, () -> delegate.facts(command, context, state, views));
-        }
-        @Override public TransitionDecision decide(C command, TransitionContext context, F facts) {
-            return pluginCall(callbacks, loader, () -> delegate.decide(command, context, facts));
-        }
-        @Override public List<CommandDescriptor> commands() {
-            return snapshotList(pluginCall(callbacks, loader, delegate::commands), loader, callbacks,
-                    256, "too many kernel commands");
-        }
-        @Override public List<EventDescriptor> events() {
-            return snapshotList(pluginCall(callbacks, loader, delegate::events), loader, callbacks,
-                    256, "too many kernel event descriptors");
-        }
-        @Override public ConfigurationDescriptor configuration() {
-            return pluginCall(callbacks, loader, delegate::configuration);
-        }
-        @Override public byte[] lookupKey(byte[] logicalKey) {
-            byte[] input = Objects.requireNonNull(logicalKey, "logicalKey").clone();
-            return Objects.requireNonNull(pluginCall(callbacks, loader,
-                    () -> delegate.lookupKey(input)), "kernel lookup key must not be null").clone();
-        }
-        @Override public List<RuleFact> ruleFacts() {
-            return snapshotDeclarations(pluginCall(callbacks, loader, delegate::ruleFacts), RuleFact.class, loader,
-                    callbacks, RuleFact.MAX_FACTS, "too many kernel rule facts");
-        }
-        /**
-         * Forwards verified fact values without interpreting them. The caller validates names, types and
-         * bounds and turns a violation into a deterministic rejection, so this snapshot never throws for a
-         * data shape (see {@link #snapshotRuleFactValues}). A null result passes through: the caller treats it
-         * as a violation too. An exception thrown by the plugin itself propagates like one from decide.
-         */
-        @Override public Map<String, Object> ruleFactValues(C command, TransitionContext context, F facts) {
-            Map<String, Object> values = pluginCall(callbacks, loader,
-                    () -> delegate.ruleFactValues(command, context, facts));
-            return values == null ? null : snapshotRuleFactValues(values, loader, callbacks);
-        }
-        @Override public List<RuleValueView> ruleValueViews() {
-            return snapshotDeclarations(pluginCall(callbacks, loader, delegate::ruleValueViews), RuleValueView.class,
-                    loader, callbacks, RuleValueView.MAX_VIEWS, "too many kernel rule value views");
-        }
-        /**
-         * Forwards a value key. A plugin's {@link IllegalArgumentException} reaches the caller unchanged, which turns
-         * it into a deterministic rule error; a {@code null} key passes through as a data shape the caller rejects.
-         */
-        @Override public byte[] ruleValueKey(String namespace, byte[] key) {
-            String space = Objects.requireNonNull(namespace, "namespace");
-            byte[] input = Objects.requireNonNull(key, "key").clone();
-            byte[] local = pluginCall(callbacks, loader, () -> delegate.ruleValueKey(space, input));
-            return local == null ? null : local.clone();
-        }
-        /** Forwards decoded values like {@link #ruleFactValues}: a bounded, host-owned snapshot, never interpreted. */
-        @Override public Map<String, Object> ruleValueFields(String namespace, byte[] key, byte[] stored) {
-            String space = Objects.requireNonNull(namespace, "namespace");
-            byte[] keyInput = Objects.requireNonNull(key, "key").clone();
-            byte[] storedInput = Objects.requireNonNull(stored, "stored").clone();
-            Map<String, Object> values = pluginCall(callbacks, loader,
-                    () -> delegate.ruleValueFields(space, keyInput, storedInput));
-            return values == null ? null : snapshotRuleValues(values, RULE_ELEMENT_ENTRIES, loader, callbacks);
-        }
-        @Override public List<RuleFact> ruleWriteFields() {
-            return snapshotDeclarations(pluginCall(callbacks, loader, delegate::ruleWriteFields), RuleFact.class,
-                    loader, callbacks, RuleValueView.MAX_FIELDS, "too many kernel rule write fields");
-        }
-        @Override public List<RuleFact> ruleWriteCoverageFields() {
-            return snapshotDeclarations(pluginCall(callbacks, loader, delegate::ruleWriteCoverageFields),
-                    RuleFact.class, loader, callbacks, RuleValueView.MAX_FIELDS,
-                    "too many kernel rule write coverage fields");
-        }
-        @Override public List<Map<String, Object>> ruleWrites(C command) {
-            List<Map<String, Object>> writes = pluginCall(callbacks, loader, () -> delegate.ruleWrites(command));
-            return writes == null ? null : snapshotRuleElements(writes, loader, callbacks);
-        }
-        @Override public List<Map<String, Object>> ruleWriteCoverage(C command, TransitionContext context,
-                                                                    F facts) {
-            List<Map<String, Object>> coverage = pluginCall(callbacks, loader,
-                    () -> delegate.ruleWriteCoverage(command, context, facts));
-            return coverage == null ? null : snapshotRuleElements(coverage, loader, callbacks);
-        }
-    }
-
-    /**
-     * Declaration lists of final host records ({@link RuleFact}, {@link RuleValueView}): {@link #snapshotList} with an
-     * element check, so a raw-cast plugin list cannot put a null or a plugin object in front of the engine. A
-     * violation fails construction, like an overflow.
-     */
-    private static <T> List<T> snapshotDeclarations(List<T> values, Class<T> type, ClassLoader loader,
-                                                   CallbackTracker callbacks, int maximumSize,
-                                                   String overflowMessage) {
-        List<T> snapshot = snapshotList(values, loader, callbacks, maximumSize, overflowMessage);
-        if (snapshot != null && snapshot.stream().anyMatch(value -> !type.isInstance(value))) {
-            throw new IllegalStateException("kernel rule declarations must be non-null " + type.getSimpleName()
-                    + " records");
-        }
-        return snapshot;
-    }
-
-    /**
-     * Entries one decoded value or write-view element may carry: declared fields plus value fields
-     * ({@link RuleValueView}), each list bounded by {@link RuleValueView#MAX_FIELDS}.
-     */
-    private static final int RULE_ELEMENT_ENTRIES = 2 * RuleValueView.MAX_FIELDS;
-
-    /**
-     * Host-owned stand-in for a fact, decoded value or write-element entry that is not a conforming scalar or text
-     * list.
-     */
-    private static final Object NON_CONFORMING_FACT = new Object() {
-        @Override public String toString() { return "non-conforming rule fact"; }
-    };
-    /** A key no declared fact can have ({@link RuleFact} names are non-empty identifiers). */
-    private static final String NON_CONFORMING_FACT_NAME = "";
-
-    /**
-     * Copies a plugin's fact values into host-owned objects without interpreting them. Every plugin read happens
-     * inside one callback and traversal is bounded by iterations (not distinct keys). A map with more entries than
-     * its bound becomes the marker alone, since which entries a salted or identity map yields first differs between
-     * nodes; a byte array or text list keeps one element beyond its bound so the caller can detect overflow. Nothing
-     * here throws for a data shape: a null entry set, a null or foreign entry, a non-text or repeated key, or a value
-     * that is not a conforming scalar or text list becomes a marker the caller rejects as a violation. Only
-     * {@code Long}, {@code String}, {@code Boolean}, copied {@code byte[]}, and copied lists of text survive, so no
-     * plugin object escapes the class-loader boundary.
-     */
-    private static Map<String, Object> snapshotRuleFactValues(Map<String, Object> values, ClassLoader loader,
-                                                              CallbackTracker callbacks) {
-        return snapshotRuleValues(values, RuleFact.MAX_FACTS, loader, callbacks);
-    }
-
-    /**
-     * {@link #snapshotRuleFactValues} with an explicit entry bound: a map with more than {@code maximumEntries}
-     * entries becomes the marker alone.
-     */
-    private static Map<String, Object> snapshotRuleValues(Map<String, Object> values, int maximumEntries,
-                                                          ClassLoader loader, CallbackTracker callbacks) {
-        Map<String, Object> snapshot = new LinkedHashMap<>();
-        Iterator<?> entries = pluginCall(callbacks, loader, () -> {
-            Set<?> entrySet = ((Map<?, ?>) values).entrySet();
-            return entrySet == null ? null : entrySet.iterator();
-        });
-        if (entries == null) {
-            snapshot.put(NON_CONFORMING_FACT_NAME, NON_CONFORMING_FACT);
-            return Collections.unmodifiableMap(snapshot);
-        }
-        for (int visited = 0; pluginCall(callbacks, loader, entries::hasNext); visited++) {
-            if (visited == maximumEntries) return Map.of(NON_CONFORMING_FACT_NAME, NON_CONFORMING_FACT);
-            Object[] pair = pluginCall(callbacks, loader, () -> {
-                Object element = entries.next();
-                if (!(element instanceof Map.Entry<?, ?> entry)) return null;
-                return new Object[]{entry.getKey(), snapshotRuleFactValue(entry.getValue())};
-            });
-            if (pair == null || !(pair[0] instanceof String name)) {
-                snapshot.put(NON_CONFORMING_FACT_NAME, NON_CONFORMING_FACT);
-            } else {
-                // A repeated key keeps the marker, never the value that iterated last: an identity map orders equal
-                // keys differently on each node.
-                snapshot.put(name, snapshot.containsKey(name) ? NON_CONFORMING_FACT : pair[1]);
-            }
-        }
-        return Collections.unmodifiableMap(snapshot);
-    }
-
-    /**
-     * Copies a write view or its coverage (Yano X ADR-031.4) like {@link #snapshotRuleValues}: at most one element
-     * beyond {@link RuleValueView#MAX_WRITES}, each element a bounded snapshot. An element that is not a map becomes
-     * a map holding only the non-conforming marker, which the caller rejects; nothing here throws for a data shape.
-     */
-    private static List<Map<String, Object>> snapshotRuleElements(List<Map<String, Object>> elements,
-                                                                  ClassLoader loader, CallbackTracker callbacks) {
-        Iterator<?> items = pluginCall(callbacks, loader, () -> ((List<?>) elements).iterator());
-        List<Map<String, Object>> snapshot = new ArrayList<>();
-        if (items == null) {
-            snapshot.add(Map.of(NON_CONFORMING_FACT_NAME, NON_CONFORMING_FACT));
-            return Collections.unmodifiableList(snapshot);
-        }
-        for (int visited = 0; visited <= RuleValueView.MAX_WRITES && pluginCall(callbacks, loader, items::hasNext);
-                visited++) {
-            Object item = pluginCall(callbacks, loader, items::next);
-            if (item instanceof Map<?, ?> element) {
-                @SuppressWarnings("unchecked")
-                Map<String, Object> values = (Map<String, Object>) element;
-                snapshot.add(snapshotRuleValues(values, RULE_ELEMENT_ENTRIES, loader, callbacks));
-            } else {
-                snapshot.add(Map.of(NON_CONFORMING_FACT_NAME, NON_CONFORMING_FACT));
-            }
-        }
-        return Collections.unmodifiableList(snapshot);
-    }
-
-    /** Runs inside the plugin callback; returns a host-owned copy or the non-conforming marker. */
-    private static Object snapshotRuleFactValue(Object value) {
-        if (value == null || value instanceof Long || value instanceof String || value instanceof Boolean) {
-            return value;
-        }
-        if (value instanceof byte[] bytes) {
-            return Arrays.copyOf(bytes, Math.min(bytes.length, RuleFact.MAX_VALUE_BYTES + 1));
-        }
-        if (!(value instanceof List<?> list)) return NON_CONFORMING_FACT;
-        Iterator<?> items = list.iterator();
-        if (items == null) return NON_CONFORMING_FACT;
-        List<Object> copy = new ArrayList<>();
-        for (int visited = 0; visited <= RuleFact.MAX_SET_ENTRIES && items.hasNext(); visited++) {
-            Object item = items.next();
-            copy.add(item == null || item instanceof String ? item : NON_CONFORMING_FACT);
-        }
-        return Collections.unmodifiableList(copy);
-    }
-
-    private record StateMachineFacade(
-            AppStateMachine delegate,
-            ClassLoader loader,
-            ActivationContext activation,
-            CallbackTracker callbacks
-    ) implements AppStateMachine {
-        private StateMachineFacade {
-            Objects.requireNonNull(delegate, "delegate");
-        }
-
-        @Override
-        public Optional<TransitionKernel<?, ?>> transitionKernel() {
-            return pluginCall(callbacks, loader, delegate::transitionKernel)
-                    .map(kernel -> new KernelFacade<>(kernel, loader, callbacks));
-        }
-
-        @Override
-        public String id() {
-            return activation.call("identify state-machine product",
-                    () -> pluginCall(callbacks, loader, delegate::id));
-        }
-
-        @Override
-        public void init(AppStateReader state, AppChainInfo info) {
-            activation.run("initialize state-machine product",
-                    () -> pluginRun(callbacks, loader,
-                            () -> delegate.init(state, info)));
-        }
-
-        @Override
-        public AdmissionResult validate(AppMessage message) {
-            return pluginCall(callbacks, loader,
-                    () -> delegate.validate(message));
-        }
-
-        @Override
-        public AdmissionResult validateForBlock(
-                AppMessage message,
-                long candidateHeight,
-                AppStateReader committedState
-        ) {
-            return pluginCall(callbacks, loader,
-                    () -> delegate.validateForBlock(
-                            message, candidateHeight, committedState));
-        }
-
-        @Override
-        public AdmissionResult validatePrivilegedSystemSubmission(
-                String topic,
-                byte[] body
-        ) {
-            byte[] input = body != null ? body.clone() : null;
-            return pluginCall(callbacks, loader,
-                    () -> delegate.validatePrivilegedSystemSubmission(topic, input));
-        }
-
-        @Override
-        public Map<String, Object> operationalStatus() {
-            Map<String, Object> values = pluginCall(callbacks, loader,
-                    delegate::operationalStatus);
-            return snapshotMap(values, loader, callbacks);
-        }
-
-        @Override
-        public AppCapabilityManifest capabilityManifest() {
-            return pluginCall(callbacks, loader, delegate::capabilityManifest);
-        }
-
-        @Override
-        public List<ProofSubjectProvider>
-        proofSubjectProviders() {
-            var values = Objects.requireNonNull(pluginCall(callbacks, loader,
-                            delegate::proofSubjectProviders),
-                    "AppStateMachine.proofSubjectProviders() must not return null");
-            var snapshot = snapshotList(values, loader, callbacks,
-                    ProofSubjectDescriptorV1
-                            .MAX_DESCRIPTORS,
-                    "AppStateMachine must declare at most 64 proof subject providers");
-            return snapshot.stream().map(provider -> {
-                var source = Objects.requireNonNull(provider, "proof subject provider");
-                return (ProofSubjectProvider)
-                        new ProofSubjectProvider() {
-                    @Override
-                    public List<ProofSubjectDescriptorV1>
-                    descriptors(AppCapabilityManifest profile) {
-                        return List.copyOf(pluginCall(callbacks, loader,
-                                () -> source.descriptors(profile)));
-                    }
-
-                    @Override
-                    public ResolvedProofSubject resolve(String subjectId,
-                                                        Map<String, String> coordinates,
-                                                        ProofView view) {
-                        return pluginCall(callbacks, loader,
-                                () -> source.resolve(subjectId, Map.copyOf(coordinates), view));
-                    }
-
-                    @Override
-                    public TypedFact decode(String subjectId, byte[] canonicalValue) {
-                        byte[] value = canonicalValue.clone();
-                        return pluginCall(callbacks, loader, () -> source.decode(subjectId, value));
-                    }
-
-                    @Override
-                    public ClaimResult evaluate(String subjectId, TypedFact fact,
-                                                ClaimRequest claim) {
-                        return pluginCall(callbacks, loader,
-                                () -> source.evaluate(subjectId, fact, claim));
-                    }
-                };
-            }).toList();
-        }
-
-        @Override
-        public List<AuthenticatedSnapshotSeriesDescriptorV1> authenticatedSnapshotSeries() {
-            List<AuthenticatedSnapshotSeriesDescriptorV1> values = Objects.requireNonNull(
-                    pluginCall(callbacks, loader, delegate::authenticatedSnapshotSeries),
-                    "AppStateMachine.authenticatedSnapshotSeries() must not return null");
-            List<AuthenticatedSnapshotSeriesDescriptorV1> snapshot = snapshotList(
-                    values, loader, callbacks, MAX_FACTORY_PRODUCTS_PER_CALLBACK,
-                    "AppStateMachine must declare at most 256 authenticated snapshot series");
-            snapshot.forEach(value -> Objects.requireNonNull(
-                    value, "authenticated snapshot series must not contain null entries"));
-            return snapshot;
-        }
-
-        @Override
-        public List<AuthenticatedSnapshotSourceCommitmentV1>
-                authenticatedSnapshotSourceCommitments() {
-            List<AuthenticatedSnapshotSourceCommitmentV1> values = Objects.requireNonNull(
-                    pluginCall(callbacks, loader,
-                            delegate::authenticatedSnapshotSourceCommitments),
-                    "AppStateMachine.authenticatedSnapshotSourceCommitments() must not return null");
-            List<AuthenticatedSnapshotSourceCommitmentV1> snapshot = snapshotList(
-                    values, loader, callbacks, MAX_FACTORY_PRODUCTS_PER_CALLBACK,
-                    "AppStateMachine must declare at most 256 authenticated snapshot commitments");
-            return snapshot.stream().map(value -> (AuthenticatedSnapshotSourceCommitmentV1)
-                    new SnapshotSourceCommitmentFacade(
-                    Objects.requireNonNull(value,
-                            "authenticated snapshot commitments must not contain null entries"),
-                    loader, callbacks)).toList();
-        }
-
-        @Override
-        public void apply(
-                AppBlockExecutionContext context,
-                AppStateWriter writer,
-                AppEffectEmitter effects
-        ) {
-            pluginRun(callbacks, loader,
-                    () -> delegate.apply(context, writer, effects));
-        }
-
-        @Override
-        public void onEffectResult(
-                AppBlockExecutionContext context,
-                EffectResult result,
-                AppStateWriter writer,
-                AppEffectEmitter effects
-        ) {
-            pluginRun(callbacks, loader,
-                    () -> delegate.onEffectResult(context, result, writer, effects));
-        }
-
-        @Override
-        public byte[] query(String path, byte[] params, AppQueryContext state) {
-            byte[] input = params != null ? params.clone() : null;
-            byte[] response = pluginCall(callbacks, loader,
-                    () -> delegate.query(path, input, state));
-            return response != null ? response.clone() : null;
-        }
-
-        @Override
-        public void apply(AppBlockExecutionContext context, AppStateWriter writer,
-                          AppEffectEmitter effects, AppObservationEmitter observations) {
-            pluginRun(callbacks, loader, () -> delegate.apply(context, writer, effects, observations));
-        }
-
-        @Override
-        public void onEffectResult(AppBlockExecutionContext context, EffectResult result,
-                                   AppStateWriter writer, AppEffectEmitter effects,
-                                   AppObservationEmitter observations) {
-            pluginRun(callbacks, loader,
-                    () -> delegate.onEffectResult(context, result, writer, effects, observations));
-        }
-
-        @Override
-        public void onObservationResult(AppBlockExecutionContext context, ObservationResult result,
-                                        AppStateWriter writer, AppEffectEmitter effects,
-                                        AppObservationEmitter observations) {
-            pluginRun(callbacks, loader,
-                    () -> delegate.onObservationResult(context, result, writer, effects, observations));
-        }
-    }
-
-    private record SnapshotSourceCommitmentFacade(
-            AuthenticatedSnapshotSourceCommitmentV1 delegate,
-            ClassLoader loader,
-            CallbackTracker callbacks
-    ) implements AuthenticatedSnapshotSourceCommitmentV1 {
-        @Override public String seriesId() {
-            return pluginCall(callbacks, loader, delegate::seriesId);
-        }
-
-        @Override public String algorithm() {
-            return pluginCall(callbacks, loader, delegate::algorithm);
-        }
-
-        @Override public String wireVersion() {
-            return pluginCall(callbacks, loader, delegate::wireVersion);
-        }
-
-        @Override public String compatibilityId() {
-            return pluginCall(callbacks, loader, delegate::compatibilityId);
-        }
-
-        @Override public byte[] initial(SnapshotDescriptorDraftV1 draft) {
-            byte[] result = pluginCall(callbacks, loader, () -> delegate.initial(
-                    Objects.requireNonNull(draft, "draft")));
-            return Objects.requireNonNull(result,
-                    "AuthenticatedSnapshotSourceCommitmentV1.initial() must not return null")
-                    .clone();
-        }
-
-        @Override
-        public byte[] append(byte[] accumulator, long chunkIndex, List<SnapshotEntry> entries) {
-            byte[] input = Objects.requireNonNull(accumulator, "accumulator").clone();
-            List<SnapshotEntry> entrySnapshot = List.copyOf(
-                    Objects.requireNonNull(entries, "entries"));
-            byte[] result = pluginCall(callbacks, loader,
-                    () -> delegate.append(input, chunkIndex, entrySnapshot));
-            return Objects.requireNonNull(result,
-                    "AuthenticatedSnapshotSourceCommitmentV1.append() must not return null")
-                    .clone();
-        }
-
-        @Override public byte[] finish(byte[] accumulator, long chunks, long entries) {
-            byte[] input = Objects.requireNonNull(accumulator, "accumulator").clone();
-            byte[] result = pluginCall(callbacks, loader,
-                    () -> delegate.finish(input, chunks, entries));
-            return Objects.requireNonNull(result,
-                    "AuthenticatedSnapshotSourceCommitmentV1.finish() must not return null")
-                    .clone();
-        }
-    }
-
-    private record SequencerProviderFacade(
-            SequencerModeProvider delegate,
-            ClassLoader loader,
-            ActivationContext activation,
-            ProductReservations products,
-            CallbackTracker callbacks
-    ) implements SequencerModeProvider {
-        private SequencerProviderFacade {
-            Objects.requireNonNull(delegate, "delegate");
-        }
-
-        @Override
-        public String id() {
-            return pluginCall(callbacks, loader, delegate::id);
-        }
-
-        @Override
-        public SequencerMode create(SequencerContext context) {
-            return activation.call("create sequencer product", () -> callbacks.call(() -> {
-                SequencerMode value = PluginThreadContext.call(
-                        loader, () -> delegate.create(context));
-                return products.facadeForNewInvocation(
-                        value, mode -> new SequencerModeFacade(
-                                mode, loader, activation, callbacks));
-            }));
-        }
-    }
-
-    private record SequencerModeFacade(
-            SequencerMode delegate,
-            ClassLoader loader,
-            ActivationContext activation,
-            CallbackTracker callbacks
-    ) implements SequencerMode {
-        private SequencerModeFacade {
-            Objects.requireNonNull(delegate, "delegate");
-        }
-
-        @Override
-        public String id() {
-            return activation.call("identify sequencer product",
-                    () -> pluginCall(callbacks, loader, delegate::id));
-        }
-
-        @Override
-        public void init(SequencerContext context) {
-            activation.run("initialize sequencer product",
-                    () -> pluginRun(callbacks, loader,
-                            () -> delegate.init(context)));
-        }
-
-        @Override
-        public boolean shouldProposeNow(long height) {
-            return pluginCall(callbacks, loader,
-                    () -> delegate.shouldProposeNow(height));
-        }
-
-        @Override
-        public ProposalEligibility checkProposal(byte[] proposerKey, long height) {
-            byte[] input = Objects.requireNonNull(proposerKey, "proposerKey").clone();
-            return pluginCall(callbacks, loader,
-                    () -> delegate.checkProposal(input, height));
-        }
-
-        @Override
-        public Map<String, Object> status() {
-            return activation.call("read sequencer product status",
-                    () -> callbacks.call(() -> {
-                        Map<String, Object> values = PluginThreadContext.call(
-                                loader, delegate::status);
-                        return snapshotMap(values, loader, callbacks);
-                    }));
-        }
-    }
-
-    private record ObserverProviderFacade(
-            L1ObserverProvider delegate,
-            ClassLoader loader,
-            ActivationContext activation,
-            ProductReservations products,
-            CallbackTracker callbacks
-    ) implements L1ObserverProvider {
-        private ObserverProviderFacade {
-            Objects.requireNonNull(delegate, "delegate");
-        }
-
-        @Override
-        public String type() {
-            return pluginCall(callbacks, loader, delegate::type);
-        }
-
-        @Override
-        public L1ObserverConsensusIdentity consensusIdentity(
-                String observerId, Map<String, String> settings) {
-            return pluginCall(callbacks, loader,
-                    () -> delegate.consensusIdentity(observerId, settings));
-        }
-
-        @Override
-        public L1Observer create(String observerId, Map<String, String> settings) {
-            return activation.call("create L1-observer product", () -> callbacks.call(() -> {
-                L1Observer value = PluginThreadContext.call(
-                        loader, () -> delegate.create(observerId, settings));
-                return products.facadeForNewInvocation(
-                        value, observer -> new ObserverFacade(
-                                observer, observerId, loader, activation, callbacks));
-            }));
-        }
-    }
-
-    private record EpochObserverProviderFacade(
-            L1EpochObserverProvider delegate,
-            ClassLoader loader,
-            ActivationContext activation,
-            ProductReservations products,
-            CallbackTracker callbacks
-    ) implements L1EpochObserverProvider {
-        private EpochObserverProviderFacade {
-            Objects.requireNonNull(delegate, "delegate");
-        }
-
-        @Override
-        public String type() {
-            return pluginCall(callbacks, loader, delegate::type);
-        }
-
-        @Override
-        public L1ObserverConsensusIdentity consensusIdentity(
-                String observerId, Map<String, String> settings) {
-            return pluginCall(callbacks, loader,
-                    () -> delegate.consensusIdentity(observerId, settings));
-        }
-
-        @Override
-        public L1EpochObserver create(String observerId, Map<String, String> settings) {
-            return activation.call("create L1-epoch-observer product", () -> callbacks.call(() -> {
-                L1EpochObserver value = PluginThreadContext.call(
-                        loader, () -> delegate.create(observerId, settings));
-                return products.facadeForNewInvocation(
-                        value, observer -> new EpochObserverFacade(
-                                observer, observerId, loader, activation, callbacks));
-            }));
-        }
-    }
-
-    private record ObservationProviderFactoryFacade(
-            ObservationProviderFactory delegate,
-            ClassLoader loader,
-            ActivationContext activation,
-            ProductReservations products,
-            CallbackTracker callbacks
-    ) implements ObservationProviderFactory {
-        private ObservationProviderFactoryFacade {
-            Objects.requireNonNull(delegate, "delegate");
-        }
-
-        @Override
-        public String type() {
-            return pluginCall(callbacks, loader, delegate::type);
-        }
-
-        @Override
-        public ObservationProvider create(String definitionId,
-                                          Map<String, String> operationalSettings) {
-            Map<String, String> snapshot = operationalSettings == null
-                    ? Map.of() : Map.copyOf(operationalSettings);
-            return activation.call("create observation-provider product", () ->
-                    callbacks.call(() -> {
-                        ObservationProvider value = PluginThreadContext.call(loader,
-                                () -> delegate.create(definitionId, snapshot));
-                        return products.facadeForNewInvocation(value,
-                                provider -> new ObservationProviderFacade(
-                                        provider, loader, activation, callbacks));
-                    }));
-        }
-    }
-
-    private record ObservationProviderFacade(
-            ObservationProvider delegate,
-            ClassLoader loader,
-            ActivationContext activation,
-            CallbackTracker callbacks
-    ) implements ObservationProvider {
-        private ObservationProviderFacade {
-            Objects.requireNonNull(delegate, "delegate");
-        }
-
-        @Override
-        public ObservationCandidate acquire(ObservationRequest request) throws Exception {
-            ObservationCandidate candidate = pluginCall(callbacks, loader,
-                    () -> delegate.acquire(request));
-            if (candidate == null) {
-                throw new IllegalStateException(
-                        "Observation provider returned a null candidate");
-            }
-            return new ObservationCandidate(candidate.sourceId(), candidate.value(),
-                    candidate.evidence(), candidate.sourceVersion(),
-                    candidate.freshnessAnchorType(), candidate.freshnessAnchor());
-        }
-
-        @Override
-        public void close() {
-            pluginCleanupRun(callbacks, loader, delegate::close);
-        }
-    }
-
-    private record EpochObserverFacade(
-            L1EpochObserver delegate,
-            String configuredObserverId,
-            ClassLoader loader,
-            ActivationContext activation,
-            CallbackTracker callbacks
-    ) implements L1EpochObserver {
-        private static final int MAX_EPOCH_CHUNKS = 1_000_000;
-
-        private EpochObserverFacade {
-            Objects.requireNonNull(delegate, "delegate");
-        }
-
-        @Override
-        public String observerId() {
-            return activation.call("identify L1-epoch-observer product", () -> {
-                String actual = pluginCall(callbacks, loader, delegate::observerId);
-                if (!Objects.equals(configuredObserverId, actual)) {
-                    throw new IllegalStateException(
-                            "L1-epoch-observer product id does not match configured id");
-                }
-                return actual;
-            });
-        }
-
-        @Override
-        public EpochObservationManifest prepare(
-                L1EpochBoundary boundary,
-                L1EpochState state
-        ) {
-            Objects.requireNonNull(boundary, "boundary");
-            Objects.requireNonNull(state, "state");
-            EpochObservationManifest manifest = activation.call(
-                    "prepare L1 epoch observations", () -> pluginCall(
-                            callbacks, loader, () -> delegate.prepare(boundary, state)));
-            Objects.requireNonNull(manifest, "L1 epoch manifest must not be null");
-            if (!configuredObserverId.equals(manifest.observerId())
-                    || manifest.previousEpoch() != boundary.previousEpoch()
-                    || manifest.newEpoch() != boundary.newEpoch()
-                    || manifest.chunkCount() > MAX_EPOCH_CHUNKS) {
-                throw new IllegalArgumentException(
-                        "L1 epoch manifest does not match the configured boundary");
-            }
-            return manifest;
-        }
-
-        @Override
-        public void writeObservations(
-                EpochObservationManifest manifest,
-                L1EpochState state,
-                L1EpochObservationSink sink
-        ) {
-            Objects.requireNonNull(manifest, "manifest");
-            Objects.requireNonNull(state, "state");
-            Objects.requireNonNull(sink, "sink");
-            if (!configuredObserverId.equals(manifest.observerId())) {
-                throw new IllegalArgumentException("L1 epoch manifest observer does not match");
-            }
-            activation.run("write L1 epoch observations", () -> pluginRun(
-                    callbacks, loader, () -> delegate.writeObservations(
-                            manifest, state, (index, claim) -> {
-                                byte[] snapshot = Objects.requireNonNull(
-                                        claim, "L1 epoch claim must not be null").clone();
-                                if (snapshot.length > MAX_EPOCH_OBSERVATION_CLAIM_BYTES) {
-                                    throw new IllegalArgumentException(
-                                            "L1 epoch claim exceeds "
-                                                    + MAX_EPOCH_OBSERVATION_CLAIM_BYTES
-                                                    + " bytes");
-                                }
-                                sink.write(index, snapshot);
-                            })));
-        }
-
-        @Override
-        public Map<String, Object> status() {
-            return activation.call("read L1-epoch-observer product status", () ->
-                    callbacks.call(() -> snapshotMap(
-                            PluginThreadContext.call(loader, delegate::status),
-                            loader, callbacks)));
-        }
-    }
-
-    private record ObserverFacade(
-            L1Observer delegate,
-            String configuredObserverId,
-            ClassLoader loader,
-            ActivationContext activation,
-            CallbackTracker callbacks
-    ) implements L1Observer {
-        private ObserverFacade {
-            Objects.requireNonNull(delegate, "delegate");
-        }
-
-        @Override
-        public String observerId() {
-            return activation.call("identify L1-observer product",
-                    () -> {
-                        String actual = pluginCall(callbacks, loader,
-                                delegate::observerId);
-                        if (!Objects.equals(configuredObserverId, actual)) {
-                            throw new IllegalStateException(
-                                    "L1-observer product id does not match configured id");
-                        }
-                        return actual;
-                    });
-        }
-
-        @Override
-        public List<L1Observation> observe(long slot, byte[] blockHash, Block block) {
-            byte[] expectedBlockHash = Objects.requireNonNull(
-                    blockHash, "blockHash").clone();
-            if (expectedBlockHash.length != 32) {
-                throw new IllegalArgumentException("L1 callback block hash must be 32 bytes");
-            }
-            return callbacks.call(() -> {
-                List<L1Observation> values = PluginThreadContext.call(
-                        loader, () -> delegate.observe(
-                                slot, expectedBlockHash.clone(), block));
-                if (values == null) {
-                    throw new IllegalStateException("L1 observer result must not be null");
-                }
-                List<L1Observation> snapshots = new ArrayList<>();
-                long aggregateClaimBytes = 0;
-                Iterator<L1Observation> iterator = pluginCall(
-                        callbacks, loader, values::iterator);
-                while (pluginCall(callbacks, loader, iterator::hasNext)) {
-                    if (snapshots.size() == MAX_OBSERVATIONS_PER_CALLBACK) {
-                        throw new IllegalStateException(
-                                "L1 observer result must contain at most "
-                                        + MAX_OBSERVATIONS_PER_CALLBACK + " observations");
-                    }
-                    ObservationSnapshot snapshot = snapshotObservation(
-                            pluginCall(callbacks, loader, iterator::next),
-                            configuredObserverId, slot, expectedBlockHash);
-                    int claimBytes = snapshot.claimBytes();
-                    if (aggregateClaimBytes
-                            > MAX_OBSERVATION_AGGREGATE_CLAIM_BYTES - claimBytes) {
-                        throw new IllegalArgumentException(
-                                "L1 observer aggregate claims exceed "
-                                        + MAX_OBSERVATION_AGGREGATE_CLAIM_BYTES + " bytes");
-                    }
-                    aggregateClaimBytes += claimBytes;
-                    snapshots.add(snapshot.observation());
-                }
-                return List.copyOf(snapshots);
-            });
-        }
-
-        private static ObservationSnapshot snapshotObservation(
-                L1Observation observation,
-                String configuredObserverId,
-                long callbackSlot,
-                byte[] callbackBlockHash
-        ) {
-            Objects.requireNonNull(observation,
-                    "L1 observer result must not contain null observations");
-            String observerId = observation.observerId();
-            if (observerId == null || observerId.isBlank()
-                    || observerId.length() > MAX_OBSERVER_ID_LENGTH) {
-                throw new IllegalArgumentException(
-                        "L1 observation id must be non-blank and at most "
-                                + MAX_OBSERVER_ID_LENGTH + " characters");
-            }
-            if (!observerId.equals(configuredObserverId)) {
-                throw new IllegalArgumentException(
-                        "L1 observation id does not match configured observer");
-            }
-            if (observation.slot() != callbackSlot) {
-                throw new IllegalArgumentException(
-                        "L1 observation slot does not match callback slot");
-            }
-            if (callbackBlockHash == null || callbackBlockHash.length != 32
-                    || !java.util.Arrays.equals(
-                            observation.blockHash(), callbackBlockHash)) {
-                throw new IllegalArgumentException(
-                        "L1 observation block hash does not match callback block hash");
-            }
-            byte[] claim = observation.claim();
-            if (claim.length > MAX_OBSERVATION_CLAIM_BYTES) {
-                throw new IllegalArgumentException(
-                        "L1 observation claim exceeds "
-                                + MAX_OBSERVATION_CLAIM_BYTES + " bytes");
-            }
-            return new ObservationSnapshot(
-                    new L1Observation(observerId, observation.anchor(),
-                            observation.slot(), observation.blockHash(), claim),
-                    claim.length);
-        }
-
-        private record ObservationSnapshot(
-                L1Observation observation,
-                int claimBytes
-        ) {
-        }
-
-        @Override
-        public Map<String, Object> status() {
-            return activation.call("read L1-observer product status",
-                    () -> callbacks.call(() -> {
-                        Map<String, Object> values = PluginThreadContext.call(
-                                loader, delegate::status);
-                        return snapshotMap(values, loader, callbacks);
-                    }));
-        }
-    }
-
-    private record SignerFactoryFacade(
-            SignerProviderFactory delegate,
-            ClassLoader loader,
-            ActivationContext activation,
-            ProductReservations products,
-            CallbackTracker callbacks
-    ) implements SignerProviderFactory {
-        private SignerFactoryFacade {
-            Objects.requireNonNull(delegate, "delegate");
-        }
-
-        @Override
-        public String scheme() {
-            return pluginCall(callbacks, loader, delegate::scheme);
-        }
-
-        @Override
-        public SignerProvider create(String keyReference) {
-            return activation.call("create signer product", () -> callbacks.call(() -> {
-                SignerProvider value = PluginThreadContext.call(
-                        loader, () -> delegate.create(keyReference));
-                return products.facadeForNewInvocation(
-                        value, signer -> new SignerFacade(
-                                signer, loader, activation, callbacks));
-            }));
-        }
-    }
-
-    private record SignerFacade(
-            SignerProvider delegate,
-            ClassLoader loader,
-            ActivationContext activation,
-            CallbackTracker callbacks
-    ) implements SignerProvider {
-        private SignerFacade {
-            Objects.requireNonNull(delegate, "delegate");
-        }
-
-        @Override
-        public byte[] sign(byte[] message) {
-            byte[] input = Objects.requireNonNull(message, "message").clone();
-            return activation.call("sign an app-chain message", () -> {
-                byte[] signature = pluginCall(callbacks, loader,
-                        () -> delegate.sign(input));
-                if (signature == null || signature.length != 64) {
-                    throw new IllegalStateException(
-                            "Signer product must return a 64-byte Ed25519 signature");
-                }
-                return signature.clone();
-            });
-        }
-
-        @Override
-        public byte[] publicKey() {
-            return activation.call("initialize signer product",
-                    () -> {
-                        byte[] publicKey = pluginCall(callbacks, loader,
-                                delegate::publicKey);
-                        if (publicKey == null || publicKey.length != 32) {
-                            throw new IllegalStateException(
-                                    "Signer product must return a 32-byte Ed25519 public key");
-                        }
-                        return publicKey.clone();
-                    });
-        }
-
-        @Override
-        public String publicKeyHex() {
-            return com.bloxbean.cardano.yaci.core.util.HexUtil.encodeHexString(publicKey());
-        }
-    }
-
-    private record EffectExecutorFactoryFacade(
-            AppEffectExecutorFactory delegate,
-            ClassLoader loader,
-            ActivationContext activation,
-            ProductReservations products,
-            CallbackTracker callbacks
-    ) implements AppEffectExecutorFactory {
-        private EffectExecutorFactoryFacade {
-            Objects.requireNonNull(delegate, "delegate");
-        }
-
-        @Override
-        public String scheme() {
-            return pluginCall(callbacks, loader, delegate::scheme);
-        }
-
-        @Override
-        public List<AppEffectExecutor> create(String chainId, Map<String, String> config) {
-            return createProducts(() -> delegate.create(chainId, config));
-        }
-
-        @Override
-        public List<AppEffectExecutor> create(
-                String chainId, Map<String, String> config,
-                AppChainEffectContext context) {
-            // Context-aware creation (ADR-UTXO-009 SP-M6) must reach the
-            // DELEGATE's override — routing through the 2-arg form would
-            // silently trigger the interface default and lose the context.
-            return createProducts(() -> delegate.create(chainId, config, context));
-        }
-
-        private List<AppEffectExecutor> createProducts(
-                java.util.function.Supplier<List<AppEffectExecutor>> invocation) {
-            return activation.call("create effect-executor products", () -> callbacks.call(() -> {
-                List<AppEffectExecutor> values = PluginThreadContext.call(
-                        loader, invocation::get);
-                if (values == null) {
-                    return null;
-                }
-                List<AppEffectExecutor> snapshot = snapshotFactoryProducts(
-                        values, loader, callbacks, products);
-                try {
-                    return products.facadesForNewInvocation(
-                            snapshot, executor -> new EffectExecutorFacade(
-                                    executor, loader, activation, callbacks));
-                } catch (CrossInvocationProductReuseException failure) {
-                    closeUnclaimedProducts(failure, loader, callbacks);
-                    throw failure;
-                }
-            }));
-        }
-    }
-
-    private record EffectExecutorFacade(
-            AppEffectExecutor delegate,
-            ClassLoader loader,
-            ActivationContext activation,
-            CallbackTracker callbacks
-    ) implements AppEffectExecutor {
-        private EffectExecutorFacade {
-            Objects.requireNonNull(delegate, "delegate");
-        }
-
-        @Override
-        public String id() {
-            return activation.call("identify effect-executor product",
-                    () -> pluginCall(callbacks, loader, delegate::id));
-        }
-
-        @Override
-        public boolean supports(String effectType) {
-            return pluginCall(callbacks, loader,
-                    () -> delegate.supports(effectType));
-        }
-
-        @Override
-        public Set<String> effectTypes() {
-            return activation.call("declare effect-executor types",
-                    () -> pluginCall(callbacks, loader, () -> {
-                        Set<String> declared = delegate.effectTypes();
-                        return declared != null ? Set.copyOf(declared) : null;
-                    }));
-        }
-
-        @Override
-        public EffectExecutorOperationalSnapshot operationalSnapshot() {
-            return pluginCall(callbacks, loader, delegate::operationalSnapshot);
-        }
-
-        @Override
-        public EffectExecution execute(EffectExecutionContext ctx, PendingEffect effect)
-                throws Exception {
-            return pluginCall(callbacks, loader,
-                    () -> delegate.execute(ctx, effect));
-        }
-
-        @Override
-        public void close() {
-            pluginCleanupRun(callbacks, loader, delegate::close);
-        }
-    }
-
-    private record SinkFactoryFacade(
-            FinalizedStreamSinkFactory delegate,
-            ClassLoader loader,
-            ActivationContext activation,
-            ProductReservations products,
-            CallbackTracker callbacks
-    ) implements FinalizedStreamSinkFactory {
-        private SinkFactoryFacade {
-            Objects.requireNonNull(delegate, "delegate");
-        }
-
-        @Override
-        public String scheme() {
-            return pluginCall(callbacks, loader, delegate::scheme);
-        }
-
-        @Override
-        public List<FinalizedStreamSink> create(String chainId, Map<String, String> config) {
-            return activation.call("create finalized-sink products", () -> callbacks.call(() -> {
-                List<FinalizedStreamSink> values = PluginThreadContext.call(
-                        loader, () -> delegate.create(chainId, config));
-                if (values == null) {
-                    return null;
-                }
-                List<FinalizedStreamSink> snapshot = snapshotFactoryProducts(
-                        values, loader, callbacks, products);
-                try {
-                    return products.facadesForNewInvocation(
-                            snapshot, sink -> new SinkFacade(
-                                    sink, loader, activation, callbacks));
-                } catch (CrossInvocationProductReuseException failure) {
-                    closeUnclaimedProducts(failure, loader, callbacks);
-                    throw failure;
-                }
-            }));
-        }
-    }
-
-    private record SinkFacade(
-            FinalizedStreamSink delegate,
-            ClassLoader loader,
-            ActivationContext activation,
-            CallbackTracker callbacks
-    ) implements FinalizedStreamSink {
-        private SinkFacade {
-            Objects.requireNonNull(delegate, "delegate");
-        }
-
-        @Override
-        public String id() {
-            return activation.call("identify finalized-sink product",
-                    () -> pluginCall(callbacks, loader, delegate::id));
-        }
-
-        @Override
-        public boolean deliver(AppBlock block) throws Exception {
-            return pluginCall(callbacks, loader,
-                    () -> delegate.deliver(block));
-        }
-
-        @Override
-        public String legacyCursorKey() {
-            return pluginCall(callbacks, loader,
-                    delegate::legacyCursorKey);
-        }
-
-        @Override
-        public void close() {
-            pluginCleanupRun(callbacks, loader, delegate::close);
+            scope.runCleanup(delegate::close);
         }
     }
 }

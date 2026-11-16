@@ -13,6 +13,7 @@ import org.yanoproject.catalog.BundleContribution;
 import org.yanoproject.catalog.BundleDependency;
 import org.yanoproject.catalog.BundleManifest;
 import org.yanoproject.catalog.ContributionKind;
+import org.yanoproject.catalog.ContributionKindRegistry;
 import org.yanoproject.catalog.IndexedBundle;
 import org.yanoproject.catalog.PluginIndex;
 import org.yanoproject.catalog.PluginIndexCodec;
@@ -38,6 +39,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class RequiredEmbeddedPluginCatalogTest {
+    private static final PluginIndexCodec CODEC = new PluginIndexCodec(TestPluginKinds.KINDS.registry());
     private static final String ROOT = "com.example.required-framework";
     private static final String DEPENDENCY = "com.example.required-library";
     private static final String OPTIONAL = "com.example.optional";
@@ -105,7 +107,7 @@ class RequiredEmbeddedPluginCatalogTest {
             Path jar = Files.createTempFile(directory, "bad-optional-", ".jar");
             String descriptors = badProvider + "\n" + RootPlugin.class.getName() + "\n"
                     + DependencyPlugin.class.getName() + "\n";
-            writeJar(jar, Map.of(PluginIndex.RESOURCE_PATH, new PluginIndexCodec().write(index()),
+            writeJar(jar, Map.of(PluginIndex.RESOURCE_PATH, CODEC.write(index()),
                     SERVICE, descriptors.getBytes(StandardCharsets.UTF_8)));
             try (URLClassLoader loader = isolatedLoader(new URL[]{jar.toUri().toURL()});
                  var scheduler = Executors.newSingleThreadScheduledExecutor();
@@ -124,7 +126,7 @@ class RequiredEmbeddedPluginCatalogTest {
     @Test
     void requiredProviderStillNeedsItsMatchingSpiRegistration() throws Exception {
         Path jar = directory.resolve("missing-required-registration.jar");
-        writeJar(jar, Map.of(PluginIndex.RESOURCE_PATH, new PluginIndexCodec().write(index()),
+        writeJar(jar, Map.of(PluginIndex.RESOURCE_PATH, CODEC.write(index()),
                 SERVICE, (DependencyPlugin.class.getName() + "\n").getBytes(StandardCharsets.UTF_8)));
         try (URLClassLoader loader = isolatedLoader(new URL[]{jar.toUri().toURL()})) {
             assertThatThrownBy(() -> PluginRuntimeEnvironment.open(
@@ -175,13 +177,13 @@ class RequiredEmbeddedPluginCatalogTest {
         Path artifact = Files.write(directory.resolve("external.jar"), new byte[]{1});
         var directoryInput = new PluginCatalogBuilder.CatalogInput(index,
                 PluginSourceCategory.DIRECTORY, artifact);
-        assertThatThrownBy(() -> new PluginCatalogBuilder().build(PluginsOptions.defaults(),
+        assertThatThrownBy(() -> new PluginCatalogBuilder(TestPluginKinds.KINDS).build(PluginsOptions.defaults(),
                 getClass().getClassLoader(), List.of(directoryInput), false, Set.of(ROOT)))
                 .hasMessageContaining("Host-required embedded").hasMessageContaining(ROOT);
         PluginIndex rootOnly = new PluginIndex(1,
                 index.bundles().stream().filter(bundle -> bundle.manifest().id().equals(ROOT)).toList(), List.of());
         var embeddedInput = new PluginCatalogBuilder.CatalogInput(rootOnly, PluginSourceCategory.CLASSPATH);
-        assertThatThrownBy(() -> new PluginCatalogBuilder().build(PluginsOptions.defaults(),
+        assertThatThrownBy(() -> new PluginCatalogBuilder(TestPluginKinds.KINDS).build(PluginsOptions.defaults(),
                 getClass().getClassLoader(), List.of(embeddedInput, directoryInput), false, Set.of(ROOT)))
                 .hasMessageContaining("Host-required embedded").hasMessageContaining(DEPENDENCY);
         assertThat(calls).isEmpty();
@@ -194,7 +196,7 @@ class RequiredEmbeddedPluginCatalogTest {
         PluginIndex incompatible = new PluginIndex(1,
                 List.of(root, bundle(DEPENDENCY, DependencyPlugin.class, List.of())), List.of());
         try (URLClassLoader loader = loader(false)) {
-            assertThatThrownBy(() -> new PluginCatalogBuilder().build(
+            assertThatThrownBy(() -> new PluginCatalogBuilder(TestPluginKinds.KINDS).build(
                     new PluginsOptions(false, false, Set.of(), Set.of(), Map.of()), loader,
                     List.of(new PluginCatalogBuilder.CatalogInput(incompatible, PluginSourceCategory.CLASSPATH)),
                     false, Set.of(ROOT)))
@@ -288,7 +290,7 @@ class RequiredEmbeddedPluginCatalogTest {
         String providers = RootPlugin.class.getName() + "\n" + DependencyPlugin.class.getName()
                 + "\n" + OptionalPlugin.class.getName() + "\n"
                 + (includeLegacy ? ExplosiveLegacyPlugin.class.getName() + "\n" : "");
-        writeJar(jar, Map.of(PluginIndex.RESOURCE_PATH, new PluginIndexCodec().write(index()),
+        writeJar(jar, Map.of(PluginIndex.RESOURCE_PATH, CODEC.write(index()),
                 SERVICE, providers.getBytes(StandardCharsets.UTF_8)));
         return isolatedLoader(new URL[]{jar.toUri().toURL()});
     }
@@ -297,6 +299,7 @@ class RequiredEmbeddedPluginCatalogTest {
         return new URLClassLoader(urls, getClass().getClassLoader()) {
             @Override public Enumeration<URL> getResources(String name) throws IOException {
                 if (name.startsWith("META-INF/services/") || name.startsWith("META-INF/yano/plugins/")
+                        || name.startsWith(ContributionKindRegistry.RESOURCE_DIRECTORY)
                         || name.equals(PluginIndex.RESOURCE_PATH)) {
                     return findResources(name);
                 }

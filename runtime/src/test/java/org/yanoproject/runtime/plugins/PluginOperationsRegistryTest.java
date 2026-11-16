@@ -8,15 +8,6 @@ import org.yanoproject.api.plugin.PluginDigestMode;
 import org.yanoproject.api.plugin.PluginSelectionStatus;
 import org.yanoproject.api.plugin.PluginSourceCategory;
 import org.yanoproject.api.plugin.PluginTrustTier;
-import org.yanoproject.x.framework.api.appchain.AppChainGateways;
-import org.yanoproject.x.framework.api.plugin.domain.DomainApi;
-import org.yanoproject.x.framework.api.plugin.domain.DomainApiAccess;
-import org.yanoproject.x.framework.api.plugin.domain.DomainApiContext;
-import org.yanoproject.x.framework.api.plugin.domain.DomainApiMediaType;
-import org.yanoproject.x.framework.api.plugin.domain.DomainApiProvider;
-import org.yanoproject.x.framework.api.plugin.domain.DomainApiResponse;
-import org.yanoproject.x.framework.api.plugin.domain.DomainApiRoute;
-import org.yanoproject.x.framework.api.plugin.domain.DomainHttpMethod;
 import org.yanoproject.api.plugin.operations.PluginBundleRuntimeInfo;
 import org.yanoproject.api.plugin.operations.PluginContributionRuntimeInfo;
 import org.yanoproject.api.plugin.operations.PluginCounterValue;
@@ -69,6 +60,56 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class PluginOperationsRegistryTest {
     private static final String FINGERPRINT = "sha256:" + "0".repeat(64);
+    private static final java.util.Set<String> TRACKED_KINDS = java.util.Set.of("fixture-product");
+
+    @Test
+    void recorderTracksOnlyOperationsTrackedKindsOfOwningBundles() {
+        String tracked = "com.example.tracked";
+        String untracked = "com.example.untracked";
+        PluginCatalogView catalog = catalog(List.of(
+                bundle(tracked, List.of(contribution("fixture-product", tracked, PluginTrustTier.CONSENSUS))),
+                bundle(untracked, List.of(contribution("health", untracked,
+                        PluginTrustTier.AUXILIARY_LOCAL)))));
+        try (PluginOperationsRegistry registry = registry(
+                catalog, new RecordingProviders(), Duration.ofSeconds(1), Duration.ofMillis(200))) {
+            var recorder = registry.recorder();
+            recorder.activating("fixture-product", tracked);
+            assertThat(contribution(registry.snapshot(), tracked, "fixture-product").lifecycle())
+                    .isEqualTo(PluginLifecycleState.ACTIVATING);
+            recorder.active("fixture-product", tracked);
+            recorder.admitted(tracked);
+            recorder.admitted(tracked);
+            recorder.started(tracked);
+            recorder.queueFinished(tracked);
+            recorder.outcome(tracked, PluginOperation.DOMAIN_GET, PluginOperationOutcome.SUCCEEDED);
+            recorder.outcome(tracked, PluginOperation.DOMAIN_POST, PluginOperationOutcome.TIMED_OUT);
+            await(() -> bundle(registry.snapshot(), tracked).activeCallbacks() == 1
+                    && bundle(registry.snapshot(), tracked).queuedCallbacks() == 0
+                    && operationTotal(registry.snapshot(), tracked, PluginOperation.DOMAIN_POST,
+                    PluginOperationOutcome.TIMED_OUT) == 1);
+            assertThat(operationTotal(registry.snapshot(), tracked, PluginOperation.DOMAIN_GET,
+                    PluginOperationOutcome.SUCCEEDED)).isEqualTo(1);
+            assertThat(operationTotal(registry.snapshot(), tracked, PluginOperation.ACTIVATION,
+                    PluginOperationOutcome.SUCCEEDED)).isEqualTo(1);
+            recorder.callbackFinished(tracked);
+            await(() -> bundle(registry.snapshot(), tracked).activeCallbacks() == 0);
+            recorder.stopped("fixture-product", tracked, false);
+            assertThat(contribution(registry.snapshot(), tracked, "fixture-product").failure().code())
+                    .isEqualTo(PluginFailureCode.CLOSE_FAILED);
+
+            recorder.active("health", untracked);
+            recorder.admitted(untracked);
+            recorder.outcome(untracked, PluginOperation.DOMAIN_GET, PluginOperationOutcome.SUCCEEDED);
+            recorder.active("fixture-product", "com.example.unknown");
+            assertThat(bundle(registry.snapshot(), untracked).queuedCallbacks()).isZero();
+            assertThat(operationTotal(registry.snapshot(), untracked, PluginOperation.DOMAIN_GET,
+                    PluginOperationOutcome.SUCCEEDED)).isZero();
+            assertThat(contribution(registry.snapshot(), untracked, "health").lifecycleObserved())
+                    .isTrue();
+            assertThat(contribution(registry.snapshot(), tracked, "fixture-product")
+                    .lifecycleObserved()).isTrue();
+        }
+    }
 
     @Test
     void keepsUnobservedContributionsValidatedAndAggregatesUnknownHealthReport() {
@@ -86,7 +127,7 @@ class PluginOperationsRegistryTest {
         PluginCatalogView catalog = catalog(List.of(
                 bundle(emptyId, List.of()),
                 bundle(machineId, List.of(contribution(
-                        "app-state-machine", machineId, PluginTrustTier.CONSENSUS))),
+                        "utxo-index-contributor", machineId, PluginTrustTier.CONSENSUS))),
                 bundle(healthId, List.of(contribution(
                         "health", healthId, PluginTrustTier.AUXILIARY_LOCAL)))));
 
@@ -101,7 +142,7 @@ class PluginOperationsRegistryTest {
             assertThat(bundle(snapshot, emptyId).lifecycle())
                     .isEqualTo(PluginLifecycleState.VALIDATED);
             PluginContributionRuntimeInfo machine = contribution(
-                    snapshot, machineId, "app-state-machine");
+                    snapshot, machineId, "utxo-index-contributor");
             assertThat(machine.lifecycle()).isEqualTo(PluginLifecycleState.VALIDATED);
             assertThat(machine.instances()).isEmpty();
             assertThat(contribution(snapshot, healthId, "health").instances())
@@ -127,21 +168,21 @@ class PluginOperationsRegistryTest {
                         () -> { })));
         PluginCatalogView catalog = catalog(List.of(
                 bundle(healthId, List.of(
-                        contribution("domain-api", healthId,
+                        contribution("fixture-product", healthId,
                                 PluginTrustTier.PRIVILEGED_LOCAL),
                         contribution("health", healthId,
                                 PluginTrustTier.AUXILIARY_LOCAL))),
                 bundle(ordinaryId, List.of(
-                        contribution("domain-api", ordinaryId,
+                        contribution("fixture-product", ordinaryId,
                                 PluginTrustTier.PRIVILEGED_LOCAL),
-                        contribution("app-state-machine", ordinaryId,
+                        contribution("utxo-index-contributor", ordinaryId,
                                 PluginTrustTier.CONSENSUS)))));
 
         try (PluginOperationsRegistry registry = registry(
                 catalog, providers, Duration.ofMillis(20), Duration.ofMillis(200))) {
             registry.activateTelemetry();
-            registry.domainActive(healthId);
-            registry.domainActive(ordinaryId);
+            registry.recorder().active("fixture-product", healthId);
+            registry.recorder().active("fixture-product", ordinaryId);
             registry.startSampling();
             await(() -> operationTotal(registry.snapshot(), healthId,
                     PluginOperation.HEALTH_SAMPLE,
@@ -245,7 +286,7 @@ class PluginOperationsRegistryTest {
         String id = "com.example.node-lifecycle";
         PluginCatalogView catalog = catalog(List.of(bundle(id, List.of(
                 contribution("node-plugin", id, PluginTrustTier.PRIVILEGED_LOCAL),
-                contribution("app-effect-executor", id,
+                contribution("utxo-index-contributor", id,
                         PluginTrustTier.PRIVILEGED_LOCAL)))));
 
         try (PluginOperationsRegistry registry = registry(
@@ -263,7 +304,7 @@ class PluginOperationsRegistryTest {
             PluginContributionRuntimeInfo node =
                     contribution(registry.snapshot(), id, "node-plugin");
             PluginContributionRuntimeInfo effect =
-                    contribution(registry.snapshot(), id, "app-effect-executor");
+                    contribution(registry.snapshot(), id, "utxo-index-contributor");
             assertThat(node.lifecycleObserved()).isTrue();
             assertThat(node.lifecycle()).isEqualTo(PluginLifecycleState.CLOSED);
             assertThat(effect.lifecycleObserved()).isFalse();
@@ -516,7 +557,7 @@ class PluginOperationsRegistryTest {
                     throw new IllegalStateException("health activation failed");
                 }));
         PluginCatalogView catalog = catalog(List.of(bundle(id, List.of(
-                contribution("app-state-machine", id, PluginTrustTier.CONSENSUS),
+                contribution("utxo-index-contributor", id, PluginTrustTier.CONSENSUS),
                 contribution("health", id, PluginTrustTier.AUXILIARY_LOCAL)))));
 
         try (PluginOperationsRegistry registry = registry(
@@ -530,7 +571,7 @@ class PluginOperationsRegistryTest {
             assertThat(runtime.health()).isEqualTo(PluginHealthStatus.DEGRADED);
             assertThat(runtime.failure().code())
                     .isEqualTo(PluginFailureCode.ACTIVATION_FAILED);
-            assertThat(contribution(registry.snapshot(), id, "app-state-machine")
+            assertThat(contribution(registry.snapshot(), id, "utxo-index-contributor")
                     .lifecycleObserved()).isFalse();
             assertThat(contribution(registry.snapshot(), id, "health")
                     .lifecycleObserved()).isTrue();
@@ -704,7 +745,7 @@ class PluginOperationsRegistryTest {
             }
         };
         PluginHealthProvider facade = (PluginHealthProvider) PluginSpiFacades.provider(
-                ContributionKind.HEALTH, raw, plugin, id, id,
+                TestPluginKinds.KINDS.binding(ContributionKind.HEALTH), raw, plugin, id, id,
                 raw.getClass().getName());
         RecordingProviders providers = new RecordingProviders();
         providers.add(PluginHealthProvider.class, id, facade);
@@ -1091,84 +1132,6 @@ class PluginOperationsRegistryTest {
         }
     }
 
-    @Test
-    void throwingOperationsObservationCannotChangeDomainResponseOrLifetime() {
-        String id = "com.example.domain-observation";
-        RecordingProviders providers = new RecordingProviders();
-        providers.add(DomainApiProvider.class, id, new DomainApiProvider() {
-            @Override
-            public String id() {
-                return id;
-            }
-
-            @Override
-            public DomainApi create(DomainApiContext context) {
-                return new DomainApi() {
-                    @Override
-                    public List<DomainApiRoute> routes() {
-                        return List.of(new DomainApiRoute(
-                                "read", DomainHttpMethod.GET, "read",
-                                DomainApiAccess.READ));
-                    }
-
-                    @Override
-                    public DomainApiResponse handle(
-                            org.yanoproject.x.framework.api.plugin.domain.DomainApiRequest request
-                    ) {
-                        return new DomainApiResponse(
-                                200, DomainApiMediaType.OCTET_STREAM, new byte[]{7});
-                    }
-
-                    @Override
-                    public void close() {
-                    }
-                };
-            }
-        });
-        PluginCatalogView catalog = catalog(List.of(bundle(id, List.of(
-                contribution("domain-api", id, PluginTrustTier.PRIVILEGED_LOCAL)))));
-        AtomicBoolean throwFromClock = new AtomicBoolean();
-        LongSupplier epochClock = () -> {
-            if (throwFromClock.get()) {
-                throw new IllegalStateException("observation failed");
-            }
-            return System.currentTimeMillis();
-        };
-        PluginOperationsRegistry operations = new PluginOperationsRegistry(
-                catalog, providers,
-                LoggerFactory.getLogger(PluginOperationsRegistryTest.class),
-                Duration.ofSeconds(1), Duration.ofMillis(200), 4, 256,
-                epochClock, System::nanoTime);
-        DomainApiRegistry domain = new DomainApiRegistry(
-                providers, ignored -> Map.of(), AppChainGateways.empty(),
-                LoggerFactory.getLogger(PluginOperationsRegistryTest.class),
-                Duration.ofSeconds(1), 16, operations);
-        try {
-            throwFromClock.set(true);
-            domain.resume();
-            assertThat(domain.dispatch(
-                    id, DomainHttpMethod.GET, "read", Map.of(), new byte[0]).body())
-                    .containsExactly(7);
-            domain.sealAndAwait();
-            assertThat(providers.cleanupSignals).singleElement()
-                    .satisfies(signal -> assertThat(signal).isDone());
-
-            throwFromClock.set(false);
-            operations.close();
-            domain.resume();
-            assertThat(domain.dispatch(
-                    id, DomainHttpMethod.GET, "read", Map.of(), new byte[0]).body())
-                    .containsExactly(7);
-            domain.sealAndAwait();
-            assertThat(providers.cleanupSignals).hasSize(2)
-                    .allMatch(CompletableFuture::isDone);
-        } finally {
-            throwFromClock.set(false);
-            domain.close();
-            operations.close();
-        }
-    }
-
     private static void assertProcessFatalActivationCommitCleanup(
             RuntimeException cleanupFailure
     ) throws Exception {
@@ -1206,7 +1169,7 @@ class PluginOperationsRegistryTest {
             return System.currentTimeMillis();
         };
         PluginOperationsRegistry registry = new PluginOperationsRegistry(
-                catalog(List.of(healthBundle(id))), providers,
+                catalog(List.of(healthBundle(id))), providers, TRACKED_KINDS,
                 LoggerFactory.getLogger(PluginOperationsRegistryTest.class),
                 Duration.ofSeconds(1), Duration.ofSeconds(5), 1, 8,
                 epochClock, System::nanoTime);
@@ -1329,7 +1292,7 @@ class PluginOperationsRegistryTest {
             int queueCapacity
     ) {
         return new PluginOperationsRegistry(
-                catalog, providers,
+                catalog, providers, TRACKED_KINDS,
                 LoggerFactory.getLogger(PluginOperationsRegistryTest.class),
                 interval, deadline, workers, queueCapacity,
                 System::currentTimeMillis, System::nanoTime);
