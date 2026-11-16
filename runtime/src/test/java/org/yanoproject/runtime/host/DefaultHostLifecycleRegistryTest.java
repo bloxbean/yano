@@ -26,25 +26,36 @@ class DefaultHostLifecycleRegistryTest {
     static final PluginOperationsRecorder NO_RECORDER = new NoopOperationsRecorder();
 
     static DefaultHostLifecycleRegistry newRegistry() {
-        return new DefaultHostLifecycleRegistry(DefaultHostLifecycleRegistry.Callers.NONE, NO_RECORDER);
+        return new DefaultHostLifecycleRegistry(new NoCallers(), NO_RECORDER);
     }
 
-    /** A caller seam standing in for PluginManager: the "initializing" plugin is set per test step. */
+    /** A caller seam standing in for the plugin environment: owner frames are set per test step. */
     private static final class TestCallers implements DefaultHostLifecycleRegistry.Callers {
-        private final ThreadLocal<String> initializing = new ThreadLocal<>();
+        private final ThreadLocal<String> owner = new ThreadLocal<>();
         private final Set<String> embedded;
 
         private TestCallers(String... embedded) {
             this.embedded = Set.of(embedded);
         }
 
-        void asInit(String owner, Runnable step) {
-            initializing.set(owner);
-            try { step.run(); } finally { initializing.remove(); }
+        void asInit(String bundleId, Runnable step) {
+            runAsOwner(bundleId, step);
         }
 
-        @Override public Optional<String> initializing() { return Optional.ofNullable(initializing.get()); }
+        /** A nested plugin callback, which suspends owner authority like the catalog's callback tracker. */
+        void nestedCallback(Runnable callback) {
+            String previous = owner.get();
+            owner.remove();
+            try { callback.run(); } finally { owner.set(previous); }
+        }
+
+        @Override public Optional<String> owner() { return Optional.ofNullable(owner.get()); }
         @Override public boolean embedded(String bundleId) { return embedded.contains(bundleId); }
+        @Override public void runAsOwner(String bundleId, Runnable step) {
+            String previous = owner.get();
+            owner.set(bundleId);
+            try { step.run(); } finally { owner.set(previous); }
+        }
     }
 
     @Test
@@ -75,7 +86,7 @@ class DefaultHostLifecycleRegistryTest {
                 registry.registerAssembly("com.example.directory", () -> { }))
                 .hasMessageContaining("Only embedded host-class-path bundles"));
         assertThatThrownBy(() -> registry.registerAssembly("com.example.first", () -> { }))
-                .hasMessageContaining("only during the owner's NodePlugin.init or assembly step");
+                .hasMessageContaining("only from the owner's own NodePlugin.init or assembly step");
 
         ClassLoader caller = Thread.currentThread().getContextClassLoader();
         registry.runAssemblies(pluginLoader);
@@ -88,6 +99,32 @@ class DefaultHostLifecycleRegistryTest {
         callers.asInit("com.example.second", () -> assertThatThrownBy(() ->
                 registry.registerPluginProducts("com.example.second", products(calls, "late")))
                 .hasMessageContaining("before sealing"));
+        registry.close();
+    }
+
+    @Test
+    void nestedPluginCallbacksHoldNoOwnerAuthorityDuringInitOrAssembly() {
+        TestCallers callers = new TestCallers("com.example.owner", "com.example.provider");
+        var registry = new DefaultHostLifecycleRegistry(callers, NO_RECORDER);
+        String nested = "not from a nested plugin callback";
+        List<String> calls = new ArrayList<>();
+        callers.asInit("com.example.owner", () -> {
+            callers.nestedCallback(() -> {
+                assertThatThrownBy(() -> registry.registerAssembly("com.example.owner", () -> { }))
+                        .hasMessageContaining(nested);
+                assertThatThrownBy(() -> registry.registerAssembly("com.example.provider", () -> { }))
+                        .hasMessageContaining(nested);
+            });
+            registry.registerAssembly("com.example.owner", () -> {
+                callers.nestedCallback(() -> assertThatThrownBy(() ->
+                        registry.registerPluginProducts("com.example.owner", products(calls, "nested")))
+                        .hasMessageContaining(nested));
+                registry.registerPluginProducts("com.example.owner", products(calls, "owner"));
+            });
+        });
+        registry.runAssemblies(getClass().getClassLoader());
+        registry.resumePluginProducts();
+        assertThat(calls).containsExactly("owner.resume");
         registry.close();
     }
 

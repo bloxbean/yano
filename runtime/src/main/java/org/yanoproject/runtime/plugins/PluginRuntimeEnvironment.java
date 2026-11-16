@@ -35,6 +35,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -614,6 +615,25 @@ public final class PluginRuntimeEnvironment implements AutoCloseable {
         ensureOpen();
         return build.catalog().bundles().stream().anyMatch(bundle -> bundle.id().equals(bundleId)
                 && bundle.selected() && bundle.source() != PluginSourceCategory.DIRECTORY);
+    }
+
+    /**
+     * The bundle whose own {@code NodePlugin.init} or host assembly step is the innermost plugin code on this
+     * thread; empty when none runs or a nested provider callback is innermost.
+     */
+    public Optional<String> currentOwner() {
+        ensureOpen();
+        return build.registry().callbackTracker().owner();
+    }
+
+    /** Runs a host assembly step as {@code bundleId}'s own code. */
+    public void runAsOwner(String bundleId, Runnable step) {
+        ensureOpen();
+        Objects.requireNonNull(step, "step");
+        build.registry().callbackTracker().callAsOwner(bundleId, () -> {
+            step.run();
+            return null;
+        });
     }
 
     public ClassLoader classLoader() {

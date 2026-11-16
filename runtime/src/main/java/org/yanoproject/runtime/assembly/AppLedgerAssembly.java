@@ -87,10 +87,8 @@ final class AppLedgerAssembly implements Yano, NodeLifecycle {
             DefaultN2NExtensionRegistry n2n = new DefaultN2NExtensionRegistry(false);
             manager = plugins.createNodePluginManager(events, schedulers.scheduled(), operations);
             owned.add(manager);
-            hostLifecycle = new DefaultHostLifecycleRegistry(new DefaultHostLifecycleRegistry.Callers() {
-                @Override public Optional<String> initializing() { return manager.initializingPlugin(); }
-                @Override public boolean embedded(String bundleId) { return plugins.embeddedBundle(bundleId); }
-            }, operations.recorder());
+            hostLifecycle = new DefaultHostLifecycleRegistry(DefaultHostLifecycleRegistry.Callers.of(plugins),
+                    operations.recorder());
             owned.add(hostLifecycle);
             manager.registerHostService(HostApi.SERVICE_KEY, new DefaultHostApi(n2n, plugins.providers(),
                     hostLifecycle, config, options, () -> networkName(n2n), plugins::bundleConfig));

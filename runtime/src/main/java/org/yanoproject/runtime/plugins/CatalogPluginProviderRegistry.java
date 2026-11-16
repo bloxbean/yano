@@ -902,10 +902,13 @@ final class CatalogPluginProviderRegistry implements PluginProviderRegistry, Aut
             return metadata.capabilities();
         }
 
+        /** The facade's own admission suspends the caller's owner frame, so init re-enters it. */
         @Override
         public void init(PluginContext ctx) {
-            callbackTracker.run(() -> PluginThreadContext.run(
-                    pluginClassLoader, () -> delegate.init(ctx)));
+            callbackTracker.run(() -> callbackTracker.callAsOwner(metadata.id(), () -> {
+                PluginThreadContext.run(pluginClassLoader, () -> delegate.init(ctx));
+                return null;
+            }));
         }
 
         @Override

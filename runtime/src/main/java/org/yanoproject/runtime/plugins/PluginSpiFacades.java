@@ -35,6 +35,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.function.UnaryOperator;
@@ -166,10 +167,17 @@ final class PluginSpiFacades {
      * Registry-wide admission fence for callbacks into plugin-owned code.
      * Nested facade calls share their outer admission so a shutdown seal
      * cannot strand a product halfway through one logical callback.
+     *
+     * <p>The tracker also records which bundle's own {@code NodePlugin.init} or
+     * host assembly step is the innermost plugin code on a thread. Every
+     * admitted callback suspends that owner identity until it returns, so code
+     * reached through a nested provider callback can never act as the
+     * enclosing owner.</p>
      */
     static final class CallbackTracker {
         private final ThreadLocal<Integer> localDepth =
                 ThreadLocal.withInitial(() -> 0);
+        private final ThreadLocal<String> owner = new ThreadLocal<>();
         private boolean accepting = true;
         private boolean acceptingCleanup = true;
         private int active;
@@ -200,6 +208,37 @@ final class PluginSpiFacades {
             return admit(Admission.ORDINARY);
         }
 
+        /**
+         * Runs {@code callback} as {@code bundleId}'s own code, restoring the
+         * previous owner afterwards.
+         */
+        <T, X extends Throwable> T callAsOwner(
+                String bundleId,
+                PluginThreadContext.ThrowingSupplier<T, X> callback
+        ) throws X {
+            Objects.requireNonNull(bundleId, "bundleId");
+            String previous = owner.get();
+            owner.set(bundleId);
+            try {
+                return callback.get();
+            } finally {
+                restoreOwner(previous);
+            }
+        }
+
+        /** The bundle whose own init or assembly code is innermost on this thread, if any. */
+        Optional<String> owner() {
+            return Optional.ofNullable(owner.get());
+        }
+
+        private void restoreOwner(String previous) {
+            if (previous == null) {
+                owner.remove();
+            } else {
+                owner.set(previous);
+            }
+        }
+
         private CallbackAdmission admit(Admission admission) {
             int depth = localDepth.get();
             boolean root = depth == 0;
@@ -221,14 +260,17 @@ final class PluginSpiFacades {
                 }
             }
             localDepth.set(depth + 1);
-            return new CallbackAdmission(this, Thread.currentThread());
+            String previousOwner = owner.get();
+            owner.remove();
+            return new CallbackAdmission(this, Thread.currentThread(), previousOwner);
         }
 
-        private void releaseAdmission(Thread owner) {
-            if (owner != Thread.currentThread()) {
+        private void releaseAdmission(Thread thread, String previousOwner) {
+            if (thread != Thread.currentThread()) {
                 throw new IllegalStateException(
                         "Plugin callback admission must close on its owning thread");
             }
+            restoreOwner(previousOwner);
             int remainingDepth = localDepth.get() - 1;
             if (remainingDepth < 0) {
                 throw new IllegalStateException("Plugin callback admission underflow");
@@ -348,12 +390,14 @@ final class PluginSpiFacades {
 
         static final class CallbackAdmission implements AutoCloseable {
             private final CallbackTracker tracker;
-            private final Thread owner;
+            private final Thread thread;
+            private final String previousOwner;
             private boolean closed;
 
-            private CallbackAdmission(CallbackTracker tracker, Thread owner) {
+            private CallbackAdmission(CallbackTracker tracker, Thread thread, String previousOwner) {
                 this.tracker = tracker;
-                this.owner = owner;
+                this.thread = thread;
+                this.previousOwner = previousOwner;
             }
 
             @Override
@@ -361,7 +405,7 @@ final class PluginSpiFacades {
                 if (closed) {
                     return;
                 }
-                tracker.releaseAdmission(owner);
+                tracker.releaseAdmission(thread, previousOwner);
                 closed = true;
             }
         }

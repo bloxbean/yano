@@ -475,14 +475,9 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
             this.pluginOperationsRegistry = new PluginOperationsRegistry(
                     this.pluginEnvironment, log);
             constructionCleanup.addLast(pluginOperationsRegistry::close);
-            this.hostLifecycle = new DefaultHostLifecycleRegistry(new DefaultHostLifecycleRegistry.Callers() {
-                @Override public Optional<String> initializing() {
-                    return pluginManager != null ? pluginManager.initializingPlugin() : Optional.empty();
-                }
-                @Override public boolean embedded(String bundleId) {
-                    return RuntimeNode.this.pluginEnvironment.embeddedBundle(bundleId);
-                }
-            }, pluginOperationsRegistry.recorder());
+            this.hostLifecycle = new DefaultHostLifecycleRegistry(
+                    DefaultHostLifecycleRegistry.Callers.of(this.pluginEnvironment),
+                    pluginOperationsRegistry.recorder());
             // Discover/init plugins before sync assembly so validation customizers can
             // participate in header-validator construction. startAll() still runs at startup.
             if (this.runtimeOptions.plugins().enabled() || !requiredPlugins.isEmpty()) {

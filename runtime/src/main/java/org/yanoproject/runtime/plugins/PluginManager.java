@@ -87,7 +87,6 @@ public final class PluginManager implements AutoCloseable {
     private final PluginSpiFacades.CallbackTracker catalogCallbacks;
     private final NodePluginLifecycleObserver lifecycleObserver;
 
-    private final ThreadLocal<String> initializingPlugin = new ThreadLocal<>();
     /** Successfully initialized plugins, always in dependency order. */
     private final List<NodePlugin> plugins = new ArrayList<>();
     /** Plugins whose most recent start callback completed successfully. */
@@ -312,11 +311,6 @@ public final class PluginManager implements AutoCloseable {
         return services.getPluginService(key, type);
     }
 
-    /** The bundle whose {@code NodePlugin.init} runs on the current thread, if any. */
-    public Optional<String> initializingPlugin() {
-        return Optional.ofNullable(initializingPlugin.get());
-    }
-
     /** Discover, validate and initialize the selected plugin set exactly once. */
     public void discoverAndInit() {
         discoverAndInit(() -> { });
@@ -381,12 +375,7 @@ public final class PluginManager implements AutoCloseable {
                     storageFilters, services, managedCallbacks);
             pluginContexts.put(descriptor.plugin(), context);
             try {
-                initializingPlugin.set(descriptor.id());
-                try {
-                    runPluginCallback(() -> descriptor.plugin().init(context));
-                } finally {
-                    initializingPlugin.remove();
-                }
+                runPluginInit(descriptor.id(), () -> descriptor.plugin().init(context));
                 context.completeInitialization();
                 plugins.add(descriptor.plugin());
             } catch (Throwable failure) {
@@ -440,6 +429,24 @@ public final class PluginManager implements AutoCloseable {
         return catalogCallbacks != null
                 ? catalogCallbacks.call(tcclCall)
                 : tcclCall.get();
+    }
+
+    /**
+     * Runs {@code init} as the bundle's own code, the only place it holds owner-registration authority.
+     * Manifested plugins are catalog facades that re-enter the same owner frame inside their own admission.
+     */
+    private <X extends Throwable> void runPluginInit(
+            String bundleId,
+            PluginThreadContext.ThrowingRunnable<X> init
+    ) throws X {
+        if (catalogCallbacks == null) {
+            runPluginCallback(init);
+            return;
+        }
+        runPluginCallback(() -> catalogCallbacks.callAsOwner(bundleId, () -> {
+            init.run();
+            return null;
+        }));
     }
 
     private <X extends Throwable> void runPluginCallback(

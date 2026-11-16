@@ -6,6 +6,7 @@ import org.yanoproject.api.plugin.spi.PluginProducts;
 import org.yanoproject.runtime.kernel.Subsystem;
 import org.yanoproject.runtime.kernel.SubsystemContext;
 import org.yanoproject.runtime.kernel.SubsystemHealth;
+import org.yanoproject.runtime.plugins.PluginRuntimeEnvironment;
 import org.yanoproject.runtime.util.LifecycleFailures;
 
 import java.util.ArrayList;
@@ -23,15 +24,16 @@ import java.util.function.BooleanSupplier;
  * Before assembly, construction failure may close this registry. After assembly, only the
  * kernel's final resource stage closes it; callers must never race it against kernel transitions.
  *
- * <p>Owner-id registrations are accepted only from the owner's own {@code NodePlugin.init} (as reported
- * by {@link Callers}) or from its assembly step, and only for embedded bundles.</p>
+ * <p>Owner-id registrations are accepted only from the owner's own {@code NodePlugin.init} or assembly
+ * step, and only for embedded bundles. Code reached through a nested plugin callback holds no owner
+ * authority (see {@link Callers#owner()}), so it cannot impersonate the enclosing owner.</p>
  */
 public final class DefaultHostLifecycleRegistry implements HostLifecycleRegistry, AutoCloseable {
     private final Map<String, Entry> entries = new LinkedHashMap<>();
     private final Map<String, Runnable> assemblies = new LinkedHashMap<>();
     private final Map<String, BooleanSupplier> readiness = new LinkedHashMap<>();
     private final Map<String, PluginProducts> products = new LinkedHashMap<>();
-    private final ThreadLocal<String> assemblingOwner = new ThreadLocal<>();
+    private final ThreadLocal<Boolean> assembling = new ThreadLocal<>();
     private final CloseOnce close = new CloseOnce();
     private final Callers callers;
     private final PluginOperationsRecorder recorder;
@@ -41,17 +43,27 @@ public final class DefaultHostLifecycleRegistry implements HostLifecycleRegistry
 
     /** Identifies the plugin that calls the registry. */
     public interface Callers {
-        /** A host without plugins: every owner registration is rejected. */
-        Callers NONE = new Callers() {
-            @Override public Optional<String> initializing() { return Optional.empty(); }
-            @Override public boolean embedded(String bundleId) { return false; }
-        };
+        /**
+         * The bundle whose own {@code NodePlugin.init} or assembly step is the innermost plugin code on the
+         * current thread; empty when none runs or a nested plugin callback is innermost.
+         */
+        Optional<String> owner();
 
-        /** The bundle whose {@code NodePlugin.init} runs on the current thread. */
-        Optional<String> initializing();
+        /** Runs an assembly step as {@code bundleId}'s own code. */
+        void runAsOwner(String bundleId, Runnable step);
 
         /** Whether the bundle was loaded from the host class path. */
         boolean embedded(String bundleId);
+
+        /** The callers of a host whose plugins run in {@code plugins}. */
+        static Callers of(PluginRuntimeEnvironment plugins) {
+            Objects.requireNonNull(plugins, "plugins");
+            return new Callers() {
+                @Override public Optional<String> owner() { return plugins.currentOwner(); }
+                @Override public void runAsOwner(String bundleId, Runnable step) { plugins.runAsOwner(bundleId, step); }
+                @Override public boolean embedded(String bundleId) { return plugins.embeddedBundle(bundleId); }
+            };
+        }
     }
 
     /**
@@ -125,7 +137,7 @@ public final class DefaultHostLifecycleRegistry implements HostLifecycleRegistry
         Objects.requireNonNull(pluginLoader, "pluginLoader");
         List<Map.Entry<String, Runnable>> steps;
         synchronized (this) {
-            if (assembled || assemblingOwner.get() != null) {
+            if (assembled || assembling.get() != null) {
                 throw new IllegalStateException("Host assembly already ran");
             }
             assembled = true;
@@ -134,17 +146,17 @@ public final class DefaultHostLifecycleRegistry implements HostLifecycleRegistry
         for (Map.Entry<String, Runnable> step : steps) {
             Thread thread = Thread.currentThread();
             ClassLoader previous = thread.getContextClassLoader();
-            assemblingOwner.set(step.getKey());
+            assembling.set(Boolean.TRUE);
             thread.setContextClassLoader(pluginLoader);
             try {
-                step.getValue().run();
+                callers.runAsOwner(step.getKey(), step.getValue());
             } catch (Throwable failure) {
                 LifecycleFailures.rethrowIfProcessFatalReachable(failure);
                 throw new IllegalStateException("Plugin bundle '" + step.getKey() + "' failed host assembly",
                         failure);
             } finally {
                 thread.setContextClassLoader(previous);
-                assemblingOwner.remove();
+                assembling.remove();
             }
         }
     }
@@ -186,14 +198,12 @@ public final class DefaultHostLifecycleRegistry implements HostLifecycleRegistry
 
     private String requireOwner(String ownerBundleId, boolean assemblyAllowed) {
         Objects.requireNonNull(ownerBundleId, "ownerBundleId");
-        String caller = assemblingOwner.get();
-        if (caller != null && !assemblyAllowed) {
+        if (assembling.get() != null && !assemblyAllowed) {
             throw new IllegalStateException("Assembly steps cannot register further assembly steps");
         }
-        if (caller == null) {
-            caller = callers.initializing().orElseThrow(() -> new IllegalStateException(
-                    "Owner registrations are accepted only during the owner's NodePlugin.init or assembly step"));
-        }
+        String caller = callers.owner().orElseThrow(() -> new IllegalStateException(
+                "Owner registrations are accepted only from the owner's own NodePlugin.init or assembly step, "
+                        + "not from a nested plugin callback"));
         if (!caller.equals(ownerBundleId)) {
             throw new IllegalStateException("Plugin '" + caller + "' cannot register for owner '"
                     + ownerBundleId + "'");
