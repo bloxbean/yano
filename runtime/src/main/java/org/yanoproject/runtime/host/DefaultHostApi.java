@@ -36,7 +36,7 @@ public final class DefaultHostApi implements HostApi {
         this.n2n = Objects.requireNonNull(n2n, "n2n");
         this.providers = Objects.requireNonNull(providers, "providers");
         this.lifecycle = Objects.requireNonNull(lifecycle, "lifecycle");
-        this.config = config.toBuilder().build();
+        this.config = YanoConfig.copyOf(config);
         this.options = new RuntimeOptions(options.events(), options.plugins(),
                 PluginConfigValues.immutableCopy(options.globals()));
         this.networkName = Objects.requireNonNull(networkName, "networkName");
@@ -47,7 +47,7 @@ public final class DefaultHostApi implements HostApi {
     @Override public N2NExtensionRegistry n2n() { return n2n; }
     @Override public PluginProviderRegistry providers() { return providers; }
     @Override public HostLifecycleRegistry lifecycle() { return lifecycle; }
-    @Override public YanoConfig nodeConfig() { return config.toBuilder().build(); }
+    @Override public YanoConfig nodeConfig() { return YanoConfig.copyOf(config); }
     @Override public String networkName() { return networkName.get(); }
 
     @Override

@@ -57,6 +57,22 @@ class DefaultHostApiTest {
     }
 
     @Test
+    void nodeConfigIsolatesMutableCollectionsFromCallersAndTheSource() {
+        YanoConfig config = YanoConfig.serverOnly(0);
+        config.setBootstrapAddresses(new ArrayList<>(List.of("addr_test1source")));
+        var host = new DefaultHostApi(new DefaultN2NExtensionRegistry(), PluginProviderRegistry.empty(),
+                DefaultHostLifecycleRegistryTest.newRegistry(), config,
+                new RuntimeOptions(EventsOptions.defaults(), PluginsOptions.defaults(), Map.of()),
+                () -> "devnet", id -> Map.of());
+
+        host.nodeConfig().getBootstrapAddresses().clear();
+        assertThat(host.nodeConfig().getBootstrapAddresses()).containsExactly("addr_test1source");
+
+        config.getBootstrapAddresses().add("addr_test1later");
+        assertThat(host.nodeConfig().getBootstrapAddresses()).containsExactly("addr_test1source");
+    }
+
+    @Test
     void appOnlyNetworkRejectsCardanoMagicsConflictsSharedHostsAndLateCalls() {
         var shared = new DefaultN2NExtensionRegistry();
         assertThatThrownBy(() -> shared.requireAppOnlyNetwork(77))
