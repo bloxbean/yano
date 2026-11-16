@@ -442,10 +442,11 @@ and REST.
   - `@QuarkusTest` suites.
 
   Output paths (`app/build/yano.jar`, ZIPs) are unchanged for scripts and QA.
-- `app-core` gets a public CDI producer for the single `Yano` instance, which replaces today's
-  package-private `ensureYano()`.
-- The small surface X compiles against lives in `org.yanoproject.app.spi`: the `Yano` producer,
-  `RuntimeGlobalsContributor`, the shared `ApiKeys` helper, and `RequiresCardano`. Yano has no japicmp
+- `YanoProducer` gets a public `@Produces @ApplicationScoped Yano` method for the single instance;
+  `ensureYano()` stays package-private. Consumers simply `@Inject Yano`.
+- The small surface X compiles against lives in `org.yanoproject.app.spi`:
+  `RuntimeGlobalsContributor`, the shared `ApiKeys` helper, and `RequiresCardano`, plus the injectable
+  `Yano` itself. Yano has no japicmp
   or revapi gate today (B13), so the gate for this surface is the M1 downstream-consumer check. That
   check is a source-compilation and boot check, not full binary-compatibility coverage. It compiles and
   boots a fixture against exactly these symbols from staged publications. It runs in CI, and locally

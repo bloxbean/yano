@@ -19,7 +19,8 @@ record PluginHostConfiguration(
         Set<String> allowList,
         Set<String> denyList,
         boolean autoRegisterAnnotated,
-        boolean loggingEnabled
+        boolean loggingEnabled,
+        Set<String> required
 ) {
     static PluginHostConfiguration from(Config config) {
         Objects.requireNonNull(config, "config");
@@ -33,7 +34,9 @@ record PluginHostConfiguration(
                         PluginHostConfiguration::parseList).orElseGet(Set::of)),
                 resolveBoolean(config, YanoPropertyKeys.Plugins.AUTO_REGISTER_ANNOTATED,
                         false),
-                resolveBoolean(config, YanoPropertyKeys.Plugins.LOGGING_ENABLED, false));
+                resolveBoolean(config, YanoPropertyKeys.Plugins.LOGGING_ENABLED, false),
+                Set.copyOf(resolve(config, YanoPropertyKeys.Plugins.REQUIRED,
+                        PluginHostConfiguration::parseList).orElseGet(Set::of)));
     }
 
     private static boolean resolveBoolean(

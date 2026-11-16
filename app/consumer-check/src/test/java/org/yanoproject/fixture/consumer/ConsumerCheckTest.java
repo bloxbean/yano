@@ -12,7 +12,6 @@ import org.yanoproject.api.LedgerQuery;
 import org.yanoproject.api.NodeLifecycle;
 import org.yanoproject.api.TxGateway;
 import org.yanoproject.api.plugin.PluginCatalogView;
-import org.yanoproject.app.YanoProducer;
 import org.yanoproject.runtime.assembly.Yano;
 
 import java.net.ServerSocket;
@@ -66,15 +65,12 @@ class ConsumerCheckTest {
     Yano yano;
 
     @Inject
-    YanoProducer producer;
-
-    @Inject
     ConsumerGlobals globals;
 
     @Test
     void oneYanoInstanceBehindUnambiguousProducers() {
         assertEquals(1, Arc.container().beanManager().getBeans(Yano.class).size());
-        assertSame(producer.ensureYano(), ClientProxy.unwrap(yano));
+        assertSame(ClientProxy.unwrap(yano), ClientProxy.unwrap(Arc.container().instance(Yano.class).get()));
         for (Class<?> role : List.of(NodeLifecycle.class, ChainQuery.class, LedgerQuery.class,
                 TxGateway.class, PluginCatalogView.class)) {
             assertTrue(Arc.container().select(role).isResolvable(), role.getName());

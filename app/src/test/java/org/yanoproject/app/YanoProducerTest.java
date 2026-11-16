@@ -14,6 +14,7 @@ import org.yanoproject.runtime.config.RollbackRetentionPlanner;
 import org.yanoproject.runtime.plugins.HostPluginActivationException;
 import org.yanoproject.runtime.plugins.PluginCatalogActivationException;
 import org.yanoproject.runtime.plugins.PluginManager;
+import org.yanoproject.runtime.plugins.PluginRuntimeEnvironment;
 import io.smallrye.config.EnvConfigSource;
 import io.smallrye.config.SmallRyeConfigBuilder;
 import io.smallrye.config.source.yaml.YamlConfigSource;
@@ -336,6 +337,30 @@ class YanoProducerTest {
         assertThrows(IllegalStateException.class,
                 () -> YanoProducer.putContributedGlobals(hostKey, List.of(overriding)));
         assertEquals(Map.of(YanoPropertyKeys.Utxo.ENABLED, true), hostKey);
+
+        RuntimeGlobalsContributor absent = () -> null;
+        assertTrue(assertThrows(IllegalStateException.class,
+                () -> YanoProducer.putContributedGlobals(new HashMap<>(), List.of(absent))).getMessage()
+                .contains("returned null"));
+    }
+
+    @Test
+    void requiredPluginsReachTheRuntimeGlobalsButNotTheBundleConfiguration() {
+        var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
+        producer.appConfig = new PresentConfig(Map.of(
+                YanoPropertyKeys.Plugins.ENABLED, "false",
+                YanoPropertyKeys.Plugins.REQUIRED, " com.example.a, ,com.example.b "));
+        Map<String, Object> globals = new HashMap<>();
+
+        producer.putRequiredPlugins(globals);
+
+        assertEquals(Set.of("com.example.a", "com.example.b"), PluginRuntimeEnvironment.requiredBundles(globals));
+        assertFalse(producer.pluginOptions().config().containsKey(YanoPropertyKeys.Plugins.REQUIRED));
+
+        producer.appConfig = new PresentConfig(Map.of());
+        Map<String, Object> none = new HashMap<>();
+        producer.putRequiredPlugins(none);
+        assertTrue(none.isEmpty());
     }
 
     @Test

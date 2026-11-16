@@ -446,8 +446,15 @@ public class YanoProducer {
         this(PluginLoaderHandle.classpath(pluginClassLoader));
     }
 
+    /** The application's single {@link Yano}; downstream applications simply {@code @Inject Yano}. */
+    @Produces
+    @ApplicationScoped
+    public Yano createYano() {
+        return ensureYano();
+    }
+
     /** Assembles the application's single {@link Yano} on first use and returns it afterwards. */
-    public Yano ensureYano() {
+    Yano ensureYano() {
         if (apiPrefixContract != null) {
             apiPrefixContract.verify();
         }
@@ -650,6 +657,7 @@ public class YanoProducer {
         globals.put(YanoPropertyKeys.UtxoFilter.ADDRESSES, utxoFilterAddresses.orElse(java.util.List.of()));
         globals.put(YanoPropertyKeys.UtxoFilter.PAYMENT_CREDENTIALS,
                 utxoFilterPaymentCredentials.orElse(java.util.List.of()));
+        putRequiredPlugins(globals);
         putContributedGlobals(globals, globalsContributors);
 
         RuntimeOptions runtimeOptions = YanoAssembly.applyBootstrapPartialStatePolicy(
@@ -685,6 +693,7 @@ public class YanoProducer {
 
     private Yano createStandaloneAppLedger() {
         Map<String, Object> globals = new HashMap<>();
+        putRequiredPlugins(globals);
         putContributedGlobals(globals, globalsContributors);
         YanoConfig standalone = YanoConfig.builder().mode(RuntimeMode.APP_LEDGER)
                 .enableServer(serverEnabled).serverPort(serverPort)
@@ -858,19 +867,37 @@ public class YanoProducer {
      * Adds every contributor's globals. A key the host already set, or one that two contributors set,
      * fails startup rather than letting either value win silently.
      */
+    /** ADR-064 D2: the host-required embedded bundles reach the runtime through its globals. */
+    void putRequiredPlugins(Map<String, Object> globals) {
+        Set<String> required = PluginHostConfiguration.from(appConfig).required();
+        if (!required.isEmpty()) {
+            globals.put(YanoPropertyKeys.Plugins.REQUIRED, String.join(",", required));
+        }
+    }
+
+    /**
+     * Merges every contributor into {@code globals}, which already holds the keys the host set in this run.
+     * A key a contributor shares with the host or another contributor, or a contributor returning
+     * {@code null}, fails startup naming the contributor.
+     */
     static void putContributedGlobals(Map<String, Object> globals,
                                       List<RuntimeGlobalsContributor> contributors) {
         Map<String, Object> contributed = new HashMap<>();
         for (RuntimeGlobalsContributor contributor : contributors) {
-            for (Map.Entry<String, Object> global : contributor.globals().entrySet()) {
+            String name = contributor.getClass().getName();
+            Map<String, Object> contribution = contributor.globals();
+            if (contribution == null) {
+                throw new IllegalStateException("Runtime globals contributor " + name + " returned null");
+            }
+            for (Map.Entry<String, Object> global : contribution.entrySet()) {
                 String key = global.getKey();
                 if (globals.containsKey(key)) {
-                    throw new IllegalStateException(
-                            "Runtime global " + key + " is set by the host and cannot be contributed");
+                    throw new IllegalStateException("Runtime global " + key + " is set by the host in this run"
+                            + " and cannot be contributed by " + name);
                 }
                 if (contributed.containsKey(key)) {
-                    throw new IllegalStateException(
-                            "Runtime global " + key + " is contributed more than once");
+                    throw new IllegalStateException("Runtime global " + key + " is contributed more than once,"
+                            + " again by " + name);
                 }
                 contributed.put(key, global.getValue());
             }
@@ -1398,7 +1425,8 @@ public class YanoProducer {
                 YanoPropertyKeys.Plugins.ALLOW_LIST,
                 YanoPropertyKeys.Plugins.DENY_LIST,
                 YanoPropertyKeys.Plugins.AUTO_REGISTER_ANNOTATED,
-                YanoPropertyKeys.Plugins.LOGGING_ENABLED).contains(property)) {
+                YanoPropertyKeys.Plugins.LOGGING_ENABLED,
+                YanoPropertyKeys.Plugins.REQUIRED).contains(property)) {
             return false;
         }
         if (property.startsWith("yano.plugins.")) {
