@@ -1981,6 +1981,124 @@ tasks.named('check') {
     dependsOn tasks.named('testObservabilityLauncher')
 }
 
+// Starts the final uber-JAR with the conformance fixture as its only directory plugin, waits until
+// it is live, runs assertions(process, httpPort, nodePort, logFile, logTail) and always stops the
+// process and deletes its state.
+def runPackagedJvmWithFixture = { File uberJar, String smokeName, List<String> extraArguments,
+                                  Closure assertions ->
+    def smokeParent = layout.buildDirectory.dir('tmp').get().asFile
+    smokeParent.mkdirs()
+    def smokeRoot = java.nio.file.Files.createTempDirectory(
+            smokeParent.toPath(),
+            smokeName + '-')
+    def pluginDirectory = java.nio.file.Files.createDirectory(smokeRoot.resolve('plugins'))
+    def stateDirectory = smokeRoot.resolve('chainstate')
+    def logFile = smokeRoot.resolve('jvm.log')
+    def fixtureJar = conformanceFixtureJar.get().archiveFile.get().asFile.toPath()
+    java.nio.file.Files.copy(fixtureJar, pluginDirectory.resolve(fixtureJar.fileName))
+
+    def ports = allocateLoopbackPorts.call(2)
+    int httpPort = ports[0]
+    int nodePort = ports[1]
+    def javaExecutable = new File(System.getProperty('java.home'),
+            isWindowsHost() ? 'bin/java.exe' : 'bin/java')
+    def command = [javaExecutable.absolutePath]
+    command.addAll(pluginOperationsAuthArguments())
+    command.addAll(pluginConformanceRuntimeArguments(
+            httpPort, nodePort, stateDirectory, pluginDirectory))
+    command.addAll(extraArguments)
+    command.addAll(['-jar', uberJar.absolutePath])
+    def processBuilder = new ProcessBuilder(command)
+            .directory(smokeRoot.toFile())
+            .redirectErrorStream(true)
+            .redirectOutput(logFile.toFile())
+    processBuilder.environment().remove('YANO_PLUGINS_DENY_LIST')
+    processBuilder.environment().remove('YANO_API_PREFIX')
+    processBuilder.environment().remove('QUARKUS_RESTEASY_PATH')
+    processBuilder.environment().putAll([
+            'QUARKUS_HTTP_HOST'       : '127.0.0.1',
+            'QUARKUS_HTTP_PORT'       : Integer.toString(httpPort),
+            'QUARKUS_CONSOLE_COLOR'   : 'false',
+            'YANO_STORAGE_PATH'       : stateDirectory.toAbsolutePath().toString(),
+            'YANO_PLUGINS_DIRECTORY'  : pluginDirectory.toAbsolutePath().toString(),
+            'YANO_PLUGINS_ENABLED'    : 'true',
+            'YANO_PLUGINS_ALLOW_LIST' :
+                    'org.yanoproject.fixture.plugin-conformance'
+    ])
+
+    Process process = null
+    Throwable primaryFailure = null
+    def logTail = {
+        if (!java.nio.file.Files.isRegularFile(logFile)) {
+            return '<packaged JVM process produced no log>'
+        }
+        def lines = java.nio.file.Files.readAllLines(logFile)
+        def excerpt = lines.size() <= 400
+                ? lines
+                : (lines.take(150) + ['... packaged JVM log omitted ...']
+                + lines.takeRight(250))
+        excerpt.join(System.lineSeparator())
+    }
+    try {
+        process = processBuilder.start()
+        def liveUrl = new URL("http://127.0.0.1:${httpPort}/q/health/live")
+        long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(90)
+        boolean live = false
+        while (!live && System.nanoTime() < deadline && process.isAlive()) {
+            java.net.HttpURLConnection connection = null
+            try {
+                connection = (java.net.HttpURLConnection) liveUrl.openConnection()
+                connection.connectTimeout = 750
+                connection.readTimeout = 750
+                int status = connection.responseCode
+                def response = status >= 400 ? connection.errorStream : connection.inputStream
+                response?.withCloseable { it.readAllBytes() }
+                live = status == 200
+            } catch (IOException ignored) {
+                // Listener is not ready yet.
+            } finally {
+                connection?.disconnect()
+            }
+            if (!live) Thread.sleep(250)
+        }
+        if (!live) {
+            def state = process.isAlive() ? 'did not become live' :
+                    "exited with code ${process.exitValue()}"
+            throw new GradleException(
+                    "Packaged JVM ${smokeName} ${state}.${System.lineSeparator()}"
+                            + logTail())
+        }
+
+        assertions.call(process, httpPort, nodePort, logFile, logTail)
+    } catch (Throwable failure) {
+        primaryFailure = failure
+        throw failure
+    } finally {
+        try {
+            if (process != null && process.isAlive()) {
+                process.destroy()
+                if (!process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)) {
+                    process.destroyForcibly()
+                    if (!process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)) {
+                        throw new GradleException(
+                                "Packaged JVM smoke process did not terminate: ${process.pid()}")
+                    }
+                }
+            }
+        } catch (Throwable cleanupFailure) {
+            if (primaryFailure != null) primaryFailure.addSuppressed(cleanupFailure)
+            else throw cleanupFailure
+        } finally {
+            try {
+                project.delete(smokeRoot.toFile())
+            } catch (Throwable cleanupFailure) {
+                if (primaryFailure != null) primaryFailure.addSuppressed(cleanupFailure)
+                else throw cleanupFailure
+            }
+        }
+    }
+}
+
 tasks.register('packagedJvmPluginCatalogSmoke') {
     group = 'verification'
     description = 'Starts the final uber-JAR and activates the conformance directory plugin'
@@ -2055,88 +2173,8 @@ tasks.register('packagedJvmPluginCatalogSmoke') {
             }
         }
 
-        def smokeParent = layout.buildDirectory.dir('tmp').get().asFile
-        smokeParent.mkdirs()
-        def smokeRoot = java.nio.file.Files.createTempDirectory(
-                smokeParent.toPath(),
-                'packaged-jvm-plugin-catalog-smoke-')
-        def pluginDirectory = java.nio.file.Files.createDirectory(smokeRoot.resolve('plugins'))
-        def stateDirectory = smokeRoot.resolve('chainstate')
-        def logFile = smokeRoot.resolve('jvm.log')
-        def fixtureJar = conformanceFixtureJar.get().archiveFile.get().asFile.toPath()
-        java.nio.file.Files.copy(fixtureJar, pluginDirectory.resolve(fixtureJar.fileName))
-
-        def ports = allocateLoopbackPorts.call(2)
-        int httpPort = ports[0]
-        int nodePort = ports[1]
-        def javaExecutable = new File(System.getProperty('java.home'),
-                isWindowsHost() ? 'bin/java.exe' : 'bin/java')
-        def command = [javaExecutable.absolutePath]
-        command.addAll(pluginOperationsAuthArguments())
-        command.addAll(pluginConformanceRuntimeArguments(
-                httpPort, nodePort, stateDirectory, pluginDirectory))
-        command.addAll(['-jar', uberJar.absolutePath])
-        def processBuilder = new ProcessBuilder(command)
-                .directory(smokeRoot.toFile())
-                .redirectErrorStream(true)
-                .redirectOutput(logFile.toFile())
-        processBuilder.environment().remove('YANO_PLUGINS_DENY_LIST')
-        processBuilder.environment().remove('YANO_API_PREFIX')
-        processBuilder.environment().remove('QUARKUS_RESTEASY_PATH')
-        processBuilder.environment().putAll([
-                'QUARKUS_HTTP_HOST'       : '127.0.0.1',
-                'QUARKUS_HTTP_PORT'       : Integer.toString(httpPort),
-                'QUARKUS_CONSOLE_COLOR'   : 'false',
-                'YANO_STORAGE_PATH'       : stateDirectory.toAbsolutePath().toString(),
-                'YANO_PLUGINS_DIRECTORY'  : pluginDirectory.toAbsolutePath().toString(),
-                'YANO_PLUGINS_ENABLED'    : 'true',
-                'YANO_PLUGINS_ALLOW_LIST' :
-                        'org.yanoproject.fixture.plugin-conformance'
-        ])
-
-        Process process = null
-        Throwable primaryFailure = null
-        def logTail = {
-            if (!java.nio.file.Files.isRegularFile(logFile)) {
-                return '<packaged JVM process produced no log>'
-            }
-            def lines = java.nio.file.Files.readAllLines(logFile)
-            def excerpt = lines.size() <= 400
-                    ? lines
-                    : (lines.take(150) + ['... packaged JVM log omitted ...']
-                    + lines.takeRight(250))
-            excerpt.join(System.lineSeparator())
-        }
-        try {
-            process = processBuilder.start()
-            def liveUrl = new URL("http://127.0.0.1:${httpPort}/q/health/live")
-            long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(90)
-            boolean live = false
-            while (!live && System.nanoTime() < deadline && process.isAlive()) {
-                java.net.HttpURLConnection connection = null
-                try {
-                    connection = (java.net.HttpURLConnection) liveUrl.openConnection()
-                    connection.connectTimeout = 750
-                    connection.readTimeout = 750
-                    int status = connection.responseCode
-                    def response = status >= 400 ? connection.errorStream : connection.inputStream
-                    response?.withCloseable { it.readAllBytes() }
-                    live = status == 200
-                } catch (IOException ignored) {
-                    // Listener is not ready yet.
-                } finally {
-                    connection?.disconnect()
-                }
-                if (!live) Thread.sleep(250)
-            }
-            if (!live) {
-                def state = process.isAlive() ? 'did not become live' :
-                        "exited with code ${process.exitValue()}"
-                throw new GradleException(
-                        "Packaged JVM plugin catalog smoke ${state}.${System.lineSeparator()}"
-                                + logTail())
-            }
-
+        runPackagedJvmWithFixture(uberJar, 'packaged-jvm-plugin-catalog-smoke', []) {
+                Process process, int httpPort, int nodePort, java.nio.file.Path logFile, Closure logTail ->
             assertPluginOperationsAdapters(httpPort, 90, true)
 
             def provenancePrefix = 'YANO_PLUGIN_CATALOG_PROVENANCE '
@@ -2169,32 +2207,68 @@ tasks.register('packagedJvmPluginCatalogSmoke') {
             }
             logger.lifecycle(
                     "Packaged JVM plugin catalog smoke passed for ${uberJar.absolutePath}")
-        } catch (Throwable failure) {
-            primaryFailure = failure
-            throw failure
-        } finally {
-            try {
-                if (process != null && process.isAlive()) {
-                    process.destroy()
-                    if (!process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)) {
-                        process.destroyForcibly()
-                        if (!process.waitFor(10, java.util.concurrent.TimeUnit.SECONDS)) {
-                            throw new GradleException(
-                                    "Packaged JVM smoke process did not terminate: ${process.pid()}")
-                        }
-                    }
-                }
-            } catch (Throwable cleanupFailure) {
-                if (primaryFailure != null) primaryFailure.addSuppressed(cleanupFailure)
-                else throw cleanupFailure
-            } finally {
+        }
+    }
+}
+
+// ADR-064 D7 packaged smoke of yano.mode=app-ledger: the conformance fixture supplies the app-only
+// network and an inbound agent, so the host serves V101 without Cardano chainstate. The fixture is a
+// directory bundle and therefore does this during init (owner assembly steps are embedded-only), and
+// a descriptor contribution kind is not exercised here because descriptors are trusted only from the
+// host class path, which a packaged uber-JAR fixes at augmentation; PluginKindsTest and
+// PluginCatalogRuntimeTest cover descriptor kinds.
+tasks.register('packagedJvmAppLedgerSmoke') {
+    group = 'verification'
+    description = 'Starts the final uber-JAR in yano.mode=app-ledger with the conformance directory plugin'
+    dependsOn tasks.named('quarkusBuild'), conformanceFixtureJar
+    outputs.upToDateWhen { false }
+
+    doLast {
+        def uberJar = layout.buildDirectory.file('yano.jar').get().asFile
+        if (!uberJar.isFile()) {
+            throw new GradleException("Quarkus uber-JAR not found: ${uberJar.absolutePath}")
+        }
+        runPackagedJvmWithFixture(uberJar, 'packaged-jvm-app-ledger-smoke', ['-Dyano.mode=app-ledger']) {
+                Process process, int httpPort, int nodePort, java.nio.file.Path logFile, Closure logTail ->
+            assertPluginOperationsAdapters(httpPort, 90, true)
+
+            long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(30)
+            boolean accepted = false
+            while (!accepted && System.nanoTime() < deadline && process.isAlive()) {
                 try {
-                    project.delete(smokeRoot.toFile())
-                } catch (Throwable cleanupFailure) {
-                    if (primaryFailure != null) primaryFailure.addSuppressed(cleanupFailure)
-                    else throw cleanupFailure
+                    new java.net.Socket().withCloseable { socket ->
+                        socket.connect(new InetSocketAddress('127.0.0.1', nodePort), 750)
+                        accepted = socket.connected
+                    }
+                } catch (IOException ignored) {
+                    Thread.sleep(250)
                 }
             }
+            if (!accepted) {
+                throw new GradleException("App-ledger V101 listener on ${nodePort} accepted no connection."
+                        + "${System.lineSeparator()}${logTail()}")
+            }
+
+            def peers = (java.net.HttpURLConnection) new URL(
+                    "http://127.0.0.1:${httpPort}${bakedApiPathPrefix()}/node/peers").openConnection()
+            try {
+                peers.connectTimeout = 2000
+                peers.readTimeout = 4000
+                if (peers.responseCode != 503) {
+                    throw new GradleException("App-ledger @RequiresCardano route answered ${peers.responseCode}, "
+                            + "expected 503")
+                }
+            } finally {
+                peers.disconnect()
+            }
+
+            def output = java.nio.file.Files.readString(logFile)
+            def marker = 'ADR-011.2 node-plugin conformance activated through catalog'
+            if (output.readLines().count { it.contains(marker) } != 1) {
+                throw new GradleException('App-ledger host did not activate the directory plugin exactly once.'
+                        + "${System.lineSeparator()}${logTail()}")
+            }
+            logger.lifecycle("Packaged JVM app-ledger smoke passed for ${uberJar.absolutePath}")
         }
     }
 }

@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "org.yanoproject.fixture.plugin-conformance",
   "version": "1.0.0",
-  "yanoApi": { "min": 3, "max": 3, "minLevel": 13 },
+  "yanoApi": { "min": 3, "max": 3, "minLevel": 14 },
   "dependencies": [],
   "contributions": [
     {
