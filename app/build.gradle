@@ -405,7 +405,6 @@ def coreDistributionManifest = { String kind, boolean pluginDirectorySupported -
             product: 'yano',
             distribution: kind,
             version: project.version.toString(),
-            builtInStateMachines: ['ordered-log'],
             pluginDirectorySupported: pluginDirectorySupported
     ]
 }
