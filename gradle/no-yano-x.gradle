@@ -7,11 +7,16 @@
 //   2. generated POMs, Gradle module metadata and the BOM are scanned;
 //   3. tracked file paths and contents (archives entry by entry) are scanned for the tokens
 //      (exclusions below);
-//   4. built outputs are inspected when they exist: yano.jar, distribution ZIPs, Docker build
-//      contexts, the generated plugin index and native-image configuration;
+//   4. built outputs of the current build are inspected when they exist: yano.jar, this
+//      version's distribution ZIPs, the JVM and native Docker build contexts, and every project's
+//      generated plugin index and native-image configuration. Outputs left by builds of other
+//      versions are not inspected; `./gradlew clean` removes them;
 //   5. a negative probe builds gradle/no-yano-x-probe with a copy of this script and requires
 //      rules 1 (plugin and module requests, declarations) and 3 (content, path, large file) to
-//      fail it, and an own-name split across a stream chunk boundary to pass.
+//      fail it, and an own name or a word-bounded token split at a stream chunk boundary to pass.
+//
+// Text files below 1 MiB are reported as path:line: text; larger or binary files and archive
+// entries by path.
 //
 // The settings buildscript classpath, buildSrc and included builds are covered by rule 3 only:
 // they are tracked build files, and Yano uses none of them.
@@ -41,21 +46,36 @@ def hasToken = { String text -> yanoXToken.matcher(blankOwnName(text)).find() }
 // load whole. A match counts once at least `decided` characters follow it, enough to rule out the
 // guard's own name and the lookahead; at the end of the stream every match counts. Each round
 // blanks the own name before it keeps the `overlap` tail, so a truncated own name never turns into
-// a token, and the tail still holds any own name or token that straddles the chunk boundary.
+// a token, and the tail still holds any own name or token that straddles the chunk boundary. The
+// tail keeps one extra leading character as lookbehind context; a match at its first character
+// lost its own context and was already decided in the previous round, so it is skipped.
 def decided = 32
 def overlap = decided + ownNameText.length() + 16
+def lineReportLimit = 1 << 20
 def streamHasToken = { InputStream input ->
     def buffer = new byte[1 << 16]
     def pending = ''
+    def truncated = false
+    def tokenIn = { String text, int decidedBefore ->
+        def matcher = yanoXToken.matcher(text)
+        while (matcher.find()) {
+            if (!(truncated && matcher.start() == 0)) {
+                return matcher.start() < decidedBefore
+            }
+        }
+        false
+    }
     for (int read = input.read(buffer); read > 0; read = input.read(buffer)) {
         pending = blankOwnName(pending + new String(buffer, 0, read, 'ISO-8859-1'))
-        def matcher = yanoXToken.matcher(pending)
-        if (matcher.find() && matcher.start() < pending.length() - decided) {
+        if (tokenIn(pending, pending.length() - decided)) {
             return true
         }
-        pending = pending.substring(Math.max(0, pending.length() - overlap))
+        if (pending.length() > overlap + 1) {
+            pending = pending.substring(pending.length() - overlap - 1)
+            truncated = true
+        }
     }
-    yanoXToken.matcher(pending).find()
+    tokenIn(pending, Integer.MAX_VALUE)
 }
 
 // Rule 3 exclusions: history and cross-product links, the guard and its probe fixture, and in
@@ -80,8 +100,19 @@ def withoutAgentsExemption = { String text ->
 
 def probeFixture = 'gradle/no-yano-x-probe'
 // Rule 4 outputs, and the tasks that write them, so the inspection runs after them.
-def builtOutputs = ['app/build/yano.jar', 'app/build/distributions/*.zip', 'app/build/docker/*/context/**',
-                    '**/build/**/META-INF/yano-plugin-index-v1.json', '**/build/**/META-INF/native-image/**']
+// Rule 4 outputs of the current version (see the header), resolved when the task runs.
+def builtOutputs = { root ->
+    def version = root.version.toString().replaceAll('-SNAPSHOT', '')
+    def dockerVersion = root.findProperty('yanoDockerReleaseVersion') ?: version
+    def projectBuilds = root.allprojects.collect {
+        root.projectDir.toPath().relativize(it.layout.buildDirectory.get().asFile.toPath()).toString()
+    } + ['app/consumer-check/build']
+    ['app/build/yano.jar', "app/build/distributions/yano-${version}.zip",
+     "app/build/distributions/yano-native-${version}-*.zip", "app/build/distributions/yano-docker-${dockerVersion}.zip",
+     'app/build/docker/jvm/context/**', 'app/build/docker/native/context/**'] + projectBuilds.collectMany {
+        ["${it}/**/META-INF/yano-plugin-index-v1.json", "${it}/**/META-INF/native-image/**"]
+    }.collect { it.toString() }
+}
 def builtOutputProducers = ['quarkusBuild', 'yanoDistZip', 'yanoNativeDistZip', 'yanoDockerDistZip',
                             'generatePluginCatalogIndex', 'prepareYanoDockerJvmContext',
                             'prepareYanoDockerNativeContext'] as Set
@@ -150,12 +181,21 @@ gradle.rootProject { root ->
                 }
             }
             def scanArchive
-            // Streams a plain file or an archive (entry by entry, nested archives included) and
-            // reports only the offending path.
+            // Scans a small text file line by line; streams a large or binary file, and an archive
+            // entry by entry (nested archives included), reporting only the offending path.
             def scanFile = { String name, File file ->
                 if (name ==~ /(?i).*\.(jar|zip)/) {
                     file.withInputStream { scanArchive(name, it) }
-                } else if (file.withInputStream { streamHasToken(it) }) {
+                    return
+                }
+                if (file.length() < lineReportLimit) {
+                    def text = new String(file.bytes, 'ISO-8859-1')
+                    if (text.indexOf('\u0000') < 0) {
+                        scanText(name, text)
+                        return
+                    }
+                }
+                if (file.withInputStream { streamHasToken(it) }) {
                     violations << name
                 }
             }
@@ -221,9 +261,7 @@ gradle.rootProject { root ->
                     return
                 }
                 if (path == 'AGENTS.md') {
-                    if (hasToken(withoutAgentsExemption(file.getText('UTF-8')))) {
-                        violations << path
-                    }
+                    scanText(path, withoutAgentsExemption(file.getText('UTF-8')))
                 } else {
                     scanFile(path, file)
                 }
@@ -231,8 +269,8 @@ gradle.rootProject { root ->
 
             // Rule 4: built outputs that exist in this checkout.
             root.fileTree(rootDirectory) {
-                include builtOutputs
-                exclude '**/node_modules/**'
+                include builtOutputs(root)
+                exclude '**/node_modules/**', '.claude/worktrees/**'
             }.files.sort().each { file ->
                 scanFile(relative(file), file)
             }
@@ -252,12 +290,17 @@ gradle.rootProject { root ->
                     from new File(rootDirectory, 'gradle/no-yano-x.gradle')
                     into new File(probe, 'gradle')
                 }
-                // Large files: a token split across the first 64 KiB chunk boundary, and an own name
-                // whose leading characters fall just before the kept tail of the first chunk.
+                // Streamed files above the line-report limit: a token split across the first 64 KiB
+                // chunk boundary; an own name whose leading characters fall just before the kept tail
+                // of the first chunk; a word-bounded token preceded by a word character just before
+                // the tail. Only the first is a violation.
                 int chunk = 1 << 16
-                new File(probe, 'probe-large.txt').setText('a' * (chunk - 3) + 'yano-x\n', 'ISO-8859-1')
+                def padding = '\n' + 'c' * lineReportLimit + '\n'
+                new File(probe, 'probe-large.txt').setText('a' * (chunk - 3) + 'yano-x' + padding, 'ISO-8859-1')
                 new File(probe, 'probe-own-name-split.txt').setText(
-                        'a' * (chunk - overlap - 1) + ownNameText + 'a' * chunk + '\n', 'ISO-8859-1')
+                        'a' * (chunk - overlap - 2) + ownNameText + padding, 'ISO-8859-1')
+                new File(probe, 'probe-lookbehind-split.txt').setText(
+                        'a' * (chunk - overlap) + 'yano x' + padding, 'ISO-8859-1')
                 [['git', 'init', '-q'], ['git', 'add', '.']].each { command ->
                     root.providers.exec {
                         workingDir = probe
@@ -278,9 +321,9 @@ gradle.rootProject { root ->
                         [arguments: ['resolveProbe', 'verifyNoYanoXDependency'],
                          expected: ["configuration 'probe' requests Yano-X module org.yanoproject.x:yano-x-probe:1.0",
                                     "configuration 'probe' declares org.yanoproject.x:yano-x-probe:1.0",
-                                    ' - probe-token.txt', ' - probe-large.txt',
+                                    ' - probe-token.txt:1: yano-x', ' - probe-large.txt\n',
                                     ' - tracked path probe-yano_x-path.txt'],
-                         unexpected: ['probe-own-name-split.txt']],
+                         unexpected: ['probe-own-name-split.txt', 'probe-lookbehind-split.txt']],
                         [arguments: ['-PprobePlugin', 'help'],
                          expected: ['ADR-064: Yano must not apply the Yano-X plugin org.yanoproject.x.probe'],
                          unexpected: []]]
