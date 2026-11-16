@@ -42,6 +42,12 @@ jobs:
         run: chmod +x gradlew
       - name: Build with Gradle
         run: ./gradlew build -PskipSigning=true --stacktrace
+      # ADR-064 D8: the org.yanoproject.app.spi gate. Stages every publication to an isolated file
+      # repository and boots a downstream Quarkus application composed from it.
+      - name: Downstream-consumer check of yano-app-core
+        run: >-
+          ./gradlew :app:appCoreConsumerCheck -PskipSigning=true --stacktrace
+          "-PstagingRepository=file://$RUNNER_TEMP/yano-consumer-check-staging"
       # Fails the PR, not release day, when a module starts or stops publishing without the Central
       # deployment scope in build.gradle following it.
       - name: Verify Maven Central publication scope
