@@ -15,14 +15,12 @@ import org.yanoproject.api.plugin.NodePlugin;
 import org.yanoproject.api.plugin.PluginContext;
 import org.yanoproject.api.plugin.operations.PluginOperationsRecorder;
 import org.yanoproject.api.plugin.spi.PluginProducts;
-import org.yanoproject.runtime.internal.RuntimeNode;
 import org.yanoproject.runtime.kernel.Subsystem;
 import org.yanoproject.runtime.plugins.PluginLoaderHandle;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
-import java.lang.reflect.Field;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.nio.charset.StandardCharsets;
@@ -144,32 +142,6 @@ class HostActivationOrderTest {
             assertThat(EVENTS).containsSubsequence("products.seal", "pre-publication.stop", "stop");
         } finally {
             yano.close();
-        }
-    }
-
-    @Test
-    void unsafeDrainStopSealsPluginProductsBeforeItsEarlyReturn() throws Exception {
-        Yano yano = YanoAssembly.relay(YanoConfig.serverOnly(0))
-                .runtimeOptions(requiredOptions())
-                .pluginLoader(fixtureLoader())
-                .build();
-        try {
-            yano.lifecycle().start();
-            // Simulates a ledger apply worker that did not drain (RuntimeNode.stopRuntimeServices).
-            Field unsafe = RuntimeNode.class.getDeclaredField("unsafeLedgerApplyShutdown");
-            unsafe.setAccessible(true);
-            unsafe.setBoolean(yano.chain(), true);
-            EVENTS.clear();
-
-            assertThatThrownBy(() -> yano.lifecycle().stop())
-                    .hasStackTraceContaining("Cannot stop plugins safely because a ledger apply worker");
-            assertThat(EVENTS).contains("products.seal").doesNotContain("stop");
-        } finally {
-            try {
-                yano.close();
-            } catch (RuntimeException expected) {
-                // The unsafe drain keeps apply-owned resources open; close reports it.
-            }
         }
     }
 

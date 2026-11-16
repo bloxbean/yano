@@ -3722,19 +3722,8 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     /** Called only after the kernel has stopped sync/apply stages. */
     private void stopPluginsAfterRuntimeDrain() {
         requirePluginTeardownAllowed("stop runtime plugins");
-        // Plugin product admission is independent of ledger apply ownership
-        // and must close on every shutdown path, including an unsafe ledger
-        // drain where broader provider teardown is deliberately skipped.
-        Throwable failure = attemptRuntimeCleanup(
-                null, "plugin telemetry products", pluginOperationsRegistry::sealAndAwait);
-        failure = attemptRuntimeCleanup(
-                failure, "plugin products", hostLifecycle::sealPluginProducts);
-        if (unsafeLedgerApplyShutdown) {
-            failure = recordPluginCleanupFailure(failure, new IllegalStateException(
-                    "Cannot stop plugins safely because a ledger apply worker did not stop or drain"));
-            rethrowRuntimeCleanup(failure, "Runtime plugin stop failed");
-            return;
-        }
+        Throwable failure = sealPluginProductsForStop(unsafeLedgerApplyShutdown,
+                pluginOperationsRegistry::sealAndAwait, hostLifecycle::sealPluginProducts);
         failure = attemptRuntimeCleanup(
                 failure, "UTxO index contributors", utxoSubsystem::stopIndexContributors);
         // Close callback admission only after every runtime subsystem has
@@ -3764,6 +3753,28 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                     failure, "plugin manager", pluginManager::stopAll);
         }
         rethrowRuntimeCleanup(failure, "Runtime plugin stop failed");
+    }
+
+    /**
+     * The head of every runtime plugin stop. Plugin product admission is independent of ledger apply ownership
+     * and must close on every shutdown path, so telemetry and products always seal first; after an unsafe
+     * ledger drain the stop then fails here, deliberately skipping broader provider teardown.
+     *
+     * @return the seal failures so far, for a safe drain
+     */
+    static Throwable sealPluginProductsForStop(
+            boolean unsafeLedgerApplyShutdown,
+            Runnable sealTelemetry,
+            Runnable sealProducts
+    ) {
+        Throwable failure = attemptRuntimeCleanup(null, "plugin telemetry products", sealTelemetry);
+        failure = attemptRuntimeCleanup(failure, "plugin products", sealProducts);
+        if (unsafeLedgerApplyShutdown) {
+            failure = recordPluginCleanupFailure(failure, new IllegalStateException(
+                    "Cannot stop plugins safely because a ledger apply worker did not stop or drain"));
+            rethrowRuntimeCleanup(failure, "Runtime plugin stop failed");
+        }
+        return failure;
     }
 
     private void closeRuntimeResources(boolean unsafeLedgerApplyWorker) {

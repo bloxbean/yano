@@ -43,6 +43,41 @@ class RuntimeNodeShutdownSafetyTest {
     }
 
     @Test
+    void unsafeDrainStopSealsPluginProductsBeforeItFails() {
+        List<String> calls = new ArrayList<>();
+        IllegalStateException telemetryFailure = new IllegalStateException("telemetry seal failed");
+
+        Throwable thrown = catchThrowable(() -> RuntimeNode.sealPluginProductsForStop(true,
+                () -> {
+                    calls.add("telemetry");
+                    throw telemetryFailure;
+                },
+                () -> calls.add("products")));
+
+        assertThat(calls).containsExactly("telemetry", "products");
+        assertThat(thrown).isSameAs(telemetryFailure);
+        assertThat(telemetryFailure.getSuppressed()).hasSize(1);
+        assertThat(telemetryFailure.getSuppressed()[0]).isInstanceOf(IllegalStateException.class)
+                .hasMessage("Cannot stop plugins safely because a ledger apply worker did not stop or drain");
+
+        calls.clear();
+        assertThatThrownBy(() -> RuntimeNode.sealPluginProductsForStop(true,
+                () -> calls.add("telemetry"), () -> calls.add("products")))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("Cannot stop plugins safely because a ledger apply worker did not stop or drain");
+        assertThat(calls).containsExactly("telemetry", "products");
+    }
+
+    @Test
+    void safeDrainStopSealsPluginProductsAndContinues() {
+        List<String> calls = new ArrayList<>();
+
+        assertThat(RuntimeNode.sealPluginProductsForStop(false,
+                () -> calls.add("telemetry"), () -> calls.add("products"))).isNull();
+        assertThat(calls).containsExactly("telemetry", "products");
+    }
+
+    @Test
     void unsafeMarkerFailureAfterSuccessfulStopIsInvokedOnlyOnce() {
         AssertionError markerFailure = new AssertionError("unsafe marker failed");
         AtomicInteger markerCalls = new AtomicInteger();
