@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "site": "https://getyano.dev",
   "version": "0.1.0-pre20-SNAPSHOT",
-  "sourceRevision": "ebd3eeea45f8688a3854cc6436bcefa0728484b2",
+  "sourceRevision": "40f2637c429a866b3808507312daf4a058284d21",
   "sourceRepository": "https://github.com/bloxbean/yano",
   "note": "Source revision at build time. Page and artifact hashes describe the generated content, including local edits. Not a release publication claim.",
   "pages": [
@@ -11,84 +11,28 @@
       "description": "Give coding agents compact, accurate, versioned Yano context.",
       "url": "https://getyano.dev/ai/overview/",
       "markdown": "https://getyano.dev/ai/pages/ai/overview.md",
-      "sha256": "7d4a59df8e99b9f3cb6901c77c7d4dba3faacfa6355296546a9a42d5209478b5"
-    },
-    {
-      "title": "Consensus & ledger configuration",
-      "description": "Member consensus, execution, commitments, and anchoring.",
-      "url": "https://getyano.dev/app-chains/consensus/",
-      "markdown": "https://getyano.dev/ai/pages/app-chains/consensus.md",
-      "sha256": "0836720a88e44865420631bdd91d3fb0b43da9536dcc72c78454a9c24994423d"
-    },
-    {
-      "title": "State machines & extensions",
-      "description": "Extend Yano through deterministic state machines and public plugin contracts.",
-      "url": "https://getyano.dev/app-chains/extensions/",
-      "markdown": "https://getyano.dev/ai/pages/app-chains/extensions.md",
-      "sha256": "586e512b82ea6101396885bf4df894773defa194e496da20667942e1814536b1"
-    },
-    {
-      "title": "Certified observations",
-      "description": "Understand the preview observation framework and its trust model.",
-      "url": "https://getyano.dev/app-chains/observations/",
-      "markdown": "https://getyano.dev/ai/pages/app-chains/observations.md",
-      "sha256": "b5b278ddea267e256ecec6a03a36d036b56136093402dd7192b99afb70f965d1"
-    },
-    {
-      "title": "Ordered log in depth",
-      "description": "Record events, query positions, and verify ordered-log state.",
-      "url": "https://getyano.dev/app-chains/ordered-log/",
-      "markdown": "https://getyano.dev/ai/pages/app-chains/ordered-log.md",
-      "sha256": "7269caded47a0856a6fec951f29782ac05e59df634710d6567ba9ce3645da93d"
-    },
-    {
-      "title": "What is a multi-party app ledger?",
-      "description": "Understand multi-party app ledgers, member finality, proofs, and Cardano anchoring.",
-      "url": "https://getyano.dev/app-chains/overview/",
-      "markdown": "https://getyano.dev/ai/pages/app-chains/overview.md",
-      "sha256": "1c3c7010b1fd1566035f100df0c44b996bec644676ba257288be08de6715206c"
-    },
-    {
-      "title": "Finality, proofs & L1 anchors",
-      "description": "Distinguish message inclusion, state proofs, certificates, and Cardano confirmation.",
-      "url": "https://getyano.dev/app-chains/proofs/",
-      "markdown": "https://getyano.dev/ai/pages/app-chains/proofs.md",
-      "sha256": "8137ddc80ef4a0fd3f67a03da746fdeecc65c39754c7ef3ba7c6026afcd6e159"
-    },
-    {
-      "title": "Your first app ledger",
-      "description": "Start the built-in ordered log and submit your first event.",
-      "url": "https://getyano.dev/app-chains/quickstart/",
-      "markdown": "https://getyano.dev/ai/pages/app-chains/quickstart.md",
-      "sha256": "444d025f6b6a341b3d3573059489a0c899bf65f8b12d8855b636fc5467f07b43"
+      "sha256": "b0a655225c1c1a16620678db676d7fc008643cd58483c87cfd5069578392772c"
     },
     {
       "title": "Building & testing",
       "description": "Run the build tiers and packaging checks.",
       "url": "https://getyano.dev/contribute/build-and-test/",
       "markdown": "https://getyano.dev/ai/pages/contribute/build-and-test.md",
-      "sha256": "2f5dadd572ca79c9babe01aebd9b5200f6e942636e3bd191e5aed60dc86a119f"
+      "sha256": "a814aaf509071e1a763e87437cf02b3327b0071a3c0a4023925360635f24be7a"
     },
     {
       "title": "Build from source",
       "description": "Optional source builds for contributors and advanced users.",
       "url": "https://getyano.dev/contribute/build-from-source/",
       "markdown": "https://getyano.dev/ai/pages/contribute/build-from-source.md",
-      "sha256": "ca1091393823a88c4f269019dd70924be3478e77721362bf53302f57c8a08694"
+      "sha256": "3939ebf2a51a532d937a33ff8bba720c702b78a80f46f66d7b4ffd501e3aa5dd"
     },
     {
       "title": "Contribute to Yano",
       "description": "Build, test, and improve Yano through its public modules and contracts.",
       "url": "https://getyano.dev/contribute/guide/",
       "markdown": "https://getyano.dev/ai/pages/contribute/guide.md",
-      "sha256": "eda5cecf8c8ba5d8cc9be16d69fdb8f48cc7c50440a6bf1137941f40f3b66550"
-    },
-    {
-      "title": "App ledger testkit",
-      "description": "Test your state machine with an embedded cluster of Yano members.",
-      "url": "https://getyano.dev/develop/app-chain-testkit/",
-      "markdown": "https://getyano.dev/ai/pages/develop/app-chain-testkit.md",
-      "sha256": "72793421b92aac74b81e84912b2ec7b30c71f1bf09f1d5d9652369628d370fe4"
+      "sha256": "f90f8a4b54d3ac57cf1c156091ef80d340080d050dfa959926f391e7a1991076"
     },
     {
       "title": "Build with any SDK",
@@ -137,7 +81,7 @@
       "description": "Run a Yano node inside your own Spring Boot application, listen to chain events, and keep a scoped index in your own database.",
       "url": "https://getyano.dev/develop/library/",
       "markdown": "https://getyano.dev/ai/pages/develop/library.md",
-      "sha256": "ad21839fcbc3cecd5d2ac8317a0f339fb33ef9909e33a0b2ec1f636fb8c330ef"
+      "sha256": "5f3b2f0cd8b5f9be956e194bd84f3489b2959f4eaebb97970f0cba5384a2e6b8"
     },
     {
       "title": "Snapshots, rollback & time",
@@ -165,7 +109,7 @@
       "description": "Understand local state, rollback, filtering, pruning, and partial bootstrap.",
       "url": "https://getyano.dev/node/ledger/",
       "markdown": "https://getyano.dev/ai/pages/node/ledger.md",
-      "sha256": "ae7801410033976f95e17dfc7aaeee363f62e373aaef38ba82a78fe36c819d63"
+      "sha256": "7ccd1c95edd61370b107273fc4ceb91b0303adac8e1e6d07501263131986a123"
     },
     {
       "title": "Mempool-aware UTxOs",
@@ -200,7 +144,7 @@
       "description": "Explore the embedded console and persistent metrics.",
       "url": "https://getyano.dev/operate/console/",
       "markdown": "https://getyano.dev/ai/pages/operate/console.md",
-      "sha256": "33a38a2e7ca0e760fbc6e5921891d0a7bfe33ad6b19d8bb16c9126b6e88c1d95"
+      "sha256": "c05a4224587e7c1a984394c48dc8becbdd5b141733c4467f20034d5c05dd0ea0"
     },
     {
       "title": "Mempool administration",
@@ -214,21 +158,21 @@
       "description": "Validate, install, secure, and observe JVM plugins.",
       "url": "https://getyano.dev/operate/plugins/",
       "markdown": "https://getyano.dev/ai/pages/operate/plugins.md",
-      "sha256": "adae2e5420599d233e6cbc82d05b6eb782cc509988188713fbc359c621c68a4a"
+      "sha256": "5331bd45aa859254a05a4d12f9882758e956912c0bd070d30b609ac087af57e2"
     },
     {
       "title": "Troubleshooting",
-      "description": "Diagnose startup, synchronization, unavailable data, and app ledger progress.",
+      "description": "Diagnose startup, synchronization, and unavailable data.",
       "url": "https://getyano.dev/operate/troubleshooting/",
       "markdown": "https://getyano.dev/ai/pages/operate/troubleshooting.md",
-      "sha256": "a5c00f4940d036ee3a124528a55a37eab503f61aea99ee9e054309f22e6b87e5"
+      "sha256": "401fdc211b410d7e4ba824c45ba082dac420ea6945665465f4f4bf6c0e5efc20"
     },
     {
       "title": "Versions & upgrades",
       "description": "Keep source, artifacts, storage, and plugins compatible.",
       "url": "https://getyano.dev/operate/upgrades/",
       "markdown": "https://getyano.dev/ai/pages/operate/upgrades.md",
-      "sha256": "7c9e850ad04cc97c5d8544ce00d2070d22ab4fb5ef2720e7b42f6e97431f0f76"
+      "sha256": "7bfb478afaac72e2eb42d4791b95bbeb2f23b64dc6927b5856adfcb88c941a9e"
     },
     {
       "title": "Account state & rollback",
@@ -242,21 +186,21 @@
       "description": "Active packaged configuration values and declared property keys, generated from source.",
       "url": "https://getyano.dev/reference/configuration-catalog/",
       "markdown": "https://getyano.dev/ai/pages/reference/configuration-catalog.md",
-      "sha256": "87866eaca825235d177626bc7b97ee7292db1f4596fd03fdfbaa48e834d971d2"
+      "sha256": "880f8c0c594e1911034aed87e0210f763e0aeaa4d7b543b4ff96d089e66019a1"
     },
     {
       "title": "Configuration guide",
       "description": "Understand configuration layers, defaults, profiles, and build-time settings.",
       "url": "https://getyano.dev/reference/configuration/",
       "markdown": "https://getyano.dev/ai/pages/reference/configuration.md",
-      "sha256": "5d82e9d86133b318d2c0af76dcd368234891ff2fce8e73d232d02995e78b9ebb"
+      "sha256": "35f5d3676dfca0ce126fcafd0c9fa4ccfd45771ee068d7903270b069e91a8162"
     },
     {
       "title": "HTTP API",
       "description": "Discover release-matched OpenAPI schemas and the main API groups.",
       "url": "https://getyano.dev/reference/http-api/",
       "markdown": "https://getyano.dev/ai/pages/reference/http-api.md",
-      "sha256": "f42b0c58e74b0dd58ff097bb6a83776b77c7df5b596ee7c26b81062849c69db8"
+      "sha256": "438f6cd9089a2238c3cd074f387592377e4df7b50435ddc368ad773a690f6bac"
     },
     {
       "title": "JavaScript testkit reference",
@@ -266,53 +210,46 @@
       "sha256": "1f03551b2a19ccc63080f6178f29472158c901b43052747a00d4b016620b453c"
     },
     {
-      "title": "Plugin query & domain APIs",
-      "description": "Implement committed queries and bounded domain APIs.",
-      "url": "https://getyano.dev/reference/plugin-contract/",
-      "markdown": "https://getyano.dev/ai/pages/reference/plugin-contract.md",
-      "sha256": "600ba0ad1e666cd7c61eaef7629d76db2acc3a04d4ac16111425468cac496b46"
-    },
-    {
       "title": "Release change details",
       "description": "Configuration and behavior changes across preview versions.",
       "url": "https://getyano.dev/reference/upgrading/",
       "markdown": "https://getyano.dev/ai/pages/reference/upgrading.md",
-      "sha256": "6f85cd749b798d84c29c095800b4cf8b594749a7f6edb3088b5a97e22da3bedf"
+      "sha256": "8c8a1ddcc105d0026c40f084bf3cb51725e3c47b253f649c1f13b2c66ef5f24b"
     },
     {
       "title": "Capability guide",
       "description": "See which Yano features fit your runtime and workflow.",
       "url": "https://getyano.dev/start/capabilities/",
       "markdown": "https://getyano.dev/ai/pages/start/capabilities.md",
-      "sha256": "271ea706726c6f32f7987cd46a6002d3b6391c107410297e1b859964073fde51"
+      "sha256": "605e053b29aedcb192f1833bafc238fac6a7c9f72945764445c8675f418afa01"
     },
     {
       "title": "Run with Docker Compose",
       "description": "Start the Docker distribution, combine profiles, and configure mounts and memory.",
       "url": "https://getyano.dev/start/docker/",
       "markdown": "https://getyano.dev/ai/pages/start/docker.md",
-      "sha256": "98610e31245346bd7e03389f27ea12afb52bacf1f61164f7eb815e7c170a6d17"
+      "sha256": "47146f5cd1600d5ed5a599ae03dc97167e76faea0172eae54aa9f87d57bda5eb"
     },
     {
       "title": "Download & install Yano",
       "description": "Choose and run a JVM, native, or Docker Compose Yano release.",
       "url": "https://getyano.dev/start/installation/",
       "markdown": "https://getyano.dev/ai/pages/start/installation.md",
-      "sha256": "40348a8e3e0352e3c8ef2df492394f6da212da1222b18a0e441201f069af8434"
+      "sha256": "35793d6334bd6fc20734a62203b6a5d5b14ce753e8c9418ee2518c71fda665cd"
     },
     {
       "title": "What is Yano?",
       "description": "Understand Yano, choose a starting point, and build your first Cardano workflow.",
       "url": "https://getyano.dev/start/overview/",
       "markdown": "https://getyano.dev/ai/pages/start/overview.md",
-      "sha256": "614d4ea4873230fb97362408873146c442094bbf480c5e1896496a9004bb4732"
+      "sha256": "1e44f7789e6868e682257c7f4552525775048e938b1e8b5275dc032ee3c3fa3f"
     },
     {
       "title": "Your first local node",
       "description": "Download Yano and start a local Cardano development network.",
       "url": "https://getyano.dev/start/quickstart/",
       "markdown": "https://getyano.dev/ai/pages/start/quickstart.md",
-      "sha256": "8c3b29186ba0e2bc26a4ca46f658c31f492832bd14dbb0ae0c9ab0727a7b3bc9"
+      "sha256": "185a64f768800342dc2606878fe14542f8d08466417432ae65cf886a0707b726"
     },
     {
       "title": "Choose a runtime profile",
@@ -325,23 +262,23 @@
   "artifacts": [
     {
       "url": "https://getyano.dev/llms.txt",
-      "sha256": "cf5fc2d5b6a086d1da6961abe96ec9c1bb0cf27c682f2c9d7bd7a39ee77e6e0c"
+      "sha256": "29a1c16f8c4f51a0346ba5adf8572631ddc31d7b31cd33ca4bdcaffd5c76070f"
     },
     {
       "url": "https://getyano.dev/llms-full.txt",
-      "sha256": "628b253fdfe0384c8ddc9f61581cd0881420242e6615a05a782f5239fda20735"
+      "sha256": "1195f2cb2927f83a2fb14e23106a9fc7024533a7d9c0a960abab4667b78b5c50"
     },
     {
       "url": "https://getyano.dev/ai/agent-instructions.md",
-      "sha256": "7be4f6da9f60512c9d4a51e688f554d8d53f210276ee1ef23dd5ec091031c569"
+      "sha256": "6062fe701248317ff0c9c43fb8fd4cebd9a15c18a6d30831b697e62e704f8d09"
     },
     {
       "url": "https://getyano.dev/ai/configuration.json",
-      "sha256": "4e9cab24fe067601dd08e90bc8bdfe36e51245072bf5a986595724498205b6c2"
+      "sha256": "96de274a473b0aa610fcdb269a5efedaade941a860fd770611d6e88b61bea325"
     },
     {
       "url": "https://getyano.dev/ai/routes.json",
-      "sha256": "99d9e17276f487457c6cf22e6811881e52c5331c98b69001bb50cdd7931e3eaa"
+      "sha256": "0d5f354d9e3ccc0a19e733a6c84793296a0495fbcf90f1956646a916483d4a68"
     }
   ]
 }

@@ -40,1176 +40,9 @@ Get `/q/openapi?format=json` from the actual node you will call. The static rout
 
 ## Keep the trust boundaries
 
-Yano is pre-release. Do not describe it as a fully validating production replacement. Yano's built-in app state machine is `ordered-log`; additional stock extensions belong to Yano X. Submission acceptance, member finality, and Cardano confirmation are different events. AI-generated code should preserve these distinctions.
+Yano is pre-release. Do not describe it as a fully validating production replacement. Yano does not host application ledgers (app chains); those are built on Yano by [Yano X](https://github.com/bloxbean/yano-x), a separate product. Transaction submission acceptance and on-chain confirmation are different events. AI-generated code should preserve these distinctions.
 
 These are static context artifacts. The documentation site does not offer a live node, remote signing, or an MCP server.
-
----
-
-# Consensus & ledger configuration
-
-Member consensus, execution, commitments, and anchoring.
-
-Canonical URL: https://getyano.dev/app-chains/consensus/
-
-Code pointers refer to the owning [Yano-X framework](https://github.com/bloxbean/yano-x/tree/main/framework):
-[`AppChainEngine`](https://github.com/bloxbean/yano-x/blob/main/framework/core/src/main/java/org/yanoproject/x/framework/runtime/appchain/AppChainEngine.java)
-for consensus, [`framework/api`](https://github.com/bloxbean/yano-x/tree/main/framework/api/src/main/java/org/yanoproject/api/appchain)
-for SPI and codecs, and
-[`OrderedLogStateMachine`](https://github.com/bloxbean/yano-x/blob/main/framework/core/src/main/java/org/yanoproject/x/framework/runtime/appchain/OrderedLogStateMachine.java)
-for the built-in machine. Its transition logic is
-[`OrderedLogKernel`](https://github.com/bloxbean/yano-x/blob/main/framework/api/src/main/java/org/yanoproject/x/framework/api/appchain/transition/OrderedLogKernel.java).
-
----
-
-## 1. Architecture map
-
-```
-                    one Yano node
-┌───────────────────────────────────────────────────────┐
-│  Cardano L1 (sync / relay / block production)         │
-│      │  L1 events: blocks, slots, rollbacks           │
-│      ▼                                                │
-│  AppChainManager  ── one per node ────────────────────│
-│   │  shared INBOUND transport (appmsg, protocol 100)  │
-│   │  shared catch-up server  (protocol 103)           │
-│   │  per-chain dispatch by chain-id                   │
-│   ▼                                                   │
-│  AppChainSubsystem ── one per chain ──────────────────│
-│   ├─ message pool (admission, backpressure)           │
-│   ├─ AppChainEngine (consensus, single-threaded)      │
-│   ├─ AppLedgerStore (RocksDB: blocks, MPF, indexes)   │
-│   ├─ AppStateMachine (your application logic)         │
-│   ├─ MemberGroup (static or governed membership)      │
-│   └─ anchor services, observers, sinks (optional)     │
-└───────────────────────────────────────────────────────┘
-        ▲ outbound app-peer connections: per chain
-          (transport.mode=shared rides the L1 upstream session — one TCP
-           connection per peer pair — with dedicated dials as fallback)
-```
-
-- **One inbound front, many chains.** All app-message agents share protocol
-  id 100, so a session cannot carry one agent per chain. The manager installs
-  ONE gossip agent scoped to the union of hosted chain ids and dispatches
-  every verified envelope to the owning chain. Outbound connections are
-  per-chain (each chain has its own peer list). The union transport is
-  permissive (max of all chains' size/TTL limits); each chain's own limits
-  are re-applied per message — with one carve-out: bodies on reserved `~`
-  topics may be as large as `block.max-bytes`, because a consensus proposal
-  body IS a whole serialized block.
-- **Everything per-chain is independent**: ledger, state machine, member
-  set, sequencer mode, block cadence, anchor policy. Chains share only the
-  node's networking and its L1 view.
-- **The engine is a serial event loop.** All consensus entry points — the
-  propose tick, inbound `~consensus/*` messages, catch-up batches — hop onto
-  one single-threaded executor per chain. There is no locking inside the
-  consensus logic; ordering is the concurrency model.
-
-## 2. Message lifecycle
-
-```
-submit (REST / SDK / gossip)
-  → envelope auth: member Ed25519 signature, message-id integrity
-  → transport limits: size (chain max-message-bytes), TTL cap
-  → local sequenced submission: validateForBlock(next height, committed snapshot)
-                                 ← declared application rejection = 400
-  → pool (backpressure: full pool = 429 + counted gossip drops)
-  → gossip to app peers (dedup by message-id)
-  → proposer selects into a block  (drops: finalized dupes, stale
-     sender-seqs, machine-rejected; revalidates at actual candidate height/state;
-     ~system topics bypass ordinary application admission)
-  → consensus round (§4)          ← the only place messages become canonical
-  → finalized: indexed by id/topic/sender, applied to state, streamed to
-     SSE/webhooks/Kafka, provable via MPF, eventually anchored to L1
-```
-
-Two distinct rejection tiers exist by design (§8.2): *admission* keeps junk
-out of blocks (node-local, fast, can be re-tried), while *apply* is
-consensus-enforced and never rejects — a finalized message that violates a
-business rule is a **deterministic no-op** on every member.
-
-The early application callback applies to local submissions on every sequenced
-machine, not inbound gossip or explicit diffusion-only mode. **202** is only a
-local acceptance acknowledgement; a declared rejection returns **400** with a
-`code`, unexpected callback failures produce generic **503**, and full-pool
-submissions remain **429**. See
-[submission responses](/app-chains/ordered-log/#submit-through-rest).
-
-## 3. Block anatomy
-
-`AppBlock` fields (CBOR, `AppBlockCodec`):
-
-| Field | Notes |
-|---|---|
-| `version` | block format version (3) |
-| `chainId` | chain identity |
-| `height` | genesis = 1 |
-| `consensusContextDigest` | commits genesis, membership, quorum, and consensus/observer profiles |
-| `view` | certified-consensus view at this height |
-| `prevHash` | 32 zero bytes at height 1 |
-| `l1Slot`, `l1BlockHash` | the stable L1 reference (§6), 0/empty when disabled |
-| `timestamp` | proposer wall-clock millis — the ONLY time a state machine may use |
-| `messagesRoot` | binary blake2b-256 merkle root over the ordered **message ids** (odd width duplicates the last node; empty list = 32 zero bytes) |
-| `stateRoot` | MPF root AFTER applying this block (§7) |
-| `messages` | the full ordered message envelopes |
-| `proposer` | Ed25519 public key |
-| `justification` | empty in view 0; canonical `NewViewCertificate` in higher views |
-| `cert` | finality certificate: `(scheme=ed25519, [(signer, signature)...])` |
-
-**The block hash covers the header only** — blake2b-256 over
-the v3 consensus identity, value fields, proposer, and justification digest.
-Messages are bound via `messagesRoot`, history via `prevHash`; only the cert is
-outside the hash, so it can be attached with `withCert`.
-
-## 4. The consensus round
-
-Consensus messages are ordinary signed envelopes on `propose`, `prepare`,
-`prepared`, `commit`, `timeout`, `new-view`, and `cert` topics under
-`~consensus/`. Votes and certificates use canonical, bounded CBOR and
-domain-separated signatures.
-
-### 4.1 Proposing
-
-Every member ticks every `block.interval-ms`; the framework computes the same
-leader from committed context on every node, so only that member proceeds:
-
-1. If a round times out, broadcast a durable signed timeout for the next view.
-2. In view 0, the configured policy selects the initial leader. In higher
-   views, the framework selects one deterministic leader from the certified
-   context.
-3. Select the mandatory durable L1 prefix, then ordinary messages: cap by
-   `block.max-bytes` (primary; the
-   serialized block is trimmed to fit) and `block.max-messages` (backstop);
-   drop already-finalized ids, stale per-sender seqs, and messages the state
-   machine's `validate()` rejects. Reserved `~` topics bypass application
-   admission — a state machine cannot veto governance or consensus traffic.
-4. Build and **apply locally** to compute the real `stateRoot`, persist the
-   `(height, view, blockHash)` prepare lock, broadcast the proposal and PREPARE.
-
-No pending messages → no block. An idle chain produces nothing.
-
-### 4.2 Follower validation — every check, in order
-
-A member votes for a proposal only after ALL of:
-
-1. decodes as a block; height not already finalized;
-2. height is exactly `tip+1` (a block from the future is *deferred* and
-   retried, not dropped — the transport never re-delivers);
-3. `block.proposer == envelope sender` (proposer authenticity);
-4. the framework accepts this leader for the block's height and view;
-5. `prevHash` equals the local tip hash;
-6. `messagesRoot` recomputes from the message list;
-7. serialized size ≤ `block.max-bytes` (counted + rejected loudly);
-8. the L1 ref is monotonic and consistent with the node's OWN L1 view
-   (§6.3) — mismatch rejects, "proposer slightly ahead" defers;
-9. every `~l1/*` observation message re-derives from the node's own L1
-   stream (fail-closed);
-10. every message: valid message-id, not expired, member-signed
-    (membership evaluated **at this height**), body ≤ `max-message-bytes`;
-11. per-sender seqs strictly increasing above the finalized floor (when
-    `message.enforce-sender-seq` is on);
-12. no conflicting prepare lock in this view and no newer durable lock;
-13. **independent re-execution**: the follower applies the block itself and
-    requires byte-identical `stateRoot`.
-
-Then and only then: persist the prepare lock and broadcast a domain-separated
-PREPARE. Check 13 is the heart of the system — *state is never trusted,
-always recomputed*. A nondeterministic state machine stalls its chain right
-here.
-
-### 4.3 Finality
-
-Any member holding the round aggregates PREPARE votes. At `threshold`, it
-persists and broadcasts a `PreparedQC`; members then sign COMMIT. At a COMMIT
-quorum, the holder assembles `FinalityCert`, commits, and broadcasts `cert`.
-
-Cert verification never trusts the sender: scheme must be Ed25519, each
-signer must be a member at that height, duplicates are ignored, every
-signature is verified over the commit-domain digest, and the count must reach the
-threshold at that height.
-
-A block is **APP_FINAL** once committed with a threshold cert — via own
-votes, a received cert notice, or catch-up (§8.1). The ledger is
-append-only; there is no rollback path below finality.
-
-### 4.4 Timeouts and partial rounds
-
-A timeout never deletes a lock. A quorum of signed timeout records forms a
-`NewViewCertificate`. The next leader must carry the highest valid PreparedQC
-value byte-for-byte; without one it may build a fresh deterministic value.
-Timeouts back off exponentially within configured bounds.
-
-## 5. Vote locks — the safety core
-
-Before PREPARE, a member persists `(height, view, blockHash)`. It never prepares
-two values in one view or moves a lock backwards. PreparedQCs and their complete
-values are also durable across restart and must cross every higher view.
-
-There is no stale-lock deletion endpoint. Expired proposals recover only via a
-quorum-certified higher view; L1-invalidated prepared values quarantine rather
-than unlock.
-
-## 6. Sequencer modes and membership
-
-Each chain selects its sequencer with `sequencer.mode`: `fixed`, `rotating`,
-or the id of a sequencer-mode plugin. A chain that sets only
-`sequencer.proposer` uses `fixed`. Membership is selected with
-`membership.mode`: `static` (the default) or `governed`. Both keys sit under
-the chain's `yano.app-chain` block (for example
-`yano.app-chain.chains[0].sequencer.mode`).
-
-### 6.1 Fixed
-
-`sequencer.proposer` selects the view-0 leader. If it cannot complete the
-round, a quorum-certified timeout advances the view and the next member in
-canonical member order becomes leader. No configuration change or lock
-deletion is needed.
-
-### 6.2 Rotating
-
-The view-0 leader is derived from the committed consensus context and parent
-block hash. Higher views advance through the canonically sorted member list.
-This gives every member the same leader even when their newest L1 tips differ.
-The L1 reference remains proposal data and is verified independently (§6.3);
-it is not the leader clock.
-
-Both fixed and rotating policies require a quorum to advance a failed round.
-Choose a threshold that matches the stated fault model (§4), not merely the
-number of normally-online nodes.
-
-### 6.3 The L1 reference (both modes)
-
-With `l1.stability-depth > 0`, every block carries an `(l1Slot, l1BlockHash)`
-reference at least that many blocks below the L1 tip. Followers verify it
-against their **own** L1 view: a fabricated ref is rejected fail-closed, a
-ref slightly ahead of the local view is deferred and retried, and slots must
-be monotonic across blocks. This pins app ledger history to L1 time — it is
-what makes observation stability ([L1 observations](/app-chains/observations/)) and
-anchor recency meaningful.
-
-### 6.4 Proposer vs anchor leader (don't conflate them)
-
-Rotation applies to the **proposer** only. The **anchor leader** — the node
-with `anchor.enabled` that builds and pays for L1 anchor txs — is a separate,
-fixed role that does not rotate (one thread UTxO, one fee wallet), and it is
-not a trust point: script-mode advances require threshold member
-co-signatures verified against each member's own ledger (see
-[anchor modes](/app-chains/proofs/#anchor-modes)).
-A rotating chain with anchoring therefore has a rotating proposer AND a
-fixed anchor leader at the same time.
-
-### 6.5 Membership epochs
-
-Membership is either static config or **governed**: membership
-changes are themselves finalized chain transactions requiring
-threshold-many identical member commands. Internally the group keeps
-*member epochs* — every consensus check above says "member **at height h**",
-so blocks from before a rotation verify against the membership that was
-current then. Governance commands ride reserved `~governance/*` topics
-(which bypass state-machine admission) and their effects persist atomically
-with the block that finalizes them.
-
-## 7. State, the MPF trie, and proofs
-
-Each chain's ledger is one RocksDB instance
-(`<resolved yano.app-chain.storage.path>/<chain-id>/`) holding column families for
-blocks, framework metadata, the message index, query indexes, and the **MPF
-trie nodes** (Merkle Patricia Forestry — the same construction as Aiken's
-`merkle-patricia-forestry`, so proofs are on-chain-verifiable).
-
-The split of responsibilities:
-
-- **The state machine and framework-authenticated keys share the trie.** Every
-  `writer.put(key, value)` /
-  `delete(key)` in `apply()` is an MPF entry — individually provable against
-  the resulting root. The framework additionally writes reserved observation
-  cursor keys before commit, so delivery progress is covered by the same root.
-- **The framework owns everything else**: tip metadata, per-message and
-  topic/sender indexes, per-sender replay floors, vote locks, governance
-  epochs — all in RocksDB CFs *outside* the state commitment.
-- **One atomic batch per block.** `apply()` stages trie writes into a
-  RocksDB WriteBatch; `commitBlock` writes block + tip + indexes + trie
-  nodes + new root in a single atomic commit. A crash mid-block leaves the
-  previous height fully intact.
-
-`stateRoot` is therefore a pure, reproducible commitment to the state
-machine's data — recomputed and byte-compared by every member on every
-block (§4.2 check 13), committed on-chain by
-[anchoring](/app-chains/proofs/#anchor-modes), and
-queryable per key: `GET .../state/proof/{keyHex}` returns the value and an MPF
-inclusion proof any independent implementation can verify against an
-anchored root.
-
-## 8. Catch-up, restart, snapshots
-
-### 8.1 Catch-up (sync protocol 103)
-
-Gossip never re-delivers: a missed proposal is gone from the transport. A
-lagging member recovers through the dedicated block-range sync protocol —
-every 5s it asks one connected peer for `tip+1 .. tip+50` and applies what
-comes back through the same verification gauntlet as live consensus, minus
-what no longer applies:
-
-- height/prev-hash chain intact, messages-root recomputed;
-- proposer must have been the deterministic built-in leader at that height and
-  view (custom extension modes retain their own view-0 validation);
-- L1 ref monotonic + consistent with the local L1 window (a ref ahead of the
-  local view pauses the batch, it does not fail it);
-- observations re-verified fail-closed; message signatures re-verified
-  (expiry is NOT re-checked — the messages were finalized before expiry);
-- **the threshold cert is fully verified**, and the block is re-applied with
-  a required byte-identical state root.
-
-A certified block at a height with a local in-flight round supersedes the
-round. If a peer is ahead but local progress stalls, an
-`AppChainStalledEvent` fires (visible in status as `stalled`).
-
-### 8.2 Restart semantics
-
-Persisted (RocksDB, all atomic with their block): blocks + certs, tip
-metadata, MPF trie + root, message/query indexes, per-sender floors, per-view
-prepare locks, prepared certificates + canonical proposal envelopes,
-membership epochs and pending governance. In-memory (lost on restart, by
-design): the pending pool, active round aggregation (reconstructed from
-persisted evidence), gossip
-dedup/counters, pending anchor rounds.
-
-Startup re-verifies rather than trusts:
-
-1. snapshot manifest signatures/hashes (if restoring) — before RocksDB
-   touches anything;
-2. ledger integrity: committed root equals the tip block's recorded root;
-3. persisted membership epochs override static config;
-4. **tip-cert verification**: the tip block re-hashes to the stored tip hash
-   AND its cert carries ≥ threshold valid member-at-height signatures — a
-   snapshot whose contents merely self-agree is rejected;
-5. own sender-seq floor restored so a restarted member never reuses a
-   finalized sequence number.
-
-### 8.3 Snapshots
-
-`POST /api/v1/app-chain/chains/{chainId}/snapshot` with body
-`{"path":"<fresh directory>"}` produces a RocksDB checkpoint (hard links —
-cheap) with a member-signed manifest binding tip height/hash, state root and
-member epochs. New-member onboarding = copy checkpoint, verify manifest,
-start, catch up the delta (see the
-[Yano X user guide §14.3](https://github.com/bloxbean/yano-x/blob/main/docs/APP_CHAIN_USER_GUIDE.md#143-snapshots--member-onboarding)).
-
-## 9. State machines — the SPI
-
-`org.yanoproject.x.framework.api.appchain.AppStateMachine`:
-
-| Method | When | Contract |
-|---|---|---|
-| `id()` | — | stable identifier, matched against `state-machine` config |
-| `init(AppStateReader, AppChainInfo)` | once at start | read-only warm-up; `info` = (chainId, own member key, member count) |
-| `AdmissionResult validateForBlock(AppMessage, long candidateHeight, AppStateReader committedState)` | admission (local submission + block selection) | height- and state-aware; defaults to `validate(AppMessage)`. Fast, side-effect-free, MAY run concurrently, must not retain the reader; envelope auth already done; reject keeps the message out of blocks. `~` system topics bypass it |
-| `void apply(AppBlockExecutionContext, AppStateWriter, AppEffectEmitter)` | exactly once per finalized block, in height order, on EVERY member | the deterministic transition; all writes via `writer.put/delete` (= MPF entries); effects only through the `AppEffectEmitter` |
-| `byte[] query(String path, byte[] params, AppQueryContext)` | committed reads | invoked through the chain-scoped REST `/query/{path}` route; state proofs remain available through `state/proof/{keyHex}` |
-
-**Determinism is the contract.** Inside `apply()`: no wall clock (use
-`block.timestamp()`), no randomness, no I/O, no environment reads, no
-iteration over unordered collections, no locale-dependent serialization.
-Violations don't corrupt anything — they *stall the chain*, because
-followers reject the proposer's state root (§4.2). Test with
-`StateMachineConformance` (`org.yanoproject.runtime.appchain`, in
-`yano-runtime`): it applies an identical seeded
-block corpus in N independent runs plus a kill-and-reopen replay and asserts
-byte-identical roots at every height.
-
-**The two-tier rule** (worth internalizing): `validate` rejects; `apply`
-never does. Anything that reaches `apply` is already consensus-final, so a
-business-rule violation there must be a silent, deterministic no-op —
-re-check every rule you checked at admission. Every conforming state machine
-must follow this pattern.
-
-Convenience: `TypedAppStateMachine<T>` + `MessageCodec<T>` decode bodies at
-the edge (undecodable → reject at admission / skip at apply);
-`JacksonCborCodec.of(Class)` is the batteries-included codec.
-
-## 10. Built-in state machine
-
-| id | Module | One-liner |
-|---|---|---|
-| `ordered-log` | runtime (built-in) | append-only log of opaque messages; per-message inclusion proofs |
-
-### 10.1 `ordered-log`
-
-The default. Bodies are fully opaque — nothing is validated, everything
-finalizes. Per message it writes
-`sha256("~yano/finalized-message/v1/" || messageId) →
-cbor([schemaVersion, height, index, topic, sender])` and maintains a namespaced
-tip record. Resolve the public message ID through the `finalized-message-v1`
-typed proof subject; `state/proof/{keyHex}` is the lower-level route for the
-resolved physical key. The record format is shared (`FinalizedMessageIndex` in
-Yano-X `framework/api`) with opt-in indexes so proofs never diverge.
-
-Additional state machines are ServiceLoader plugins maintained in
-[Yano X](https://github.com/bloxbean/yano-x/tree/main/state-machines). Their
-wire formats, typed clients, proofs, and operational guidance live with those
-plugins so Yano's core documentation does not imply that they are built in.
-
-## 11. Writing your own state machine
-
-1. Implement `AppStateMachine` (or extend `TypedAppStateMachine<T>`), obey
-   §9's determinism rules and the two-tier validate/no-op pattern.
-2. Implement `AppStateMachineProvider` — `id()` matches the `state-machine`
-   config value; override `create(AppStateMachineContext)` if you need
-   settings (`context.settings()` is the `yano.app-chain.*` map with the
-   stem stripped, e.g. `machines.my-machine.foo`).
-3. **Plugin mode** (default distribution, no rebuild): register the provider
-   in `META-INF/services/org.yanoproject.x.framework.api.appchain.AppStateMachineProvider`,
-   and add `META-INF/yano/plugins/<bundle-id>.json`. The manifest declares an
-   `app-state-machine` contribution whose `name` equals the provider `id()`
-   and whose `provider` is the same fully-qualified class as the ServiceLoader
-   entry. For example:
-
-   ```json
-   {
-     "schemaVersion": 1,
-     "id": "com.example.my-machine",
-     "version": "1.0.0",
-     "yanoApi": { "min": 3, "max": 3, "minLevel": 11 },
-     "dependencies": [],
-     "contributions": [
-       {
-         "kind": "app-state-machine",
-         "name": "my-machine",
-         "provider": "com.example.MyMachineProvider"
-       }
-     ]
-   }
-   ```
-
-   `yanoApi` is the plugin API range, not a release version: `min`/`max`
-   bound the supported API major and `minLevel` is the lowest additive API
-   level the bundle needs. The sample matches plugin API major 3, level 11;
-   use the values of your target release (`PluginApiVersion` or its release
-   notes), or the host rejects the bundle at load.
-
-   Package one self-contained bundle JAR, drop it into the JVM node's
-   `plugins/` directory, and set `state-machine: my-machine`. An unknown id
-   fails fast listing available ids. Native images cannot load directory JARs;
-   include and map the manifested bundle at application build time so catalog
-   and reflection metadata are generated before the native executable.
-4. **Library mode**: pass the machine instance straight to the
-   `AppChainSubsystem` constructor — no provider or services file needed.
-5. Start from the
-   [Yano X plugin template](https://github.com/bloxbean/yano-x/tree/main/scaffolds/plugin-template)
-   (a complete counter machine + provider + ServiceLoader entry + bundle
-   manifest), and gate your machine with `StateMachineConformance` before
-   trusting it with a multi-node chain. For the full walkthrough, see
-   [extension development](/app-chains/extensions/) and the
-   [Yano X user guide §6](https://github.com/bloxbean/yano-x/blob/main/docs/APP_CHAIN_USER_GUIDE.md#6-custom-app-chains-your-own-state-machine).
-
-## 12. Where to go deeper
-
-- **Anchoring internals** (thread NFT, co-sign rounds, on-chain validator,
-  independent verification): [proofs and anchoring](/app-chains/proofs/) and
-  the [Yano X user guide §5](https://github.com/bloxbean/yano-x/blob/main/docs/APP_CHAIN_USER_GUIDE.md#5-l1-anchoring).
-- **Rotation & governed membership**: the implementations,
-  [`RotatingSequencerMode`](https://github.com/bloxbean/yano-x/blob/main/framework/cardano/src/main/java/org/yanoproject/x/framework/cardano/RotatingSequencerMode.java)
-  and
-  [`GovernedMembership`](https://github.com/bloxbean/yano-x/blob/main/framework/core/src/main/java/org/yanoproject/x/framework/runtime/appchain/GovernedMembership.java).
-- **Wire ABIs** (anchor datum, evidence bundle, observations):
-  [framework API CDDL](https://github.com/bloxbean/yano-x/tree/main/framework/api/src/main/cddl/appchain)
-  and the [Cardano anchor CDDL](https://github.com/bloxbean/yano-x/blob/main/framework/cardano-api/src/main/cddl/appchain/anchor-v1.cddl).
-- **Live regressions** that exercise everything in this guide on a real
-  devnet: the `test-app-chain-*` skills under
-  [`.claude/skills/`](https://github.com/bloxbean/yano/tree/main/.claude/skills).
-
----
-
-# State machines & extensions
-
-Extend Yano through deterministic state machines and public plugin contracts.
-
-Canonical URL: https://getyano.dev/app-chains/extensions/
-
-Use `ordered-log` when applications interpret a shared event history. Use an `AppStateMachine` plugin when members must enforce application state transitions together.
-
-## Deterministic application rules
-
-Every voting member must compute the same state from the same inputs. Keep network requests, filesystem operations, randomness, and local wall-clock reads out of deterministic application logic. Admission validation gives callers early feedback; deterministic application remains the authority for finalized commands.
-
-Expose your machine through `AppStateMachineProvider`, ServiceLoader metadata, and a Yano plugin manifest. Install the same compatible bundle on all voting members of a JVM cluster. Select its ID with the chain's `state-machine` setting.
-
-Start from the [Yano X plugin template](https://github.com/bloxbean/yano-x/tree/main/scaffolds/plugin-template). Read [plugin operations](/operate/plugins/) and the [query/domain API contract](/reference/plugin-contract/) before deploying.
-
-## Effects, observations, and queries
-
-- **Effects** separate deterministic intent from external work and its reported outcome. Executors must support bounded execution, recovery, and the documented idempotency contract.
-- **Observations** bring certified source reports into application state. They are preview functionality, disabled by default, and do not establish objective truth merely by reaching a reporter threshold.
-- **Committed queries** read against a fixed committed root; domain APIs may provide convenient decoded projections with a different trust boundary.
-
-[Yano X](https://github.com/bloxbean/yano-x) owns additional stock implementations and integrations. Yano retains the host and extension contracts.
-
-## Native boundary
-
-Dynamic plugin JAR loading is a JVM feature. Native distributions retain the core providers; copying a JVM plugin beside a native executable does not install it.
-
-## Test your plugin
-
-Use [the app ledger testkit](/develop/app-chain-testkit/) for embedded clusters, plus the conformance suites for the SPI you implement. Test actual failure/recovery behavior, not just a successful submit.
-
----
-
-# Certified observations
-
-Understand the preview observation framework and its trust model.
-
-Canonical URL: https://getyano.dev/app-chains/observations/
-
-Certified observations bring bounded reports from configured sources or reporters into an app ledger. They are **preview functionality, disabled by default**. Agreement on reports does not establish that a source is correct.
-
-## Configure an explicit profile
-
-`observations.profile-cbor-hex` supplies a canonical observation profile. Its bytes are committed separately from the consensus profile. Omitting it selects the disabled profile. A retained chain rejects mismatched profiles; this is not an in-place feature toggle for arbitrary existing ledgers.
-
-The framework supports one-shot and recurring exact-value observations and complete-source numeric aggregation. Scheduling uses app heights, or verified L1 slots when the selected logical-time version and stable L1 feed support it. Height cadence is chain progress, not elapsed minutes.
-
-## Separate collection from consensus
-
-Application callbacks emit deterministic intents. Bounded workers acquire data outside deterministic execution. Reports and certificates are made durable and are consumed under the configured rules. Status reports acquisition failures, queue pressure, journal usage, active subscriptions, and readiness.
-
-`observations.workers` defaults to `4` and supports `1–64`. The signing journal has bounded entry and byte limits. Never copy a signing journal across member identities or erase it to bypass a recovery failure.
-
-## Audit and recovery
-
-Committed observation queries use the reserved `yano/observations/` prefix and return a height/root. They read authenticated state, not the node-local worker's current view.
-
-For certificate verification, use the domain-separated commit digest and independently trusted height-specific consensus context. Older incomplete certified headers must not be treated as equivalent evidence. Keep provider/plugin API levels matched to the host.
-
-Recovery must preserve finalized history, original profiles, membership, and signing locks. Offline replay tools verify every reconstructed root before installation. A missing journal or a divergent replay is not repaired by starting an empty ledger with the same signing key.
-
-Provider implementation contracts live under `org.yanoproject.api.appchain`; extension packages and their qualification remain separately versioned. See [extension development](/app-chains/extensions/) for the plugin boundary.
-
----
-
-# Ordered log in depth
-
-Record events, query positions, and verify ordered-log state.
-
-Canonical URL: https://getyano.dev/app-chains/ordered-log/
-
-`ordered-log` is Yano's built-in append-only state machine for opaque events.
-It gives applications one threshold-finalized order, replicated history,
-provable message positions, and an optionally Cardano-anchored state root. It
-does not parse payloads or implement business rules.
-
-The configured id is exactly `ordered-log`. Names such as `orders-chain` are
-chain ids chosen by the operator; they do not create an order-specific data
-model.
-
-## When to use it
-
-Use `ordered-log` when participants need to agree that an event was finalized
-at a particular position, while applications interpret the event body:
-
-- cross-organization event and audit logs;
-- order, shipment, case, or compliance histories;
-- immutable evidence and document-hash journals;
-- a shared event stream consumed by external services; and
-- notarization of arbitrary application bytes.
-
-Choose another state machine when the chain must maintain or enforce business
-state. `ordered-log` does not enforce schemas, unique order ids, lifecycle
-transitions, balances, ownership, approvals, or application-level
-authorization.
-
-## Mental model: chain, topic, and payload
-
-These are independent concepts:
-
-| Concept | Example | Meaning |
-|---|---|---|
-| Chain id | `orders-chain` | Independent ledger, ordering, finality, state root, proofs, and optional anchor |
-| State-machine id | `ordered-log` | Deterministic logic applied to finalized blocks |
-| Topic | `order-created` | Caller-supplied label used for routing and filtering |
-| Payload | `{"orderId":"A-1001"}` | Opaque bytes owned and interpreted by the application |
-
-One chain can carry many topics:
-
-```text
-orders-chain
-├── order-created
-├── order-paid
-├── order-shipped
-└── order-cancelled
-```
-
-The state machine does not assign meaning to those topic names. Ordinary
-topics may be any valid UTF-8 value within the framework limit; names starting
-with `~` are reserved for Yano.
-
-## Start the out-of-the-box demo
-
-From an extracted **JVM release** directory (recommended for app ledgers):
-
-```bash
-./yano.sh start:devnet,appchain
-```
-
-This starts Yano's built-in `orders-chain` as a single-member ordered log. The
-identity in `config/application-appchain.yml` is deterministic and intended
-only for local testing.
-
-For the multi-node commands in the rest of this walkthrough, use an extracted
-[Yano X](https://github.com/bloxbean/yano-x) showcase distribution:
-
-```bash
-./yano.sh appchain cluster start 3
-```
-
-The showcase also hosts `orders-chain` as an `ordered-log` chain. Submit
-through member 1:
-
-```bash
-./yano.sh appchain cluster submit orders-chain order-created \
-  '{"orderId":"A-1001","quantity":4}' \
-  --node 1
-```
-
-The command shape is:
-
-```text
-./yano.sh appchain cluster submit <chain-id> <topic> <payload> [--node <index>]
-```
-
-`--node 1` selects the ingress node. That member authenticates and signs the
-envelope, then gossips it to the cluster. It does not make node 1 the
-sequencer, state owner, or business-event processor.
-
-The payload need not be JSON:
-
-```bash
-./yano.sh appchain cluster submit orders-chain notes \
-  'order A-1001 was checked manually'
-```
-
-The launcher submits command-line payloads as UTF-8 text. Use the REST
-`bodyHex` field or the Java client's byte-array method for arbitrary binary
-payloads.
-
-## Configuration
-
-The snippets in this section show only the keys that select and tune
-`ordered-log`. They are not complete chain definitions: every chain also needs
-its `signing-key`, `members`, `threshold`, the state-commitment triple
-(`state.commitment-profile`, `state.format-fingerprint`, and `state.genesis-id`,
-configured together), and a sequencer (`sequencer.proposer` or
-`sequencer.mode`). Start from the complete single-member block in
-`config/application-appchain.yml`:
-
-```yaml
-yano:
-  app-chain:
-    chains[0]:
-      chain-id: "orders-chain"
-      signing-key: "<64 hex characters>"
-      members: "<member public key hex>"
-      threshold: 1
-      state-machine: ordered-log
-      state:
-        commitment-profile: mpf-blake2b256-v1
-        format-fingerprint: "<fingerprint>"
-        genesis-id: "<genesis id>"
-      membership:
-        mode: governed
-      block:
-        interval-ms: 1000
-      sequencer:
-        proposer: "<member public key hex>"
-```
-
-Several chains are configured by index. Only the selecting keys are shown:
-
-```yaml
-yano:
-  app-chain:
-    chains[0]:
-      chain-id: orders-chain
-      state-machine: ordered-log
-      membership:
-        mode: governed
-
-    chains[1]:
-      chain-id: shipments-chain
-      state-machine: ordered-log
-      membership:
-        mode: governed
-```
-
-Both chains use the same implementation but remain independent. Each has its
-own blocks, pending pool, finality certificates, state root, membership,
-sequencing policy, storage, proofs, and optional L1 anchor.
-
-Use multiple topics in one chain when the events share the same membership,
-finality, retention, anchoring, and operational lifecycle. Use separate chains
-when any of those boundaries should differ.
-
-Direct Yano startup reads `config/application-appchain.yml` as a complete
-single-node configuration. The Yano X showcase launcher reads its packaged
-`yano/config/application-appchain.yml` and injects node-specific member keys,
-peer addresses, threshold, and proposer. Production deployments must supply
-those values through their generated per-node configuration and
-secret-management flow.
-
-### Operational tuning
-
-`ordered-log` has no machine-specific settings. It uses the common chain
-settings for capacity, latency, expiry, retention, sequencing, membership, and
-anchoring. For example, these keys are added to a chain's complete
-definition:
-
-```yaml
-yano:
-  app-chain:
-    chains[0]:
-      chain-id: orders-chain
-      state-machine: ordered-log
-      max-message-bytes: 65536
-      default-ttl-seconds: 600
-      max-ttl-seconds: 3600
-      block:
-        interval-ms: 1000
-        max-bytes: 4194304
-        max-messages: 5000
-      pool:
-        max-messages: 10000
-      retention:
-        enabled: true
-        keep-blocks: 1000
-```
-
-Keep consensus-affecting settings identical across members. When retention is
-enabled, eligible old message bodies below the confirmed anchor horizon may be
-stripped, while headers, ids, roots, and certificates remain so inclusion
-evidence is preserved. Archive bodies or evidence bundles separately when the
-original content must remain independently verifiable.
-
-## Submit through REST
-
-In the Yano X showcase's default local cluster, node indices 0, 1, and 2 use
-HTTP ports 7070, 7071, and 7072. This request is equivalent to CLI submission with `--node 1`:
-
-```bash
-RESPONSE=$(curl -sS -X POST \
-  http://127.0.0.1:7071/api/v1/app-chain/chains/orders-chain/messages \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "topic":"order-created",
-    "body":"{\"orderId\":\"A-1001\",\"quantity\":4}"
-  }')
-
-echo "$RESPONSE" | jq .
-MESSAGE_ID=$(echo "$RESPONSE" | jq -r .messageId)
-```
-
-A successful submission returns HTTP `202`:
-
-```json
-{
-  "messageId": "<64 lowercase hex characters>",
-  "chainId": "orders-chain",
-  "topic": "order-created"
-}
-```
-
-| Response | Meaning | Next step |
-|---|---|---|
-| **202** with `messageId` | Locally admitted, retained, and offered for diffusion | Wait for finalization; this is not finality or business success |
-| **400** with `{"code":"<REASON>"}` | The chain's state machine rejected local admission before pool retention or relay | Correct the command before submitting again |
-| **429** | The local pending pool is full; the message was not relayed | Retry after backpressure clears |
-| **503** | Application admission is unavailable, or the chain is stopped/paused | Check node health before retrying |
-
-Malformed input and envelope limits also return **400**, with an `error`
-field instead of `code`. Application reason codes are at most 32 uppercase
-ASCII letters or underscores; any other reason is reported as
-`APPLICATION_REJECTED`. `ordered-log` does not reject application payloads, so
-`code` responses come only from custom state machines.
-
-For arbitrary bytes, send hexadecimal data instead:
-
-```bash
-curl -sS -X POST \
-  http://127.0.0.1:7071/api/v1/app-chain/chains/orders-chain/messages \
-  -H 'Content-Type: application/json' \
-  -d '{"topic":"binary-event","bodyHex":"010203ff"}' | jq .
-```
-
-When REST authentication is enabled, also send `X-API-Key`. A topic-scoped API
-key can restrict which topics a caller may submit to, but that is an ingress
-policy rather than an `ordered-log` consensus rule.
-
-## Submit from Java with Yano X
-
-The following client belongs to Yano X and is installed separately from the Yano host.
-
-Use the lightweight `yano-x-client` artifact. Yano X has its own release line,
-so `yanoXVersion` is a [Yano X release](https://github.com/bloxbean/yano-x/releases)
-compatible with your Yano nodes, not the Yano node version:
-
-```groovy
-implementation "org.yanoproject.x:yano-x-client:${yanoXVersion}"
-```
-
-```java
-import org.yanoproject.x.client.AppChainClient;
-
-AppChainClient client = AppChainClient
-        .builder("http://127.0.0.1:7071/api/v1")
-        .chainId("orders-chain")
-        // .apiKey("secret") // when REST authentication is enabled
-        .build();
-
-String payload = """
-        {"event":"order-created","orderId":"A-1001","quantity":4}
-        """.strip();
-
-var submitted = client.submitText("orders", payload);
-System.out.println(submitted.messageId());
-```
-
-Use `client.submit(topic, byte[])` for arbitrary bytes or
-`client.submitTyped(topic, value, encoder)` with an application-owned JSON,
-CBOR, or protobuf encoder.
-
-Submitting identical payload bytes twice normally creates two messages. The
-signed envelope also contains sender sequence and expiry data, so each
-submission has its own message id. Business-level idempotency, such as
-uniqueness by `orderId`, requires application logic or a custom state machine.
-
-## What happens after submission
-
-1. The ingress node checks framework bounds, signs the envelope with its member
-   key, retains it in the pending pool, and gossips it.
-2. The current proposer orders pending messages into an app block.
-3. Every voting member deterministically executes `ordered-log` and derives
-   the same state root.
-4. The configured threshold certifies the block.
-5. Members commit the block, message index, state, and finality certificate.
-6. If anchoring is enabled, a later anchor commits the certified application
-   root to Cardano.
-
-HTTP `202` means the ingress node accepted the envelope; it does not mean the
-message is finalized. Confirm finalization before treating the event as
-committed:
-
-```bash
-until curl -sf \
-  "http://127.0.0.1:7070/api/v1/app-chain/chains/orders-chain/messages/$MESSAGE_ID" \
-  | jq .; do
-  sleep 1
-done
-```
-
-Applications can also follow finalized messages through the SSE endpoint:
-
-```text
-GET /api/v1/app-chain/chains/orders-chain/stream?fromHeight=0&topic=orders
-```
-
-The Java client exposes the same behavior through `subscribe(...)` and
-`subscribeTyped(...)`.
-
-## Committed state and proofs
-
-For each finalized message, `ordered-log` writes:
-
-```text
-sha256("~yano/finalized-message/v1/" || message-id)
-  -> cbor([schema-version, block-height, message-index, topic, sender])
-```
-
-It also maintains a namespaced tip record:
-
-```text
-sha256("~yano/finalized-message/v1/" || "tip") -> cbor(block-height)
-```
-
-The message body remains in finalized block history and the message index; it
-is not duplicated in the state value. Use the typed proof subject to resolve a
-public message ID to the reserved physical state key and request its MPF proof:
-
-```bash
-curl -s -X POST \
-  "http://127.0.0.1:7070/api/v1/app-chain/chains/orders-chain/proof-subjects/finalized-message-v1/proof" \
-  -H 'Content-Type: application/json' \
-  -d "$(jq -nc --arg id "$MESSAGE_ID" '
-    {coordinates:{"message-id":$id}, view:"latest",
-     claim:{claimId:"recorded",operands:{}}, includeEvidence:false}')" \
-  | jq '{stateRoot:.proof.stateRoot,presence:.proof.presence,position:.fact.fields,claim:.claimResult.satisfied}'
-```
-
-The lower-level `state/proof/{keyHex}` route accepts the resolved physical key,
-not the public message ID. The separate `messages/{messageId}/proof` route
-proves membership in the finalized block's compact `messagesRoot`.
-
-That proof binds the message's finalized position, topic, and sender to the
-returned committed state root. For audit-grade verification, verify it against
-an independently trusted root, such as the matching Cardano anchor, rather
-than trusting a root supplied by the same node.
-
-Other useful endpoints are:
-
-```text
-GET /chains/{chainId}/messages/{messageId}
-GET /chains/{chainId}/messages/by-topic/{topic}?fromHeight=0&limit=100
-GET /chains/{chainId}/blocks?from=1&limit=100
-GET /chains/{chainId}/evidence/{messageId}
-GET /chains/{chainId}/status
-```
-
-All paths above are relative to `/api/v1/app-chain`.
-
-## Bounds and security behavior
-
-The public submission path and default framework profile apply these
-constraints:
-
-- a non-empty body on REST and CLI submission;
-- body size at most 65,536 bytes by default (`max-message-bytes`);
-- topic size at most 256 UTF-8 bytes with no NUL character;
-- topics starting with `~` are reserved;
-- envelope signature and current member authorization;
-- pending-pool capacity and message expiry; and
-- structural, replay, block-size, and finality checks.
-
-These checks protect the protocol. They do not validate a JSON schema or any
-business meaning. Do not put secrets or unnecessary personal data in payloads:
-every member receives the body and finalized history may be retained or
-exported. Encrypt application bodies before submission when confidentiality is
-required, and manage decryption keys outside consensus.
-
-## Customization choices
-
-### Use payload conventions when validation is external
-
-Applications may agree on a versioned envelope such as:
-
-```json
-{
-  "schemaVersion": 1,
-  "event": "order-created",
-  "eventId": "evt-9001",
-  "orderId": "A-1001",
-  "quantity": 4
-}
-```
-
-Producers and consumers can validate this schema without changing Yano. The
-chain still accepts other bytes, so this is appropriate only when business
-validation is deliberately outside consensus.
-
-### Use topics for routing, not enforcement
-
-Topics let consumers filter one ordered history. They are useful for event
-families such as `order-created`, `order-paid`, and `order-shipped`, but the
-machine does not enforce a topic allow-list or a topic-specific payload shape.
-
-### Use separate chains for isolation
-
-Run multiple `ordered-log` chains when applications require distinct member
-sets, sequencing, retention, anchoring, or failure boundaries. Reusing the
-same state-machine implementation does not share state between chains.
-
-### Write a custom state-machine plugin for business rules
-
-Use a custom `AppStateMachine` when consensus must enforce rules such as:
-
-- strict payload decoding and bounds;
-- unique order ids;
-- allowed transitions such as `CREATED -> PAID -> SHIPPED`;
-- sender- or role-based authorization; or
-- committed current state keyed by `orderId`.
-
-Package the implementation behind `AppStateMachineProvider`, a ServiceLoader
-entry, and a Yano plugin manifest. Deploy the identical bundle to every voting
-member of a JVM cluster and select its id with `state-machine`. Start with the
-[Yano X plugin template](https://github.com/bloxbean/yano-x/tree/main/scaffolds/plugin-template).
-
-Admission hooks improve feedback and keep malformed commands out of blocks
-built by honest proposers, but deterministic `apply()` logic remains the
-consensus authority. It must re-decode input and safely handle invalid or
-stale commands without external I/O, randomness, wall-clock reads, or other
-node-local behavior.
-
-Do not switch an existing `ordered-log` ledger to incompatible application
-semantics in place. Use a fresh chain id/storage or a deliberately designed,
-versioned migration and activation plan.
-
-### Use consumers or effects for external actions
-
-`ordered-log` itself does not call webhooks, Kafka, an ERP, or another external
-system. A consumer can subscribe to finalized messages and perform idempotent
-off-chain work. When an external action and its outcome must participate in
-the committed workflow, use an effect-emitting stock/composite machine or a
-custom state-machine and executor plugin.
-
-Never perform network, database, filesystem, or other external I/O from a
-state machine's deterministic `apply()` method.
-
-## Related documentation
-
-- [Yano X tutorials](https://github.com/bloxbean/yano-x/tree/main/docs/appchain/tutorials)
-- [Yano X stock state machines](https://github.com/bloxbean/yano-x/tree/main/state-machines)
-- [Consensus and state-machine internals](/app-chains/consensus/)
-- [Yano X Java app ledger client](https://github.com/bloxbean/yano-x/tree/main/sdk/client)
-
----
-
-# What is a multi-party app ledger?
-
-Understand multi-party app ledgers, member finality, proofs, and Cardano anchoring.
-
-Canonical URL: https://getyano.dev/app-chains/overview/
-
-:::caution[Experimental]
-App ledgers are experimental. Configuration keys, REST endpoints, and the plugin API can change between preview releases without a migration path, and every member of a ledger must upgrade together. Don't use app ledgers to hold value yet.
-:::
-
-A multi-party app ledger is a shared record for your application: a known group of members orders messages, executes the same deterministic logic, and certifies the resulting state, with proofs and optional anchoring to Cardano. The rest of these pages call it an app ledger.
-
-For example, several organizations can agree on the order of shipment events and later prove that a particular message was recorded. Yano's built-in `ordered-log` provides this shared history without interpreting the payload.
-
-In configuration and APIs, app ledgers appear under the `app-chain` name: properties start with `yano.app-chain.`, REST endpoints with `/api/v1/app-chain/`, and the bundled profile is `appchain`.
-
-## What an app ledger is not
-
-An app ledger is similar in spirit to what other ecosystems call an appchain, but it is permissioned and tokenless:
-
-- It is not a standalone public blockchain. Members are configured; there is no open validator set.
-- It has no native token and no fee market.
-- It is not a Cardano layer 2 secured by L1 consensus. Anchoring records an auditable commitment on Cardano; Cardano does not validate the app ledger's state transitions.
-
-## From message to evidence
-
-1. Your application submits a topic and payload to a member.
-2. The member validates and signs an envelope, then gossips it.
-3. A proposer orders messages into an app block.
-4. Members execute the state machine and certify the block at the configured threshold.
-5. The committed state root supports queries and proofs.
-6. Optional anchoring records a commitment on Cardano.
-
-**Accepted, finalized, and anchored are separate states.** HTTP `202` means accepted at ingress. Finality requires the member certificate. L1 anchoring happens later and needs confirmation.
-
-## What is included?
-
-Yano includes the host, networking, consensus/finality, commitment and proof surfaces, plugin contracts, L1 anchoring, and one built-in machine: `ordered-log`.
-
-[Yano X](https://github.com/bloxbean/yano-x) supplies additional stock state machines, capabilities, connectors, application products, SDKs, and JVM tooling. They are separately installed extensions; a plain Yano distribution does not automatically include them.
-
-## Independent ledgers
-
-A node may host multiple app ledgers, each identified by its chain id. Each has its own identity, member set, sequencing policy, state, storage, and optional anchor policy. Use topics within one ledger for event categories; use separate ledgers for different trust or operational boundaries.
-
-## Trust model
-
-Member finality relies on configured keys, quorum rules, and consensus context. A state proof establishes a mathematical relationship to a root. You still need a trusted source for that root and the ledger identity. Cardano anchoring does not make an opaque business claim true.
-
-[Start a local app ledger](/app-chains/quickstart/) or [learn about proofs](/app-chains/proofs/).
-
----
-
-# Finality, proofs & L1 anchors
-
-Distinguish message inclusion, state proofs, certificates, and Cardano confirmation.
-
-Canonical URL: https://getyano.dev/app-chains/proofs/
-
-Yano exposes different evidence for different questions. Choose the proof that matches the claim you want to make.
-
-| Evidence | What it establishes |
-| --- | --- |
-| Finality certificate | The configured member threshold certified an app block |
-| Message proof | A message ID occurs in a finalized block's `messagesRoot` |
-| State proof | A key/value or absence relates to an expected Merkle Patricia Forestry root |
-| Evidence bundle | Related message, block, certificate, and available anchor evidence for verification |
-| Cardano anchor | An app ledger commitment was recorded on L1 under the selected anchor scheme |
-
-## Query a proof
-
-Message inclusion uses:
-
-```text
-GET /api/v1/app-chain/chains/{chainId}/messages/{messageId}/proof
-```
-
-The lower-level state route is `state/proof/{keyHex}`. **A public message ID is not the physical state key.** For ordered-log message positions, use the `finalized-message-v1` typed proof subject. See the [ordered-log walkthrough](/app-chains/ordered-log/).
-
-## Anchor modes
-
-Metadata anchoring records a commitment in transaction metadata. Script anchoring uses the script-anchor protocol and thread NFT. These have different verification and operating requirements. Script anchoring requires bootstrap, signing configuration, funding, and a matching script identity; setting a boolean alone is insufficient.
-
-App finality and L1 stability are distinct. Confirm the anchor transaction and bind it to the exact app block/root. A node reporting an anchor is not an independent Cardano lookup.
-
-## Verification checklist
-
-1. Pin the expected chain and genesis identity.
-2. Obtain the expected root independently, or explicitly accept the trust in its provider.
-3. Verify the proof using a release-matched verifier.
-4. Verify the finality certificate against trusted membership and height-specific consensus context.
-5. If relying on L1, verify the matching transaction, datum or metadata, script identity, and confirmation policy through an independent Cardano source.
-
-`org.yanoproject:yano-appchain-proof-verifier` supplies the retained portable proof-verification module. Hashing payload bytes alone does not verify finality or anchoring.
-
-For consensus configuration and anchor lifecycle detail, see [the consensus guide](/app-chains/consensus/).
-
----
-
-# Your first app ledger
-
-Start the built-in ordered log and submit your first event.
-
-Canonical URL: https://getyano.dev/app-chains/quickstart/
-
-:::caution[Experimental]
-App ledgers are experimental. Configuration keys, REST endpoints, and the plugin API can change between preview releases without a migration path. See [what an app ledger is and isn't](/app-chains/overview/).
-:::
-
-Download and extract the **[JVM distribution](/start/installation/)**, recommended for app ledgers for now. From its extracted directory:
-
-```bash
-./yano.sh start:devnet,appchain
-```
-
-This activates the bundled `appchain` profile, including `orders-chain`, a **single-member** `ordered-log` demo. Its deterministic key is for local testing only. It is not a multi-member security demonstration and does not turn on L1 anchoring by itself.
-
-## 1. Submit an event
-
-```bash
-curl -fsS -X POST \
-  http://localhost:7070/api/v1/app-chain/chains/orders-chain/messages \
-  -H 'Content-Type: application/json' \
-  -d '{"topic":"order-created","body":"order A-1001"}'
-```
-
-Save the returned `messageId`. The response is HTTP `202`: the event has been accepted, but may not yet be finalized. See [submission responses](/app-chains/ordered-log/#submit-through-rest) for the `400`, `429`, and `503` cases.
-
-## 2. Read the finalized message
-
-Replace `<message-id>` with the returned value. The message route returns HTTP `404` until the message is finalized, so `curl -f` fails until then; query again after the proposer has had time to create a block:
-
-```bash
-curl -fsS   'http://localhost:7070/api/v1/app-chain/chains/orders-chain/messages/<message-id>'
-curl -fsS \
-  http://localhost:7070/api/v1/app-chain/chains/orders-chain/status
-```
-
-## 3. Follow the event stream
-
-```bash
-curl -N   'http://localhost:7070/api/v1/app-chain/chains/orders-chain/stream?fromHeight=0&topic=order-created'
-```
-
-SSE streams finalized messages. Design consumers for reconnects and duplicate delivery using durable application checkpoints.
-
-## What the chain guarantees
-
-`ordered-log` records opaque bytes in a shared finalized order. It does not enforce unique order IDs, a JSON schema, balances, or an order lifecycle. Two submissions of the same payload can produce different message IDs because their envelopes include sender sequence and expiry.
-
-Use a custom state machine when consensus must enforce business rules. See [ordered-log in depth](/app-chains/ordered-log/) and [extension development](/app-chains/extensions/).
 
 ---
 
@@ -1220,10 +53,10 @@ Run the build tiers and packaging checks.
 Canonical URL: https://getyano.dev/contribute/build-and-test/
 
 Yano uses layered verification so the normal development build keeps complete
-L1 and retained app-chain host/OrderedLog coverage without also running every
-multi-node, packaged-runtime, or native-image acceptance test. Optional state
-machines, connectors, products, and their cryptographic suites are built in
-[Yano X](https://github.com/bloxbean/yano-x).
+L1 coverage without also running every multi-node, packaged-runtime, or
+native-image acceptance test. Application ledgers (app chains) and their
+suites are built downstream in [Yano X](https://github.com/bloxbean/yano-x),
+which depends on Yano; Yano never depends on Yano X.
 
 ## Requirements
 
@@ -1235,13 +68,12 @@ machines, connectors, products, and their cryptographic suites are built in
 
 | Tier | Source location | Purpose | Included in `build` |
 |---|---|---|---|
-| Core | `src/test` | L1 tests plus retained app-chain host, OrderedLog, proof, and plugin-boundary tests | Yes |
-| Extended | `src/integrationTest` | Retained multi-node sequencing, catch-up, membership, anchoring, and host integration | No |
+| Core | `src/test` | L1, host and plugin-boundary tests | Yes |
+| Extended | `src/integrationTest` | Multi-process, external-service and benchmark suites | No |
 | Distribution | packaged process contracts | Tests the lean JVM/native archives and plugin-directory boundary | No |
 
 Tests are classified by behavior, not by class name. A test that starts several
-app-chain nodes belongs in `src/integrationTest` even when it validates retained
-host behavior.
+nodes or external services belongs in `src/integrationTest`.
 
 ## Normal development build
 
@@ -1251,25 +83,48 @@ Run the default build for normal changes:
 ./gradlew build -PskipSigning=true
 ```
 
-This compiles every retained module and runs ordinary L1 and app-chain core
-tests. It intentionally does not run extended multi-node or distribution suites.
+This compiles every module and runs the core tests, including
+`verifyNoYanoXDependency` (see below). It intentionally does not run extended
+multi-node or distribution suites.
 
 For a faster module-level iteration:
 
 ```bash
 ./gradlew :runtime:test
-./gradlew :appchain-testkit:test
-./gradlew :appchain-proof-verifier:test
+./gradlew :ledger-state:test
 ```
 
 Run one ordinary test or method with Gradle's standard filter:
 
 ```bash
 ./gradlew :runtime:test \
-  --tests 'org.yanoproject.runtime.appchain.AppChainTwoNodeSmokeTest'
+  --tests 'org.yanoproject.runtime.HeaderSyncManagerTest'
 
 ./gradlew :runtime:test \
-  --tests 'org.yanoproject.runtime.appchain.AppChainTwoNodeSmokeTest.twoNodes_exchangeAuthenticatedMessages_bothDirections'
+  --tests 'org.yanoproject.runtime.HeaderSyncManagerTest.epochBoundaryHoldPausesAndResumesHeaderSync'
+```
+
+## Dependency direction
+
+`./gradlew verifyNoYanoXDependency` (part of `check`) fails when Yano requests,
+declares, names or ships Yano X: any `org.yanoproject.x` group or `yano-x-*`
+module in a plugin request or in any configuration of any project (buildscript
+included), in generated POMs, module metadata and the BOM, as a token in
+tracked source and build files, or inside existing build outputs
+(`app/build/yano.jar`, the distribution ZIPs, the Docker build contexts, the
+generated plugin index and native-image configuration). It finishes with a
+negative probe that builds `gradle/no-yano-x-probe` and requires the guard to
+reject it. The full violation list is written to
+`build/reports/no-yano-x/violations.txt`; stale outputs from an older build are
+reported too, so rebuild or clean them.
+
+To prove that a clean checkout builds without any Yano X artifact, use a fresh
+Gradle user home, so nothing comes from a cache, and keep Maven Local disabled
+(the default; never pass `-PuseMavenLocal=true` here):
+
+```bash
+export GRADLE_USER_HOME="$(mktemp -d)"
+./gradlew clean build :app:quarkusBuild verifyNoYanoXDependency -PskipSigning=true
 ```
 
 ## Extended tests
@@ -1278,10 +133,10 @@ Run every retained integration suite, or select a module/test:
 
 ```bash
 ./gradlew extendedTest
-./gradlew :runtime:integrationTest
+./gradlew :archive-modules:archive-api:integrationTest
 
-./gradlew :runtime:integrationTest \
-  --tests 'org.yanoproject.runtime.appchain.GovernedMembershipIntegrationTest'
+./gradlew :archive-modules:archive-api:integrationTest \
+  --tests 'org.yanoproject.archive.benchmark.DuckLakeSnapshotConcurrencyTest'
 ```
 
 ## Distribution verification
@@ -1294,9 +149,8 @@ Run the lean JVM distribution and directory-plugin boundary gate:
 
 It builds the ordinary Yano JVM ZIP and verifies:
 
-- the core distribution manifest and OrderedLog-only built-in boundary;
+- the core distribution manifest;
 - packaged catalog integrity and directory-loaded conformance plugins;
-- absence of Yano X bundles and downstream source/task dependencies; and
 - packaged launchers, config, plugin tools, and executable bits.
 
 The gate uses temporary devnet data. It does not connect to Preview, Preprod,
@@ -1333,14 +187,16 @@ For a from-scratch release-style check:
 
 `fullBuild` is intentionally not the normal inner-loop command. Network-specific
 Haskell synchronization, native-image, and public-network acceptance workflows
-retain their dedicated commands and opt-in requirements. Yano X owns connector,
-product, showcase, and eUTxO/ZK gates.
+retain their dedicated commands and opt-in requirements. Yano X owns the
+app-chain, connector, product, showcase, and eUTxO/ZK gates.
 
 ## Continuous integration
 
 Pull-request verification runs the retained core build, integration tests,
-distribution checks, and GraalVM gates independently. Yano X has its own JVM-only
-extension and release-acceptance workflow. Release workflows use the corresponding
+distribution checks, and GraalVM gates independently; the distribution and
+native jobs also run `verifyNoYanoXDependency` over their outputs. Yano X has
+its own JVM-only workflow that builds against published or staged Yano
+artifacts (`.github/COORDINATED_INPUTS.md`). Release workflows use the corresponding
 repository-owned gates before publishing.
 
 ## Performance and diagnostics
@@ -1518,10 +374,9 @@ loading with the build-only conformance bundle:
 
 The fixture is never bundled into the application index; the smoke loads it
 only from the external plugin directory, so startup proves it was selected from
-there. The task starts an isolated one-member app chain and asserts
-all ten catalog contribution kinds (`NodePlugin` plus nine typed SPIs),
-protected operations REST, the plugin health group, Prometheus metrics, and
-dashboard assets. The fixture's adversarial TCCL handoff also proves plugin
+there. The task asserts that the fixture's contributions activate, together
+with protected operations REST, the plugin health group, Prometheus metrics,
+and dashboard assets. The fixture's adversarial TCCL handoff also proves plugin
 callbacks crossed catalog facades.
 
 ## Native Zip Distribution
@@ -1554,9 +409,8 @@ network genesis files, plus the same `LICENSE` and release SBOM. It deliberately
 has no plugin directory or
 `yano-plugins` JVM runtime: native images cannot load JARs dynamically. Run the
 standalone JVM CLI on a JDK 25 operator/build host when offline validation is
-needed. Native Yano embeds only retained core providers. Optional Yano X state
-machines, connectors, and products are supported by the JVM distribution, not
-by augmenting the native build.
+needed. Native Yano embeds only its core providers and has no application
+ledger (app chain) support.
 
 After the native zip task finishes, verify the final executable that it copied
 into the distribution:
@@ -1721,7 +575,6 @@ To run Yano, [download a release](/start/installation/). To change the node itse
 | `p2p`, `consensus` | Networking and consensus components |
 | `devnet-toolkit`, `testkit`, `testkit-ccl` | Local development and Java testing |
 | `app` | Quarkus API and runnable distribution |
-| `appchain/` | Retained app-chain configuration, test, and proof modules |
 | `archive-modules/` | Optional history projection and DuckLake backend |
 | `www/` | This documentation site |
 
@@ -1729,7 +582,7 @@ Yano owns `org.yanoproject.*`. Use domain names for new top-level packages; prod
 
 ## Extension contributions
 
-Put additional stock app-chain machines, connectors, products, and JVM tooling in [Yano X](https://github.com/bloxbean/yano-x). Extend the public SPI without coupling the host to product-specific source paths or dependencies.
+Application ledger (app chain) code, connectors, products, and their tooling belong in [Yano X](https://github.com/bloxbean/yano-x). Yano X depends on Yano; Yano never depends on Yano X. Extend the public SPI without coupling the host to product-specific source paths or dependencies.
 
 ## Documentation contributions
 
@@ -1742,39 +595,6 @@ npm run build
 ```
 
 The build refreshes AI artifacts and configuration references from this checkout and checks local links. Keep commands, units, defaults, and source ownership accurate. Describe user-facing behavior and include meaningful validation in your PR.
-
----
-
-# App ledger testkit
-
-Test your state machine with an embedded cluster of Yano members.
-
-Canonical URL: https://getyano.dev/develop/app-chain-testkit/
-
-`org.yanoproject:yano-appchain-core-testkit` provides a JUnit 5 extension with generated member keys, temporary ledgers, and real socket connections between embedded nodes.
-
-```java
-import org.yanoproject.appchain.testkit.AppChainCluster;
-import org.yanoproject.appchain.testkit.AppChainClusterHandle;
-import org.junit.jupiter.api.Test;
-import java.nio.charset.StandardCharsets;
-
-@AppChainCluster(nodes = 3, stateMachine = "ordered-log")
-class SharedLogTest {
-    @Test
-    void finalizesOnEveryMember(AppChainClusterHandle cluster) throws Exception {
-        String id = cluster.node(1).submit(
-                "orders", "order-1".getBytes(StandardCharsets.UTF_8));
-        cluster.awaitFinalized(id);
-    }
-}
-```
-
-`awaitFinalized` waits for the message on all nodes and fails on timeout. Node 0 is the sequencer. The default `threshold = 0` selects all members; `blockIntervalMs` defaults to `300`. You can set the chain ID, state-machine ID, member count, threshold, and proposer tick interval on the annotation.
-
-This is an integration fixture, not a simulation of Byzantine peers, adversarial timing, L1 rollback, or production load. Add workload-specific assertions and separate tests for those concerns.
-
-Effect executor conformance suites and the `EffectRuntimeHarness` moved to Yano X: use `org.yanoproject.x:yano-x-effects-testkit` ([source](https://github.com/bloxbean/yano-x/tree/main/sdk/effects-testkit)). See the module source in the [repository](https://github.com/bloxbean/yano/tree/main/appchain/appchain-testkit).
 
 ---
 
@@ -2874,7 +1694,7 @@ Like yaci-store's start point, `YanoConfig.syncStartSlot` and `syncStartBlockHas
 
 ### Package your listener as a plugin
 
-The same `@DomainEventListener` methods can run inside the packaged Yano node instead of your own application. Implement `org.yanoproject.api.plugin.NodePlugin`, register your listener object in `start()` with `AnnotationListenerRegistrar.register(ctx.eventBus(), listener, SubscriptionOptions.builder().build())`, close the returned handles in `stop()`, and list the class in `META-INF/services/org.yanoproject.api.plugin.NodePlugin`. Plugins see the event bus, configuration and a scheduler, not the query APIs. See [plugin operations](/operate/plugins/) and the [plugin contract](/reference/plugin-contract/).
+The same `@DomainEventListener` methods can run inside the packaged Yano node instead of your own application. Implement `org.yanoproject.api.plugin.NodePlugin`, register your listener object in `start()` with `AnnotationListenerRegistrar.register(ctx.eventBus(), listener, SubscriptionOptions.builder().build())`, close the returned handles in `stop()`, and list the class in `META-INF/services/org.yanoproject.api.plugin.NodePlugin`. Plugins see the event bus, configuration and a scheduler, not the query APIs. See [plugin operations](/operate/plugins/).
 
 ### Index inside Yano's storage
 
@@ -3278,7 +2098,6 @@ Read [account state and rollback](/reference/account-state/) for the state lifec
 | Control | Effect | Consequence |
 | --- | --- | --- |
 | `yano.storage.path` | Node RocksDB directory | One node process per database |
-| `yano.app-chain.storage.path` | Separate app ledger RocksDB root | Back up app ledger identity and state together |
 | `yano.filters.utxo.*` | Persist selected UTxOs | Queries describe the selected subset, not complete network coverage |
 | `yano.chain.block-body-prune-depth` | Remove older block bodies | Old body-dependent queries and scans may be unavailable |
 | `yano.rollback-retention-epochs` | Bound retained rollback material | Must match your recovery requirements |
@@ -3691,11 +2510,10 @@ Explore the embedded console and persistent metrics.
 Canonical URL: https://getyano.dev/operate/console/
 
 The Yano distribution embeds the unified console. Start Yano and open
-`http://127.0.0.1:7070/ui/`. The node, app ledger, plugin, and observability
-routes are real static paths, so `/ui/status/`, `/ui/app-chain/`,
-`/ui/plugins/`, and `/ui/observability/` can be bookmarked directly, as can the
-app ledger views `/ui/app-chain/authenticated-map/`,
-`/ui/app-chain/cardano-history/`, and `/ui/app-chain/eutxo/`.
+`http://127.0.0.1:7070/ui/`. The node, plugin, and observability routes are
+real static paths, so `/ui/status/`, `/ui/plugins/`, and `/ui/observability/`
+can be bookmarked directly. Application ledger (app chain) pages are not part of
+Yano's console; [Yano X](https://github.com/bloxbean/yano-x) ships its own.
 
 The connection panel accepts a Yano API base and an optional API key. Keys
 remain in memory unless the operator explicitly opts into browser-local
@@ -3732,12 +2550,11 @@ The equivalent environment settings are
 
 Never configure `origins: "*"` when API keys are used. CORS controls which
 browsers may call the node; it does not replace or weaken Yano's API-key
-checks. The fetch-based app ledger stream uses the same CORS and `X-API-Key`
-rules as normal JSON requests.
+checks.
 
 ## Historical metrics
 
-Without extra services, the node and app ledger charts retain up to one hour
+Without extra services, the node charts retain up to one hour
 of bounded history in the current browser tab. This short history survives a
 refresh but is not a monitoring database.
 
@@ -3751,10 +2568,9 @@ pinned Prometheus companion:
 ./yano.sh observability clean --yes
 ```
 
-`start` discovers a running maintained local app ledger cluster, or defaults
-to `http://127.0.0.1:7070`. Repeat `--target <node-origin>` to replace
-discovery. It prints a preconfigured `/ui/observability/?metrics=...` link.
-The default retention is 15 days / 2 GB; `stop` preserves history and only
+`start` scrapes `http://127.0.0.1:7070` by default. Repeat
+`--target <node-origin>` to scrape other nodes instead. It prints a
+preconfigured `/ui/observability/?metrics=...` link. The default retention is 15 days / 2 GB; `stop` preserves history and only
 the explicit `clean --yes` command removes the marked state and labeled
 volume. Docker Compose v2 is required only for this optional mode.
 
@@ -3765,75 +2581,7 @@ bearer credential is retained only in the current tab, is bound to the exact
 metrics origin, is never stored with or substituted for the Yano API key, and
 is never sent to the node.
 
-## Capability panels
-
-The App ledgers page discovers optional capabilities from the selected chain's
-status and, when authorized, confirms first-party bundles against the plugin
-catalog. It does not assume that every deployment has effects or role-aware
-approvals.
-
-- An effects-enabled chain shows emitted effects, statistics, composed proofs,
-  and confirmed requeue/cancel actions. Mutations require the appropriate
-  operator API key.
-- A `role-approvals` or `role-evidence` chain queries the proposal through the
-  root-fixed committed-query surface and adds the decoded domain projection
-  when available. The committed result remains visible if that convenience
-  projection is unavailable.
-- Every running app ledger exposes **Operations**, **Capabilities**, and
-  **Proofs**. Proofs is divided into **Message**, **State**, **Import and
-  verify**, and **Advanced** workflows. The browser can SHA-256 the exact
-  finalized message payload or
-  included proof value and compare each with its own optional expected digest.
-  A proof can be loaded at the current tip, loaded at the exact height of the
-  latest anchor confirmed by this node, or pasted as JSON. **Verify proof**
-  sends only the bounded key/value/proof/root fields to the connected node's
-  release-matched MPF verifier and reports three facts independently:
-
-  - whether the MPF path is mathematically valid for the expected root;
-  - whether the proof envelope's root and optional height match that source;
-  - where the expected root came from.
-
-The State workflow discovers typed proof subjects from the chain's immutable
-capability manifest and keeps physical state keys in Advanced. For
-extension-specific trust labels and proof workflows, see the
-[Yano X Proof Lab guide](https://github.com/bloxbean/yano-x/blob/main/docs/appchain/PROOF_LAB.md).
-
-`L1-confirmed by this node` means Yano observed the anchor transaction and
-bound its persisted confirmation back to the exact finalized app block. It is
-not an independent Cardano lookup. For an audit decision, resolve the shown
-transaction through an independent Cardano source, validate the metadata or
-script datum/output, and pin the expected chain, membership, threshold, and
-script identity. The browser digest remains a byte-integrity check rather than
-finality, anchor, or MPF verification. Custom component-specific panels remain
-data-only future catalog work; plugins cannot inject executable console code.
-
-### EUTxO lifecycle
-
-An `eutxo-ledger` chain exposes a reviewed EUTxO route at
-`/ui/app-chain/eutxo/?chain=<chain-id>`. With the node-local
-`indexer:eutxo-lifecycle` capability, it provides bounded transaction,
-account, bridge, lineage, and optional validity views. A user can start from
-an address, L1 deposit outpoint, app-message ID, L2 transaction ID, or
-withdrawal claim and follow the canonical L1 deposit to L2 activity to L1
-payout.
-
-The indexer is a derived SQLite projection. The console displays its coverage,
-checkpoint, finalized height, lag, and bridge-reconciliation diagnostics.
-If it is disabled or unavailable, the page falls back to the committed
-transaction-summary API; consensus and bridge execution are unaffected.
-L1 transaction details are loaded lazily from the connected Yano node and
-remain optional when retained L1 history is unavailable. The browser does not
-decode arbitrary Cardano or proof CBOR and never reads the disposable demo
-journal.
-
-The Bridge tab's server-built CIP-30 deposit may select a wallet input that
-contains ADA plus native assets. The vault output remains ADA-only and every
-native asset is returned to the depositor as change; signing and submission
-remain wallet-owned.
-
-Operational configuration, endpoints, metrics, rebuild safety, and the
-measured SQLite support envelope are documented in the
-[Yano X EUTxO indexer runbook](https://github.com/bloxbean/yano-x/blob/main/ledgers/eutxo/INDEXER_OPERATIONS.md).
+## Frontend development
 
 For local frontend development, run `npm run dev` in
 `console-ui/frontend`; Vite proxies `/api` and `/q` to
@@ -3931,7 +2679,8 @@ The equivalent Java properties are:
 yano.app-chain.api.keys=replace-with-a-long-random-full-key
 ```
 
-The key list may also contain topic-scoped submit keys in the form
+The `yano.app-chain.api.*` key names are kept for configuration
+compatibility. The key list may also contain topic-scoped keys in the form
 `key=topic-a|topic-b`. Such keys receive `403` from plugin operations; only an
 unscoped full key is accepted.
 
@@ -3946,8 +2695,8 @@ missing or invalid request key returns `401`, a scoped key returns
 for JVM/native parity, but the parsed key set is cached; restart the node after
 rotating keys.
 
-Set `YANO_APP_CHAIN_API_AUTH_ENABLED=true` too only when READ and SUBMIT routes
-must require keys; privileged plugin operations require a full key in either mode.
+Plugin operations always require a full key; `yano.app-chain.api.auth.enabled`
+does not change that.
 
 ## Dashboard
 
@@ -4021,7 +2770,7 @@ across runtime generations.
 Authoritatively absent series are unregistered; explicitly stale sources keep
 their last-good value and stale status.
 
-The app ledger API key (`yano.app-chain.api.keys`) does **not** protect `/q/health/group/plugins` or
+The plugin operations key (`yano.app-chain.api.keys`) does **not** protect `/q/health/group/plugins` or
 `/q/metrics`. Restrict management endpoints with the deployment listener,
 firewall, ingress, or authenticated reverse proxy. Do not expose them publicly
 by relying on the plugin operations credential.
@@ -4058,7 +2807,7 @@ bundle before restarting.
 
 # Troubleshooting
 
-Diagnose startup, synchronization, unavailable data, and app ledger progress.
+Diagnose startup, synchronization, and unavailable data.
 
 Canonical URL: https://getyano.dev/operate/troubleshooting/
 
@@ -4066,7 +2815,7 @@ Canonical URL: https://getyano.dev/operate/troubleshooting/
 
 Check `java -version` (JDK 25), the working directory, configured storage ownership, and whether ports `7070` or `13337` are already in use. Start the launcher inside the complete extracted distribution; Java is needed only for the JVM ZIP.
 
-Do not run two processes against one RocksDB directory. Keep node and app ledger storage, network configuration, and member identity together when moving an installation.
+Do not run two processes against one RocksDB directory. Keep node storage and network configuration together when moving an installation.
 
 ## The node is healthy but still behind
 
@@ -4077,14 +2826,6 @@ Confirm the genesis/network magic and upstream reachability. Repeatedly restarti
 ## A wallet query returns unavailable
 
 Wallet indexes must be enabled before a fresh sync. An existing database does not gain historical completeness when you flip a flag. Scan queries also need retained block bodies. A `503` is not an empty account or an unused address. See [wallet indexes](/node/wallet-indexes/).
-
-## A message is accepted but not finalized
-
-`202` is ingress acceptance. Check chain status, configured proposer, member keys, threshold, peer connectivity, expiry, and backpressure. Make sure voting nodes agree on the chain configuration and commitment identity. An idle chain need not produce empty blocks.
-
-## A proof is valid but the claim is still uncertain
-
-A valid proof only binds data to its expected root. Establish where that root came from, which chain it belongs to, and whether the associated finality and L1 evidence are independently trusted. See [proofs and anchors](/app-chains/proofs/).
 
 ## Report a problem
 
@@ -4098,7 +2839,7 @@ Keep source, artifacts, storage, and plugins compatible.
 
 Canonical URL: https://getyano.dev/operate/upgrades/
 
-Yano is pre-release. Pin library, node, verifier, and plugin versions together. Check the [documentation build manifest](/ai/manifest.json) for the source revision and version used to generate these docs.
+Yano is pre-release. Pin library, node, and plugin versions together. Check the [documentation build manifest](/ai/manifest.json) for the source revision and version used to generate these docs.
 
 The current Java namespace is `org.yanoproject.*`, and Maven artifacts use group `org.yanoproject`. Do not rename dependency packages such as `com.bloxbean.cardano.client.*` or `com.bloxbean.cardano.yaci.*`: those belong to separate projects.
 
@@ -4108,10 +2849,6 @@ Start each preview node release with a fresh sync directory. Storage compatibili
 between preview releases is not guaranteed, and Yano does not provide a general
 chainstate migration path yet. Keep an old database only when you need it for
 comparison or rollback to its matching executable.
-
-Keep network identities and app ledger state with their matching release and
-configuration. App ledger signing journals record safety decisions and must never
-be copied selectively, discarded, or combined with a newly empty app ledger.
 
 See [release change details](/reference/upgrading/) for configuration and behavior
 changes that may affect a new deployment.
@@ -4218,11 +2955,11 @@ Canonical URL: https://getyano.dev/reference/configuration-catalog/
 
 This reference is generated from the checked-out source. It keeps **bundled defaults and profile overrides separate**. Values are not a merged runtime configuration. Environment expressions retain their exact syntax. Comments and commented examples are excluded.
 
-See [configuration layering](/reference/configuration/) before applying settings. Download [the JSON catalog](/ai/configuration.json). Secret-like populated fields are redacted; the local app-chain demo identity is intentionally not an operator credential.
+See [configuration layering](/reference/configuration/) before applying settings. Download [the JSON catalog](/ai/configuration.json). Secret-like populated fields are redacted.
 
 ## Bundled application defaults
 
-Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/ebd3eeea45f8688a3854cc6436bcefa0728484b2/app/src/main/resources/application.yml)
+Source: [app-core/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/40f2637c429a866b3808507312daf4a058284d21/app-core/src/main/resources/application.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4244,7 +2981,6 @@ Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yan
 | `quarkus.swagger-ui.always-include` | `${YANO_SWAGGER_UI_ENABLED:true}` |
 | `quarkus.swagger-ui.path` | `/q/swagger-ui` |
 | `quarkus.swagger-ui.urls.Core API` | `/q/openapi-core` |
-| `quarkus.swagger-ui.urls.App Chain API` | `/q/openapi-app-chain` |
 | `quarkus.swagger-ui.urls.Devnet API` | `/q/openapi-devnet` |
 | `quarkus.swagger-ui.urls.Admin API` | `/q/openapi-admin` |
 | `quarkus.swagger-ui.urls.History API` | `/q/openapi-history` |
@@ -4285,7 +3021,6 @@ Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yan
 | `yano.tx.diffusion.limits.max-in-flight-txs-per-peer` | `100` |
 | `yano.tx.diffusion.limits.max-in-flight-bytes-per-peer` | `1048576` |
 | `yano.tx.diffusion.limits.peer-cooldown-ms` | `60000` |
-| `yano.app-chain.storage.path` | `${YANO_APP_CHAIN_STORAGE_PATH:appchain-chainstate}` |
 | `yano.dns.cache` | `null` |
 | `yano.server.enabled` | `true` |
 | `yano.server.port` | `13337` |
@@ -4370,7 +3105,7 @@ Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yan
 
 ## Bundled application defaults — devnet profile
 
-Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/ebd3eeea45f8688a3854cc6436bcefa0728484b2/app/src/main/resources/application.yml)
+Source: [app-core/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/40f2637c429a866b3808507312daf4a058284d21/app-core/src/main/resources/application.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4404,7 +3139,7 @@ Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yan
 
 ## Bundled application defaults — devnet-slotleader profile
 
-Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/ebd3eeea45f8688a3854cc6436bcefa0728484b2/app/src/main/resources/application.yml)
+Source: [app-core/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/40f2637c429a866b3808507312daf4a058284d21/app-core/src/main/resources/application.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4439,7 +3174,7 @@ Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yan
 
 ## Bundled application defaults — mainnet profile
 
-Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/ebd3eeea45f8688a3854cc6436bcefa0728484b2/app/src/main/resources/application.yml)
+Source: [app-core/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/40f2637c429a866b3808507312daf4a058284d21/app-core/src/main/resources/application.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4460,7 +3195,7 @@ Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yan
 
 ## Bundled application defaults — preview profile
 
-Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/ebd3eeea45f8688a3854cc6436bcefa0728484b2/app/src/main/resources/application.yml)
+Source: [app-core/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/40f2637c429a866b3808507312daf4a058284d21/app-core/src/main/resources/application.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4481,7 +3216,7 @@ Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yan
 
 ## Bundled application defaults — sanchonet profile
 
-Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/ebd3eeea45f8688a3854cc6436bcefa0728484b2/app/src/main/resources/application.yml)
+Source: [app-core/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/40f2637c429a866b3808507312daf4a058284d21/app-core/src/main/resources/application.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4500,7 +3235,7 @@ Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yan
 
 ## Bundled application defaults — test profile
 
-Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/ebd3eeea45f8688a3854cc6436bcefa0728484b2/app/src/main/resources/application.yml)
+Source: [app-core/src/main/resources/application.yml](https://github.com/bloxbean/yano/blob/40f2637c429a866b3808507312daf4a058284d21/app-core/src/main/resources/application.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4513,39 +3248,20 @@ Source: [app/src/main/resources/application.yml](https://github.com/bloxbean/yan
 | `yano.storage.path` | `./chainstate-test` |
 | `yano.block-producer.tx-evaluation` | `false` |
 
-## application-appchain.yml
-
-Source: [app/config/application-appchain.yml](https://github.com/bloxbean/yano/blob/ebd3eeea45f8688a3854cc6436bcefa0728484b2/app/config/application-appchain.yml)
-
-| Property | Packaged value |
-| --- | --- |
-| `yano.app-chain.storage.path` | `${YANO_APP_CHAIN_STORAGE_PATH:appchain-chainstate}` |
-| `yano.app-chain.chains[0].chain-id` | `orders-chain` |
-| `yano.app-chain.chains[0].signing-key` | `<configure privately; see local demo profile for test-only identity>` |
-| `yano.app-chain.chains[0].members` | `8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c` |
-| `yano.app-chain.chains[0].threshold` | `1` |
-| `yano.app-chain.chains[0].state-machine` | `ordered-log` |
-| `yano.app-chain.chains[0].state.commitment-profile` | `mpf-blake2b256-v1` |
-| `yano.app-chain.chains[0].state.format-fingerprint` | `91ee14091200f1e24659112d640e877e9177779dcc81dd06117f013e9190082b` |
-| `yano.app-chain.chains[0].state.genesis-id` | `c2b9c92a865dfa7c218a1a6e49f1dd88163372e40466009876458c01609d0d70` |
-| `yano.app-chain.chains[0].membership.mode` | `governed` |
-| `yano.app-chain.chains[0].block.interval-ms` | `1000` |
-| `yano.app-chain.chains[0].sequencer.proposer` | `8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c` |
-
 ## application-bootstrap.yml
 
-Source: [app/config/application-bootstrap.yml](https://github.com/bloxbean/yano/blob/ebd3eeea45f8688a3854cc6436bcefa0728484b2/app/config/application-bootstrap.yml)
+Source: [app/config/application-bootstrap.yml](https://github.com/bloxbean/yano/blob/40f2637c429a866b3808507312daf4a058284d21/app/config/application-bootstrap.yml)
 
 | Property | Packaged value |
 | --- | --- |
 | `yano.bootstrap.enabled` | `true` |
 | `yano.bootstrap.block-number` | `${YANO_BOOTSTRAP_BLOCK_NUMBER:-1}` |
 | `yano.bootstrap.provider` | `${YANO_BOOTSTRAP_PROVIDER:blockfrost}` |
-| `yano.bootstrap.blockfrost.api-key` | `<configure privately; see local demo profile for test-only identity>` |
+| `yano.bootstrap.blockfrost.api-key` | `<configure privately>` |
 
 ## application-bp.yml
 
-Source: [app/config/application-bp.yml](https://github.com/bloxbean/yano/blob/ebd3eeea45f8688a3854cc6436bcefa0728484b2/app/config/application-bp.yml)
+Source: [app/config/application-bp.yml](https://github.com/bloxbean/yano/blob/40f2637c429a866b3808507312daf4a058284d21/app/config/application-bp.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4557,7 +3273,7 @@ Source: [app/config/application-bp.yml](https://github.com/bloxbean/yano/blob/eb
 
 ## application-devnet.yml
 
-Source: [app/config/application-devnet.yml](https://github.com/bloxbean/yano/blob/ebd3eeea45f8688a3854cc6436bcefa0728484b2/app/config/application-devnet.yml)
+Source: [app/config/application-devnet.yml](https://github.com/bloxbean/yano/blob/40f2637c429a866b3808507312daf4a058284d21/app/config/application-devnet.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4587,7 +3303,7 @@ Source: [app/config/application-devnet.yml](https://github.com/bloxbean/yano/blo
 
 ## application-header-signature.yml
 
-Source: [app/config/application-header-signature.yml](https://github.com/bloxbean/yano/blob/ebd3eeea45f8688a3854cc6436bcefa0728484b2/app/config/application-header-signature.yml)
+Source: [app/config/application-header-signature.yml](https://github.com/bloxbean/yano/blob/40f2637c429a866b3808507312daf4a058284d21/app/config/application-header-signature.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4597,7 +3313,7 @@ Source: [app/config/application-header-signature.yml](https://github.com/bloxbea
 
 ## application-large.yml
 
-Source: [app/config/application-large.yml](https://github.com/bloxbean/yano/blob/ebd3eeea45f8688a3854cc6436bcefa0728484b2/app/config/application-large.yml)
+Source: [app/config/application-large.yml](https://github.com/bloxbean/yano/blob/40f2637c429a866b3808507312daf4a058284d21/app/config/application-large.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4611,7 +3327,7 @@ Source: [app/config/application-large.yml](https://github.com/bloxbean/yano/blob
 
 ## application-mainnet.yml
 
-Source: [app/config/application-mainnet.yml](https://github.com/bloxbean/yano/blob/ebd3eeea45f8688a3854cc6436bcefa0728484b2/app/config/application-mainnet.yml)
+Source: [app/config/application-mainnet.yml](https://github.com/bloxbean/yano/blob/40f2637c429a866b3808507312daf4a058284d21/app/config/application-mainnet.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4633,7 +3349,7 @@ Source: [app/config/application-mainnet.yml](https://github.com/bloxbean/yano/bl
 
 ## application-medium.yml
 
-Source: [app/config/application-medium.yml](https://github.com/bloxbean/yano/blob/ebd3eeea45f8688a3854cc6436bcefa0728484b2/app/config/application-medium.yml)
+Source: [app/config/application-medium.yml](https://github.com/bloxbean/yano/blob/40f2637c429a866b3808507312daf4a058284d21/app/config/application-medium.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4647,7 +3363,7 @@ Source: [app/config/application-medium.yml](https://github.com/bloxbean/yano/blo
 
 ## application-opcert-strict.yml
 
-Source: [app/config/application-opcert-strict.yml](https://github.com/bloxbean/yano/blob/ebd3eeea45f8688a3854cc6436bcefa0728484b2/app/config/application-opcert-strict.yml)
+Source: [app/config/application-opcert-strict.yml](https://github.com/bloxbean/yano/blob/40f2637c429a866b3808507312daf4a058284d21/app/config/application-opcert-strict.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4655,7 +3371,7 @@ Source: [app/config/application-opcert-strict.yml](https://github.com/bloxbean/y
 
 ## application-praos-ledger.yml
 
-Source: [app/config/application-praos-ledger.yml](https://github.com/bloxbean/yano/blob/ebd3eeea45f8688a3854cc6436bcefa0728484b2/app/config/application-praos-ledger.yml)
+Source: [app/config/application-praos-ledger.yml](https://github.com/bloxbean/yano/blob/40f2637c429a866b3808507312daf4a058284d21/app/config/application-praos-ledger.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4665,7 +3381,7 @@ Source: [app/config/application-praos-ledger.yml](https://github.com/bloxbean/ya
 
 ## application-praos-lite.yml
 
-Source: [app/config/application-praos-lite.yml](https://github.com/bloxbean/yano/blob/ebd3eeea45f8688a3854cc6436bcefa0728484b2/app/config/application-praos-lite.yml)
+Source: [app/config/application-praos-lite.yml](https://github.com/bloxbean/yano/blob/40f2637c429a866b3808507312daf4a058284d21/app/config/application-praos-lite.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4675,7 +3391,7 @@ Source: [app/config/application-praos-lite.yml](https://github.com/bloxbean/yano
 
 ## application-preprod.yml
 
-Source: [app/config/application-preprod.yml](https://github.com/bloxbean/yano/blob/ebd3eeea45f8688a3854cc6436bcefa0728484b2/app/config/application-preprod.yml)
+Source: [app/config/application-preprod.yml](https://github.com/bloxbean/yano/blob/40f2637c429a866b3808507312daf4a058284d21/app/config/application-preprod.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4697,7 +3413,7 @@ Source: [app/config/application-preprod.yml](https://github.com/bloxbean/yano/bl
 
 ## application-preview.yml
 
-Source: [app/config/application-preview.yml](https://github.com/bloxbean/yano/blob/ebd3eeea45f8688a3854cc6436bcefa0728484b2/app/config/application-preview.yml)
+Source: [app/config/application-preview.yml](https://github.com/bloxbean/yano/blob/40f2637c429a866b3808507312daf4a058284d21/app/config/application-preview.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4719,7 +3435,7 @@ Source: [app/config/application-preview.yml](https://github.com/bloxbean/yano/bl
 
 ## application-projection.yml
 
-Source: [app/config/application-projection.yml](https://github.com/bloxbean/yano/blob/ebd3eeea45f8688a3854cc6436bcefa0728484b2/app/config/application-projection.yml)
+Source: [app/config/application-projection.yml](https://github.com/bloxbean/yano/blob/40f2637c429a866b3808507312daf4a058284d21/app/config/application-projection.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4742,7 +3458,7 @@ Source: [app/config/application-projection.yml](https://github.com/bloxbean/yano
 
 ## application-pruned.yml
 
-Source: [app/config/application-pruned.yml](https://github.com/bloxbean/yano/blob/ebd3eeea45f8688a3854cc6436bcefa0728484b2/app/config/application-pruned.yml)
+Source: [app/config/application-pruned.yml](https://github.com/bloxbean/yano/blob/40f2637c429a866b3808507312daf4a058284d21/app/config/application-pruned.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4752,7 +3468,7 @@ Source: [app/config/application-pruned.yml](https://github.com/bloxbean/yano/blo
 
 ## application-relay.yml
 
-Source: [app/config/application-relay.yml](https://github.com/bloxbean/yano/blob/ebd3eeea45f8688a3854cc6436bcefa0728484b2/app/config/application-relay.yml)
+Source: [app/config/application-relay.yml](https://github.com/bloxbean/yano/blob/40f2637c429a866b3808507312daf4a058284d21/app/config/application-relay.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4791,7 +3507,7 @@ Source: [app/config/application-relay.yml](https://github.com/bloxbean/yano/blob
 
 ## application-sanchonet.yml
 
-Source: [app/config/application-sanchonet.yml](https://github.com/bloxbean/yano/blob/ebd3eeea45f8688a3854cc6436bcefa0728484b2/app/config/application-sanchonet.yml)
+Source: [app/config/application-sanchonet.yml](https://github.com/bloxbean/yano/blob/40f2637c429a866b3808507312daf4a058284d21/app/config/application-sanchonet.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4810,7 +3526,7 @@ Source: [app/config/application-sanchonet.yml](https://github.com/bloxbean/yano/
 
 ## application-selective-utxo.yml
 
-Source: [app/config/application-selective-utxo.yml](https://github.com/bloxbean/yano/blob/ebd3eeea45f8688a3854cc6436bcefa0728484b2/app/config/application-selective-utxo.yml)
+Source: [app/config/application-selective-utxo.yml](https://github.com/bloxbean/yano/blob/40f2637c429a866b3808507312daf4a058284d21/app/config/application-selective-utxo.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4825,7 +3541,7 @@ Source: [app/config/application-selective-utxo.yml](https://github.com/bloxbean/
 
 ## application-shadow-sync.yml
 
-Source: [app/config/application-shadow-sync.yml](https://github.com/bloxbean/yano/blob/ebd3eeea45f8688a3854cc6436bcefa0728484b2/app/config/application-shadow-sync.yml)
+Source: [app/config/application-shadow-sync.yml](https://github.com/bloxbean/yano/blob/40f2637c429a866b3808507312daf4a058284d21/app/config/application-shadow-sync.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4834,7 +3550,7 @@ Source: [app/config/application-shadow-sync.yml](https://github.com/bloxbean/yan
 
 ## application-small.yml
 
-Source: [app/config/application-small.yml](https://github.com/bloxbean/yano/blob/ebd3eeea45f8688a3854cc6436bcefa0728484b2/app/config/application-small.yml)
+Source: [app/config/application-small.yml](https://github.com/bloxbean/yano/blob/40f2637c429a866b3808507312daf4a058284d21/app/config/application-small.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4848,7 +3564,7 @@ Source: [app/config/application-small.yml](https://github.com/bloxbean/yano/blob
 
 ## application-static-multi.yml
 
-Source: [app/config/application-static-multi.yml](https://github.com/bloxbean/yano/blob/ebd3eeea45f8688a3854cc6436bcefa0728484b2/app/config/application-static-multi.yml)
+Source: [app/config/application-static-multi.yml](https://github.com/bloxbean/yano/blob/40f2637c429a866b3808507312daf4a058284d21/app/config/application-static-multi.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4872,7 +3588,7 @@ Source: [app/config/application-static-multi.yml](https://github.com/bloxbean/ya
 
 ## application-structural-validation.yml
 
-Source: [app/config/application-structural-validation.yml](https://github.com/bloxbean/yano/blob/ebd3eeea45f8688a3854cc6436bcefa0728484b2/app/config/application-structural-validation.yml)
+Source: [app/config/application-structural-validation.yml](https://github.com/bloxbean/yano/blob/40f2637c429a866b3808507312daf4a058284d21/app/config/application-structural-validation.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4882,7 +3598,7 @@ Source: [app/config/application-structural-validation.yml](https://github.com/bl
 
 ## application-trusted-peers.yml
 
-Source: [app/config/application-trusted-peers.yml](https://github.com/bloxbean/yano/blob/ebd3eeea45f8688a3854cc6436bcefa0728484b2/app/config/application-trusted-peers.yml)
+Source: [app/config/application-trusted-peers.yml](https://github.com/bloxbean/yano/blob/40f2637c429a866b3808507312daf4a058284d21/app/config/application-trusted-peers.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4901,7 +3617,7 @@ Source: [app/config/application-trusted-peers.yml](https://github.com/bloxbean/y
 
 ## application-wallet.yml
 
-Source: [app/config/application-wallet.yml](https://github.com/bloxbean/yano/blob/ebd3eeea45f8688a3854cc6436bcefa0728484b2/app/config/application-wallet.yml)
+Source: [app/config/application-wallet.yml](https://github.com/bloxbean/yano/blob/40f2637c429a866b3808507312daf4a058284d21/app/config/application-wallet.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4913,7 +3629,7 @@ Source: [app/config/application-wallet.yml](https://github.com/bloxbean/yano/blo
 
 ## application-xsmall.yml
 
-Source: [app/config/application-xsmall.yml](https://github.com/bloxbean/yano/blob/ebd3eeea45f8688a3854cc6436bcefa0728484b2/app/config/application-xsmall.yml)
+Source: [app/config/application-xsmall.yml](https://github.com/bloxbean/yano/blob/40f2637c429a866b3808507312daf4a058284d21/app/config/application-xsmall.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4928,7 +3644,7 @@ Source: [app/config/application-xsmall.yml](https://github.com/bloxbean/yano/blo
 
 ## application.yml
 
-Source: [app/config/application.yml](https://github.com/bloxbean/yano/blob/ebd3eeea45f8688a3854cc6436bcefa0728484b2/app/config/application.yml)
+Source: [app/config/application.yml](https://github.com/bloxbean/yano/blob/40f2637c429a866b3808507312daf4a058284d21/app/config/application.yml)
 
 | Property | Packaged value |
 | --- | --- |
@@ -4951,49 +3667,7 @@ These property names are declared as constants in `YanoPropertyKeys`, the public
 - `yano.adapot.enabled`
 - `yano.address-first-seen.enabled`
 - `yano.api-prefix`
-- `yano.app-chain.anchor.enabled`
-- `yano.app-chain.anchor.every-blocks`
-- `yano.app-chain.anchor.fallback-fee-lovelace`
-- `yano.app-chain.anchor.max-interval-minutes`
-- `yano.app-chain.anchor.metadata-label`
-- `yano.app-chain.anchor.mode`
-- `yano.app-chain.anchor.script.thread-policy`
-- `yano.app-chain.anchor.script.validator`
-- `yano.app-chain.anchor.signing-key`
-- `yano.app-chain.anchor.validity-slots`
-- `yano.app-chain.api.auth.enabled`
 - `yano.app-chain.api.keys`
-- `yano.app-chain.api.snapshot-admin-keys`
-- `yano.app-chain.block.interval-ms`
-- `yano.app-chain.block.max-bytes`
-- `yano.app-chain.block.max-messages`
-- `yano.app-chain.chain-id`
-- `yano.app-chain.chains`
-- `yano.app-chain.default-ttl-seconds`
-- `yano.app-chain.dx.release-catalog-digest`
-- `yano.app-chain.dx.resolved-config-digest`
-- `yano.app-chain.enabled`
-- `yano.app-chain.l1.stability-depth`
-- `yano.app-chain.max-message-bytes`
-- `yano.app-chain.max-ttl-seconds`
-- `yano.app-chain.members`
-- `yano.app-chain.message.enforce-sender-seq`
-- `yano.app-chain.peers`
-- `yano.app-chain.pool.max-messages`
-- `yano.app-chain.retention.enabled`
-- `yano.app-chain.retention.keep-blocks`
-- `yano.app-chain.sequencer.proposer`
-- `yano.app-chain.signing-key`
-- `yano.app-chain.state-machine`
-- `yano.app-chain.state.l1-proof-consumption-required`
-- `yano.app-chain.state.proof-pruning.enabled`
-- `yano.app-chain.state.proof-pruning.interval-seconds`
-- `yano.app-chain.state.proof-pruning.retain-heights`
-- `yano.app-chain.storage.path`
-- `yano.app-chain.threshold`
-- `yano.app-chain.transport.mode`
-- `yano.app-chain.validation.strict`
-- `yano.app-chain.webhooks`
 - `yano.auto-checkpoint-interval`
 - `yano.auto-sync-start`
 - `yano.block-producer.backfill-block-interval-slots`
@@ -5118,6 +3792,7 @@ These property names are declared as constants in `YanoPropertyKeys`, the public
 - `yano.plugins.directory`
 - `yano.plugins.enabled`
 - `yano.plugins.logging.enabled`
+- `yano.plugins.required`
 - `yano.relay.advertised-host`
 - `yano.relay.advertised-port`
 - `yano.relay.allow-private-addresses`
@@ -5262,7 +3937,6 @@ Environment aliases explicitly supplied by packaged YAML are preserved in the [g
 | `yano.remote.host` / `port` | Selected upstream connection |
 | `yano.storage.path` | Local node database |
 | `yano.server.port` | Node-to-node server port |
-| `yano.app-chain.storage.path` | Separate app ledger database root |
 | `yano.block-producer.block-time-millis` | `0` derives timing from genesis |
 | `yano.plugins.directory` | JVM plugin directory |
 
@@ -5297,7 +3971,6 @@ Open `http://localhost:7070/q/swagger-ui`. The node supplies these OpenAPI docum
 | Document | Scope |
 | --- | --- |
 | `/q/openapi-core` | Chain, ledger, transactions, evaluation, read-only node status |
-| `/q/openapi-app-chain` | App ledger and plugin domain APIs |
 | `/q/openapi-devnet` | Local faucet, snapshots, rollback, time controls |
 | `/q/openapi-admin` | Node lifecycle, plugin operations, diagnostics |
 | `/q/openapi-history` | Historical coverage and maintenance |
@@ -5309,7 +3982,7 @@ Download the schema from **your actual binary**:
 curl -fsS 'http://localhost:7070/q/openapi?format=json' -o yano-openapi.json
 ```
 
-The main route families under the prefix are `node`, `status`, `blocks`, `epochs`, `accounts`, `addresses`, `utxos`, `credentials`, `txs`, `tx`, `utils/txs`, `scripts`, `governance`, `network`, `genesis`, `events` (SSE), `history`, `devnet`, `app-chain`, `plugins/{bundleId}`, `plugin-operations`, and `admin/mempool/transactions`.
+The main route families under the prefix are `node`, `status`, `blocks`, `epochs`, `accounts`, `addresses`, `utxos`, `credentials`, `txs`, `tx`, `utils/txs`, `scripts`, `governance`, `network`, `genesis`, `events` (SSE), `history`, `devnet`, `plugin-operations`, and `admin/mempool/transactions`.
 
 The site provides a [source-derived route inventory](/ai/routes.json), not a substitute for a complete OpenAPI schema. Routes can be feature-gated, require credentials, or return unavailable when required data is absent.
 
@@ -5894,297 +4567,24 @@ await yano.await.untilTxVisible(result.tx_hash);
 
 ---
 
-# Plugin query & domain APIs
-
-Implement committed queries and bounded domain APIs.
-
-Canonical URL: https://getyano.dev/reference/plugin-contract/
-
-This guide covers two read-side extension points:
-
-- a state machine can answer a bounded query against one committed state root;
-- the same manifested bundle can publish framework-neutral domain routes that
-  call that query through a constrained host facade.
-
-Start with the working project in the Yano X
-[plugin template](https://github.com/bloxbean/yano-x/tree/main/scaffolds/plugin-template). It contains the
-provider classes, both ServiceLoader descriptors, one manifest, unit tests, and
-a production-catalog launch probe described below.
-
-## 1. Keep the two execution planes separate
-
-`AppStateMachine.apply(...)` remains deterministic consensus execution.
-`AppStateMachine.query(..., AppQueryContext)` is off-consensus and read-only.
-The query callback may overlap a later `apply()` on another thread, so do not
-mutate state-machine fields or use the query callback as a command path.
-Its result must depend only on the path, parameters, and supplied snapshot;
-external I/O, wall-clock time, or randomness would produce a payload that the
-reported state root does not attest.
-
-The context's committed height, state root, and all key reads come from one
-root-fixed snapshot. The context expires when the callback returns. Do not
-retain it, create child work, emit effects, write state, perform unbounded CPU
-work, or depend on a callback continuing after its deadline.
-
-```java
-@Override
-public byte[] query(String path, byte[] params, AppQueryContext state) {
-    if (!"passport/read".equals(path)) {
-        throw new AppQueryException(AppQueryException.Code.UNSUPPORTED,
-                "unknown passport query");
-    }
-    if (!validAssetId(params)) {
-        throw new AppQueryException(AppQueryException.Code.INVALID_REQUEST,
-                "invalid asset id");
-    }
-    return state.get(passportKey(params)).orElse(new byte[0]);
-}
-```
-
-A state-machine query may deliberately report only `UNSUPPORTED` or
-`INVALID_REQUEST`. The host owns `BUSY`, `TIMEOUT`, `RESULT_TOO_LARGE`,
-`UNAVAILABLE`, and `FAILED`; it bounds admission, one decoded request to 64
-KiB, one result to 1 MiB, and execution time. Unexpected plugin exceptions are
-logged by type, redacted, and exposed as `FAILED`.
-
-The generic HTTP adapter is:
-
-```text
-POST /api/v1/app-chain/chains/{chainId}/query/{queryPath}
-Content-Type: application/json
-
-{"paramsHex":"<canonical lowercase even-length hex>"}
-```
-
-The response binds the opaque payload to `chainId`, `stateMachineId`,
-`committedHeight`, and the 32-byte `stateRoot`. Query paths are normalized
-relative paths of unreserved ASCII segments. Percent escapes, empty/dot
-segments, leading/trailing slashes, and aliases are rejected.
-
-## 2. Publish a constrained domain API product
-
-Implement `DomainApiProvider`. Its stable id is the containing bundle id, not
-a short state-machine selector:
-
-```java
-public final class PassportDomainApiProvider implements DomainApiProvider {
-    public static final String BUNDLE_ID = "com.example.product-passport";
-
-    @Override
-    public String id() {
-        return BUNDLE_ID;
-    }
-
-    @Override
-    public DomainApi create(DomainApiContext context) {
-        return new PassportDomainApi(context.queryService());
-    }
-}
-```
-
-The context exposes only a bounded `DomainQueryService`. It does not expose a
-JAX-RS router, request identity, message submission, effects, mutable runtime
-services, or administration. In the current API,
-`DomainApiContext.bundleConfig()` is deliberately an empty map until Yano has a
-typed, secret-safe configuration/reference contract. Do not put a domain API's
-operation or security behind assumed configuration values.
-
-### Routes and deterministic matching
-
-Return at most 64 immutable `DomainApiRoute` entries and validate the exact set
-in plugin tests with `DomainApiRouteSet.validateAndOrder(...)`. The host applies
-the same validator before publication. Route ids are bundle-local stable
-identifiers. Templates use literal segments and whole-segment lowercase
-parameters such as `passports/{asset_id}`.
-
-When routes overlap, the first segment at which one route is literal and the
-other is a variable decides precedence; the literal wins. Parameter names do
-not affect matching. Routes with the same method and structural shape are a
-startup error, for example `claims/{id}` and `claims/{claim_id}`.
-
-```java
-private static final List<DomainApiRoute> ROUTES =
-        DomainApiRouteSet.validateAndOrder(List.of(
-                new DomainApiRoute("passport.read", DomainHttpMethod.GET,
-                        "passports/{asset_id}", DomainApiAccess.READ),
-                new DomainApiRoute("passport.report", DomainHttpMethod.POST,
-                        "operator/report/{asset_id}", DomainApiAccess.PRIVILEGED),
-                new DomainApiRoute("debug", DomainHttpMethod.GET,
-                        "internal/debug", DomainApiAccess.INTERNAL)));
-```
-
-The v1 access classes are:
-
-- `READ`: available under the host's read policy. A topic-scoped API key may
-  call it.
-- `PRIVILEGED`: requires an unscoped full key, independently of broad
-  READ/SUBMIT authentication. If that safe key configuration is absent, the
-  HTTP route is hidden as 404 and the handler is not invoked.
-- `INTERNAL`: reserved, secret-free inventory only. It is not dispatchable by
-  HTTP or the public host/library gateway in v1.
-
-The host owns `/api/v1/plugins/{bundleId}/{relativePath}`, GET/POST method
-selection, authentication, raw request bounds, queueing, deadlines, response
-validation, and error redaction. A plugin must not start another HTTP server or
-assume its route can override a host endpoint.
-
-### Handle requests and encode output safely
-
-Dispatch on `request.routeId()`, not on untrusted raw path text. The request
-contains immutable validated path/query maps and a defensive body copy. GET
-has no body; POST is limited to 64 KiB. A response is limited to 1 MiB and can
-be JSON or octet-stream. Plugins may return `200`, `400`, `404`, `409`, `410`,
-or `422`; every other status is host-owned so redirects, authentication,
-admission, no-content/partial-content, and server semantics cannot be forged.
-
-If returning JSON, use a JSON library already packaged in the plugin or a
-tested encoder. Never concatenate `chainId`, a query result, a parameter, or an
-exception message directly into a JSON string. The scaffold's `JsonSupport`
-is a small dependency-free example and its domain response hex-encodes opaque
-bytes before JSON encoding. The host rejects malformed or trailing JSON.
-
-Translate a committed-query failure by stable code and use a generic message:
-
-```java
-static DomainApiException translate(AppQueryException failure) {
-    DomainApiException.Code code = switch (failure.code()) {
-        case INVALID_REQUEST, REQUEST_TOO_LARGE ->
-                DomainApiException.Code.INVALID_REQUEST;
-        case UNSUPPORTED -> DomainApiException.Code.NOT_FOUND;
-        case BUSY -> DomainApiException.Code.BUSY;
-        case TIMEOUT -> DomainApiException.Code.TIMEOUT;
-        case RESULT_TOO_LARGE -> DomainApiException.Code.RESULT_TOO_LARGE;
-        case UNAVAILABLE -> DomainApiException.Code.UNAVAILABLE;
-        case FAILED -> DomainApiException.Code.FAILED;
-    };
-    return new DomainApiException(code, "passport query failed", failure);
-}
-```
-
-Do not copy `failure.getMessage()` to the new exception or response. The
-runtime preserves a plugin-thrown `DomainApiException` reason code but replaces
-its message with canonical host-owned safe text. Any other exception becomes
-`FAILED`.
-
-`DomainApi` is lifecycle-owned. `routes()` is snapshotted during construction,
-callbacks are bounded and serialized per bundle in v1, and `close()` runs after
-admission is sealed and callbacks drain. Make close idempotent, reject work
-after close, release only resources owned by the product, and never close a
-host facade.
-
-## 3. Declare both ServiceLoader and manifest metadata
-
-Create this exact resource:
-
-```text
-META-INF/services/org.yanoproject.x.framework.api.plugin.domain.DomainApiProvider
-```
-
-Its content is the provider's binary class name:
-
-```text
-com.example.passport.PassportDomainApiProvider
-```
-
-Then declare the same class in the bundle-qualified manifest. For schema v1,
-the domain contribution `name`, `DomainApiProvider.id()`, manifest `id`, and
-manifest filename id must all be identical:
-
-```json
-{
-  "schemaVersion": 1,
-  "id": "com.example.product-passport",
-  "version": "1.0.0",
-  "yanoApi": { "min": 3, "max": 3, "minLevel": 11 },
-  "dependencies": [],
-  "contributions": [
-    {
-      "kind": "app-state-machine",
-      "name": "passport",
-      "provider": "com.example.passport.PassportStateMachineProvider"
-    },
-    {
-      "kind": "domain-api",
-      "name": "com.example.product-passport",
-      "provider": "com.example.passport.PassportDomainApiProvider"
-    }
-  ]
-}
-```
-
-The schema-v1 `yanoApi.minLevel` field is required. Compatibility requires both
-a host API major within `min`/`max` and a host global API level at least
-`minLevel`; an incompatible bundle is rejected before any provider is
-constructed. The level advances for additive public plugin APIs (including new
-contribution kinds) and never resets when the major changes. It is independent
-of the bundle's `version` SemVer. The sample above matches plugin API major 3,
-level 11; these are API numbers, not release versions, so set them to match the
-plugin API of your target Yano release (`PluginApiVersion` or its release notes).
-
-ServiceLoader remains the behavior-instantiation contract. The manifest is
-identity, compatibility, policy, ownership, and inventory metadata; it is not
-an arbitrary constructor list. A missing/mismatched descriptor or provider
-fails catalog validation before product activation.
-
-## 4. Build, deploy, and secure
-
-Package one self-contained reproducible plugin JAR. Compile against
-`org.yanoproject:yano-node-api` for the node/plugin SPI and
-`org.yanoproject.x:yano-x-appchain-api` for application-ledger and domain APIs,
-using `compileOnly`. Add `org.yanoproject:yano-cardano-api` only when using
-Cardano-specific contracts. Never bundle `org/yanoproject/api/**`. Shade
-third-party runtime dependencies into the same JAR; adjacent thin dependency JARs are not one catalog bundle.
-
-Copy the JAR into `yano.plugins.directory`. If an allow-list is configured,
-allow the bundle id. Select the state-machine contribution by its short
-selector on the app ledger. The domain contribution is activated as part of the
-selected bundle and is addressed by bundle id.
-
-For privileged routes configure an unscoped full key:
-
-```properties
-yano.app-chain.api.keys=<unscoped-full-key>,<submit-key>=topic-a|topic-b
-```
-
-Send the unscoped key in `X-API-Key`. When broad authentication is enabled,
-topic-scoped keys can read and submit only to their topics; they cannot call
-privileged routes. With broad authentication disabled, `READ` and `SUBMIT` are
-public and only `PRIVILEGED` routes inspect the configured full key. Treat all
-plugin JARs as trusted in-process code: manifest validation and centralized
-HTTP auth do not sandbox Java code.
-
-Set `yano.app-chain.api.auth.enabled=true` as well when READ and SUBMIT routes
-must also require keys.
-
-## 5. Test before deployment
-
-At minimum:
-
-1. Test `apply()` determinism and replay with `StateMachineConformance`.
-2. Test contextual queries with an in-memory `AppQueryContext`: unsupported and
-   invalid input codes, no mutation, root/height envelope, request/result size.
-3. Test the complete route set with `DomainApiRouteSet.validateAndOrder`,
-   including structural collisions and literal-before-variable precedence.
-4. Test every route id/access class, query-code translation, JSON injection,
-   response bounds, close idempotence, and post-close rejection.
-5. Inspect the built JAR for both ServiceLoader descriptors and the
-   bundle-qualified manifest; reject bundled Yano API classes.
-6. Launch the JAR through Yano's production directory catalog and resolve both
-   providers. Then run packaged JVM/native smoke and an HTTP test with auth
-   enabled and disabled.
-
-The scaffold wires steps 1–5 into its Gradle `check` lifecycle and is the
-reference authoring baseline. For event-listener and `NodePlugin` lifecycle
-contributions, see the
-[events and plugins guide](https://github.com/bloxbean/yano/blob/main/runtime/docs/events-and-plugins-guide.md).
-
----
-
 # Release change details
 
 Configuration and behavior changes across preview versions.
 
 Canonical URL: https://getyano.dev/reference/upgrading/
+
+## App chains moved to Yano X
+
+Application ledgers (app chains) are no longer part of Yano. They are built on Yano by the
+separate product [Yano X](https://github.com/bloxbean/yano-x), which ships the integrated
+distribution, the `/api/v1/app-chain/**` REST API, the `/ui/app-chain/` console pages, the
+`appchain` profile and the app-chain QA and documentation. Yano's JVM ZIP, Docker image and
+native binary serve no app chains, and Yano no longer publishes `yano-appchain-*` artifacts.
+
+- To keep running app chains, move to the Yano X distribution.
+- The Docker Compose files no longer mount `appchain-chainstate/` or `appchain-indexers/`.
+  Yano leaves existing folders untouched; keep them for Yano X.
+- The `yano.app-chain.api.*` keys still protect the plugin operations API.
 
 ## Pool lifecycle correctness
 
@@ -6246,10 +4646,7 @@ Yano is modular. Select capabilities for the job, and check the configuration an
 | CCL backend adapter | Java testkit | Selected backend services, not the whole CCL backend API |
 | Wallet first-seen and scan indexes | Optional node capability | Fresh sync and continuous coverage; scans require retained bodies |
 | DuckLake history projection | JVM | Fresh-sync archive; no native support |
-| `ordered-log` app ledger | JVM or native host | Opaque events; does not enforce application business rules |
-| Multiple app ledgers, proofs, and L1 anchoring | App ledger host | Configure identities, membership, thresholds, and anchor requirements |
-| Certified observations | Optional preview | Disabled by default; explicit committed profile and trust policy |
-| Dynamic plugin JARs and Yano X extensions | JVM | Matching plugin contracts and explicit installation |
+| Dynamic plugin JARs | JVM | Matching plugin contracts and explicit installation |
 | Console, health, and metrics | Runnable application | Optional persistent metrics companion requires Docker Compose |
 | Embedding and event/plugin SPI | Java libraries | Use public role and extension interfaces |
 
@@ -6257,7 +4654,7 @@ Yano is modular. Select capabilities for the job, and check the configuration an
 
 The `wallet` and `projection` profiles serve different purposes. The former enables optional discovery/scan indexes; the latter enables historical projection. A plain default node is not an archive, and a filtered UTxO database is not complete wallet history.
 
-Native builds preserve core providers but cannot dynamically load JVM plugins. Use the [configuration guide](/reference/configuration/) and [generated catalog](/reference/configuration-catalog/) to inspect exact source/profile values.
+Native builds preserve core providers but cannot dynamically load JVM plugins. Application ledgers (app chains) are not a Yano capability; they are built on Yano by [Yano X](https://github.com/bloxbean/yano-x). Use the [configuration guide](/reference/configuration/) and [generated catalog](/reference/configuration-catalog/) to inspect exact source/profile values.
 
 ---
 
@@ -6373,8 +4770,6 @@ Each network keeps its data in one folder beside `compose/`:
 data-preprod/
   chainstate/            L1 database (/app/data/chainstate)
   runtime-data/          snapshots, epoch checkpoints, peer store, projection history (/app/data)
-  appchain-chainstate/   authoritative app-chain state
-  appchain-indexers/     rebuildable app-chain read indexes
 ```
 
 With the default layout, back up or move a network by copying its whole
@@ -6382,9 +4777,8 @@ With the default layout, back up or move a network by copying its whole
 installation still uses folders from the earlier layout, back up every resolved
 path instead: `./yano.sh config:<network>` lists them as volume `source` entries.
 
-To place one of these folders elsewhere, set `YANO_CHAINSTATE_PATH`,
-`YANO_RUNTIME_DATA_PATH`, `YANO_APPCHAIN_STATE_PATH` or `YANO_APPCHAIN_INDEXER_PATH`
-in `compose/.env`; values there may reference other variables defined in the file,
+To place one of these folders elsewhere, set `YANO_CHAINSTATE_PATH` or
+`YANO_RUNTIME_DATA_PATH` in `compose/.env`; values there may reference other variables defined in the file,
 such as `${DATA_ROOT}/chainstate`. The Compose file sets the container storage and
 history paths, so an older `config/env` does not need changes.
 
@@ -6410,7 +4804,7 @@ Download the [latest Yano release](https://github.com/bloxbean/yano/releases/lat
 
 | Distribution | Download | Requirements |
 | --- | --- | --- |
-| **JVM — recommended for app ledgers** | `yano-<version>.zip` | Java 25 |
+| **JVM** | `yano-<version>.zip` | Java 25 |
 | Linux x64 | `yano-native-<version>-linux-x64.zip` | Linux on x64 |
 | Linux arm64 | `yano-native-<version>-linux-arm64.zip` | Linux on arm64 |
 | macOS arm64 | `yano-native-<version>-macos-arm64.zip` | Apple silicon Mac |
@@ -6424,7 +4818,7 @@ the launcher and configuration and pulls a versioned image; Java is included in
 the JVM image. Some older releases omit this ZIP; use another listed distribution
 or [build the Compose ZIP from source](/contribute/build-from-source/#docker-compose-zip-distribution).
 
-For app ledger onboarding, **use the JVM distribution for now**. It is also the distribution to choose for JVM extensions. Native images cannot dynamically load plugin JARs.
+Choose the JVM distribution for JVM extensions. Native images cannot dynamically load plugin JARs.
 
 ## Start on macOS or Linux
 
@@ -6459,13 +4853,11 @@ JVM distribution, with Java 25 installed:
 java -Dquarkus.profile=devnet -jar yano.jar
 ```
 
-For JVM app ledgers, use `java "-Dquarkus.profile=devnet,appchain" -jar yano.jar`.
-
 ## Releases and documentation versions
 
 This site's advanced reference follows the current source line, which may be newer than the preview you downloaded. Use your release's bundled configuration and `/q/swagger-ui` as the reference for its available profiles, properties, and endpoints.
 
-Use release-matched SDKs, plugins, and verifiers. Start preview releases with fresh node storage unless that release explicitly documents compatibility.
+Use release-matched SDKs and plugins. Start preview releases with fresh node storage unless that release explicitly documents compatibility.
 
 To modify Yano itself or use unreleased changes, see [build from source](/contribute/build-from-source/); building is not required for the download workflow.
 
@@ -6479,7 +4871,7 @@ Canonical URL: https://getyano.dev/start/overview/
 
 Yano is a **Cardano data node written in Java**. It follows the blockchain, keeps local ledger state, and gives your application APIs to read that state and submit transactions. You can run it as an application or embed it inside your own Java process.
 
-The same project also gives you a local, block-producing development network, integration testkits, and a host for application-specific chains.
+The same project also gives you a local, block-producing development network and integration testkits. Application ledgers (app chains) are built on Yano by a separate product, [Yano X](https://github.com/bloxbean/yano-x).
 
 ## Choose your starting point
 
@@ -6490,8 +4882,7 @@ The same project also gives you a local, block-producing development network, in
 | Choose memory settings or enable wallet scans | [Runtime and wallet profiles](/start/runtime-profiles/) |
 | Test a Java application against real ledger state | [Java testkit](/develop/java-testkit/) |
 | Test from JavaScript or TypeScript | [JavaScript testkit](/develop/javascript-testkit/) |
-| Give several participants a shared, verifiable event history | [Your first app ledger](/app-chains/quickstart/) |
-| Add application-specific rules | [State machines and plugins](/app-chains/extensions/) |
+| Run Yano inside your own Java application | [Yano as a library](/develop/library/) |
 | Give an AI assistant accurate Yano context | [Build with AI](/ai/overview/) |
 
 See [Yano in use](/develop/devkit/) for Yaci DevKit and UVerify Sandbox integrations.
@@ -6506,7 +4897,7 @@ Yano runs in Java, but your dApp does not have to. Use its [Blockfrost-compatibl
 
 **Development network.** Produce local blocks, fund test addresses, save snapshots, trigger rollbacks, and control time. Java and JavaScript testkits manage the lifecycle for repeatable tests.
 
-**Multi-party app ledgers (experimental).** Run independent app ledgers with signed messages, deterministic execution, threshold finality, state proofs, and optional Cardano anchoring. The built-in `ordered-log` records opaque events. More state machines and integrations live in [Yano X](https://github.com/bloxbean/yano-x).
+**Embeddable runtime.** Run the node inside your own JVM application, listen to chain events, and extend it with plugins for event handling, UTxO indexes, health checks, and metrics.
 
 ## Current status
 
@@ -6519,9 +4910,6 @@ The Java package root and Maven group are `org.yanoproject`. The JavaScript test
 - **UTxO:** an unspent transaction output; the spendable state of a Cardano address.
 - **Slot / epoch:** Cardano's units of chain time; an epoch contains many slots.
 - **Devnet:** an isolated network with test funds and its own genesis.
-- **State root:** a compact commitment to the state of an app ledger.
-- **Finality certificate:** evidence that the configured member threshold certified an app block.
-- **Anchor:** a Cardano transaction that commits an app ledger root to L1.
 
 ---
 
@@ -6537,7 +4925,7 @@ Start a local Cardano chain from a **ready-to-run release**. You do not need Git
 
 Open the [latest Yano release](https://github.com/bloxbean/yano/releases/latest) (or choose another from [Yano Releases](https://github.com/bloxbean/yano/releases)) and download:
 
-- **JVM:** `yano-<version>.zip`, with Java 25 installed. Recommended if you also want to try app ledgers.
+- **JVM:** `yano-<version>.zip`, with Java 25 installed. Required if you want to load plugin JARs.
 - **Native:** `yano-native-<version>-<platform>.zip`, matching your operating system and CPU. No Java installation needed.
 
 Replace `<version>` with the selected release version as it appears in the asset names (the release tag without its leading `v`) and `<platform>` with the platform suffix shown in its asset list.
@@ -6580,7 +4968,7 @@ If startup fails, check Java with `java -version` for a JVM installation, confir
 
 ## Next steps
 
-[Connect your favorite SDK](/develop/blockfrost/), [submit a transaction](/develop/transactions/), or [start an app ledger](/app-chains/quickstart/). Source builds are an optional [contributor workflow](/contribute/build-from-source/).
+[Connect your favorite SDK](/develop/blockfrost/), [submit a transaction](/develop/transactions/), or [embed Yano in Java](/develop/embed/). Source builds are an optional [contributor workflow](/contribute/build-from-source/).
 
 ---
 

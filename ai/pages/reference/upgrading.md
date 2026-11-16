@@ -4,6 +4,19 @@ Configuration and behavior changes across preview versions.
 
 Canonical URL: https://getyano.dev/reference/upgrading/
 
+## App chains moved to Yano X
+
+Application ledgers (app chains) are no longer part of Yano. They are built on Yano by the
+separate product [Yano X](https://github.com/bloxbean/yano-x), which ships the integrated
+distribution, the `/api/v1/app-chain/**` REST API, the `/ui/app-chain/` console pages, the
+`appchain` profile and the app-chain QA and documentation. Yano's JVM ZIP, Docker image and
+native binary serve no app chains, and Yano no longer publishes `yano-appchain-*` artifacts.
+
+- To keep running app chains, move to the Yano X distribution.
+- The Docker Compose files no longer mount `appchain-chainstate/` or `appchain-indexers/`.
+  Yano leaves existing folders untouched; keep them for Yano X.
+- The `yano.app-chain.api.*` keys still protect the plugin operations API.
+
 ## Pool lifecycle correctness
 
 This version adds ordered same-block pool lifecycle handling and complete live-state

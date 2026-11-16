@@ -34,7 +34,8 @@ The equivalent Java properties are:
 yano.app-chain.api.keys=replace-with-a-long-random-full-key
 ```
 
-The key list may also contain topic-scoped submit keys in the form
+The `yano.app-chain.api.*` key names are kept for configuration
+compatibility. The key list may also contain topic-scoped keys in the form
 `key=topic-a|topic-b`. Such keys receive `403` from plugin operations; only an
 unscoped full key is accepted.
 
@@ -49,8 +50,8 @@ missing or invalid request key returns `401`, a scoped key returns
 for JVM/native parity, but the parsed key set is cached; restart the node after
 rotating keys.
 
-Set `YANO_APP_CHAIN_API_AUTH_ENABLED=true` too only when READ and SUBMIT routes
-must require keys; privileged plugin operations require a full key in either mode.
+Plugin operations always require a full key; `yano.app-chain.api.auth.enabled`
+does not change that.
 
 ## Dashboard
 
@@ -124,7 +125,7 @@ across runtime generations.
 Authoritatively absent series are unregistered; explicitly stale sources keep
 their last-good value and stale status.
 
-The app ledger API key (`yano.app-chain.api.keys`) does **not** protect `/q/health/group/plugins` or
+The plugin operations key (`yano.app-chain.api.keys`) does **not** protect `/q/health/group/plugins` or
 `/q/metrics`. Restrict management endpoints with the deployment listener,
 firewall, ingress, or authenticated reverse proxy. Do not expose them publicly
 by relying on the plugin operations credential.

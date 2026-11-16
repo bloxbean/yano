@@ -1,10 +1,10 @@
 {
-  "sourceRevision": "ebd3eeea45f8688a3854cc6436bcefa0728484b2",
+  "sourceRevision": "40f2637c429a866b3808507312daf4a058284d21",
   "version": "0.1.0-pre20-SNAPSHOT",
   "note": "Active packaged YAML values by source file, not resolved runtime defaults. Declared keys may require feature-specific validation. Comments and commented examples are excluded.",
   "configuration": [
     {
-      "source": "app/src/main/resources/application.yml",
+      "source": "app-core/src/main/resources/application.yml",
       "profile": null,
       "values": [
         {
@@ -78,10 +78,6 @@
         {
           "key": "quarkus.swagger-ui.urls.Core API",
           "value": "/q/openapi-core"
-        },
-        {
-          "key": "quarkus.swagger-ui.urls.App Chain API",
-          "value": "/q/openapi-app-chain"
         },
         {
           "key": "quarkus.swagger-ui.urls.Devnet API",
@@ -242,10 +238,6 @@
         {
           "key": "yano.tx.diffusion.limits.peer-cooldown-ms",
           "value": 60000
-        },
-        {
-          "key": "yano.app-chain.storage.path",
-          "value": "${YANO_APP_CHAIN_STORAGE_PATH:appchain-chainstate}"
         },
         {
           "key": "yano.dns.cache",
@@ -574,7 +566,7 @@
       ]
     },
     {
-      "source": "app/src/main/resources/application.yml",
+      "source": "app-core/src/main/resources/application.yml",
       "profile": "devnet",
       "values": [
         {
@@ -688,7 +680,7 @@
       ]
     },
     {
-      "source": "app/src/main/resources/application.yml",
+      "source": "app-core/src/main/resources/application.yml",
       "profile": "devnet-slotleader",
       "values": [
         {
@@ -806,7 +798,7 @@
       ]
     },
     {
-      "source": "app/src/main/resources/application.yml",
+      "source": "app-core/src/main/resources/application.yml",
       "profile": "mainnet",
       "values": [
         {
@@ -868,7 +860,7 @@
       ]
     },
     {
-      "source": "app/src/main/resources/application.yml",
+      "source": "app-core/src/main/resources/application.yml",
       "profile": "preview",
       "values": [
         {
@@ -930,7 +922,7 @@
       ]
     },
     {
-      "source": "app/src/main/resources/application.yml",
+      "source": "app-core/src/main/resources/application.yml",
       "profile": "sanchonet",
       "values": [
         {
@@ -984,7 +976,7 @@
       ]
     },
     {
-      "source": "app/src/main/resources/application.yml",
+      "source": "app-core/src/main/resources/application.yml",
       "profile": "test",
       "values": [
         {
@@ -1022,60 +1014,6 @@
       ]
     },
     {
-      "source": "app/config/application-appchain.yml",
-      "profile": null,
-      "values": [
-        {
-          "key": "yano.app-chain.storage.path",
-          "value": "${YANO_APP_CHAIN_STORAGE_PATH:appchain-chainstate}"
-        },
-        {
-          "key": "yano.app-chain.chains[0].chain-id",
-          "value": "orders-chain"
-        },
-        {
-          "key": "yano.app-chain.chains[0].signing-key",
-          "value": "<configure privately; see local demo profile for test-only identity>"
-        },
-        {
-          "key": "yano.app-chain.chains[0].members",
-          "value": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"
-        },
-        {
-          "key": "yano.app-chain.chains[0].threshold",
-          "value": 1
-        },
-        {
-          "key": "yano.app-chain.chains[0].state-machine",
-          "value": "ordered-log"
-        },
-        {
-          "key": "yano.app-chain.chains[0].state.commitment-profile",
-          "value": "mpf-blake2b256-v1"
-        },
-        {
-          "key": "yano.app-chain.chains[0].state.format-fingerprint",
-          "value": "91ee14091200f1e24659112d640e877e9177779dcc81dd06117f013e9190082b"
-        },
-        {
-          "key": "yano.app-chain.chains[0].state.genesis-id",
-          "value": "c2b9c92a865dfa7c218a1a6e49f1dd88163372e40466009876458c01609d0d70"
-        },
-        {
-          "key": "yano.app-chain.chains[0].membership.mode",
-          "value": "governed"
-        },
-        {
-          "key": "yano.app-chain.chains[0].block.interval-ms",
-          "value": 1000
-        },
-        {
-          "key": "yano.app-chain.chains[0].sequencer.proposer",
-          "value": "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"
-        }
-      ]
-    },
-    {
       "source": "app/config/application-bootstrap.yml",
       "profile": null,
       "values": [
@@ -1093,7 +1031,7 @@
         },
         {
           "key": "yano.bootstrap.blockfrost.api-key",
-          "value": "<configure privately; see local demo profile for test-only identity>"
+          "value": "<configure privately>"
         }
       ]
     },
@@ -2172,49 +2110,7 @@
     "yano.adapot.enabled",
     "yano.address-first-seen.enabled",
     "yano.api-prefix",
-    "yano.app-chain.anchor.enabled",
-    "yano.app-chain.anchor.every-blocks",
-    "yano.app-chain.anchor.fallback-fee-lovelace",
-    "yano.app-chain.anchor.max-interval-minutes",
-    "yano.app-chain.anchor.metadata-label",
-    "yano.app-chain.anchor.mode",
-    "yano.app-chain.anchor.script.thread-policy",
-    "yano.app-chain.anchor.script.validator",
-    "yano.app-chain.anchor.signing-key",
-    "yano.app-chain.anchor.validity-slots",
-    "yano.app-chain.api.auth.enabled",
     "yano.app-chain.api.keys",
-    "yano.app-chain.api.snapshot-admin-keys",
-    "yano.app-chain.block.interval-ms",
-    "yano.app-chain.block.max-bytes",
-    "yano.app-chain.block.max-messages",
-    "yano.app-chain.chain-id",
-    "yano.app-chain.chains",
-    "yano.app-chain.default-ttl-seconds",
-    "yano.app-chain.dx.release-catalog-digest",
-    "yano.app-chain.dx.resolved-config-digest",
-    "yano.app-chain.enabled",
-    "yano.app-chain.l1.stability-depth",
-    "yano.app-chain.max-message-bytes",
-    "yano.app-chain.max-ttl-seconds",
-    "yano.app-chain.members",
-    "yano.app-chain.message.enforce-sender-seq",
-    "yano.app-chain.peers",
-    "yano.app-chain.pool.max-messages",
-    "yano.app-chain.retention.enabled",
-    "yano.app-chain.retention.keep-blocks",
-    "yano.app-chain.sequencer.proposer",
-    "yano.app-chain.signing-key",
-    "yano.app-chain.state-machine",
-    "yano.app-chain.state.l1-proof-consumption-required",
-    "yano.app-chain.state.proof-pruning.enabled",
-    "yano.app-chain.state.proof-pruning.interval-seconds",
-    "yano.app-chain.state.proof-pruning.retain-heights",
-    "yano.app-chain.storage.path",
-    "yano.app-chain.threshold",
-    "yano.app-chain.transport.mode",
-    "yano.app-chain.validation.strict",
-    "yano.app-chain.webhooks",
     "yano.auto-checkpoint-interval",
     "yano.auto-sync-start",
     "yano.block-producer.backfill-block-interval-slots",
@@ -2339,6 +2235,7 @@
     "yano.plugins.directory",
     "yano.plugins.enabled",
     "yano.plugins.logging.enabled",
+    "yano.plugins.required",
     "yano.relay.advertised-host",
     "yano.relay.advertised-port",
     "yano.relay.allow-private-addresses",

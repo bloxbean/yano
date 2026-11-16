@@ -5,10 +5,10 @@ Run the build tiers and packaging checks.
 Canonical URL: https://getyano.dev/contribute/build-and-test/
 
 Yano uses layered verification so the normal development build keeps complete
-L1 and retained app-chain host/OrderedLog coverage without also running every
-multi-node, packaged-runtime, or native-image acceptance test. Optional state
-machines, connectors, products, and their cryptographic suites are built in
-[Yano X](https://github.com/bloxbean/yano-x).
+L1 coverage without also running every multi-node, packaged-runtime, or
+native-image acceptance test. Application ledgers (app chains) and their
+suites are built downstream in [Yano X](https://github.com/bloxbean/yano-x),
+which depends on Yano; Yano never depends on Yano X.
 
 ## Requirements
 
@@ -20,13 +20,12 @@ machines, connectors, products, and their cryptographic suites are built in
 
 | Tier | Source location | Purpose | Included in `build` |
 |---|---|---|---|
-| Core | `src/test` | L1 tests plus retained app-chain host, OrderedLog, proof, and plugin-boundary tests | Yes |
-| Extended | `src/integrationTest` | Retained multi-node sequencing, catch-up, membership, anchoring, and host integration | No |
+| Core | `src/test` | L1, host and plugin-boundary tests | Yes |
+| Extended | `src/integrationTest` | Multi-process, external-service and benchmark suites | No |
 | Distribution | packaged process contracts | Tests the lean JVM/native archives and plugin-directory boundary | No |
 
 Tests are classified by behavior, not by class name. A test that starts several
-app-chain nodes belongs in `src/integrationTest` even when it validates retained
-host behavior.
+nodes or external services belongs in `src/integrationTest`.
 
 ## Normal development build
 
@@ -36,25 +35,48 @@ Run the default build for normal changes:
 ./gradlew build -PskipSigning=true
 ```
 
-This compiles every retained module and runs ordinary L1 and app-chain core
-tests. It intentionally does not run extended multi-node or distribution suites.
+This compiles every module and runs the core tests, including
+`verifyNoYanoXDependency` (see below). It intentionally does not run extended
+multi-node or distribution suites.
 
 For a faster module-level iteration:
 
 ```bash
 ./gradlew :runtime:test
-./gradlew :appchain-testkit:test
-./gradlew :appchain-proof-verifier:test
+./gradlew :ledger-state:test
 ```
 
 Run one ordinary test or method with Gradle's standard filter:
 
 ```bash
 ./gradlew :runtime:test \
-  --tests 'org.yanoproject.runtime.appchain.AppChainTwoNodeSmokeTest'
+  --tests 'org.yanoproject.runtime.HeaderSyncManagerTest'
 
 ./gradlew :runtime:test \
-  --tests 'org.yanoproject.runtime.appchain.AppChainTwoNodeSmokeTest.twoNodes_exchangeAuthenticatedMessages_bothDirections'
+  --tests 'org.yanoproject.runtime.HeaderSyncManagerTest.epochBoundaryHoldPausesAndResumesHeaderSync'
+```
+
+## Dependency direction
+
+`./gradlew verifyNoYanoXDependency` (part of `check`) fails when Yano requests,
+declares, names or ships Yano X: any `org.yanoproject.x` group or `yano-x-*`
+module in a plugin request or in any configuration of any project (buildscript
+included), in generated POMs, module metadata and the BOM, as a token in
+tracked source and build files, or inside existing build outputs
+(`app/build/yano.jar`, the distribution ZIPs, the Docker build contexts, the
+generated plugin index and native-image configuration). It finishes with a
+negative probe that builds `gradle/no-yano-x-probe` and requires the guard to
+reject it. The full violation list is written to
+`build/reports/no-yano-x/violations.txt`; stale outputs from an older build are
+reported too, so rebuild or clean them.
+
+To prove that a clean checkout builds without any Yano X artifact, use a fresh
+Gradle user home, so nothing comes from a cache, and keep Maven Local disabled
+(the default; never pass `-PuseMavenLocal=true` here):
+
+```bash
+export GRADLE_USER_HOME="$(mktemp -d)"
+./gradlew clean build :app:quarkusBuild verifyNoYanoXDependency -PskipSigning=true
 ```
 
 ## Extended tests
@@ -63,10 +85,10 @@ Run every retained integration suite, or select a module/test:
 
 ```bash
 ./gradlew extendedTest
-./gradlew :runtime:integrationTest
+./gradlew :archive-modules:archive-api:integrationTest
 
-./gradlew :runtime:integrationTest \
-  --tests 'org.yanoproject.runtime.appchain.GovernedMembershipIntegrationTest'
+./gradlew :archive-modules:archive-api:integrationTest \
+  --tests 'org.yanoproject.archive.benchmark.DuckLakeSnapshotConcurrencyTest'
 ```
 
 ## Distribution verification
@@ -79,9 +101,8 @@ Run the lean JVM distribution and directory-plugin boundary gate:
 
 It builds the ordinary Yano JVM ZIP and verifies:
 
-- the core distribution manifest and OrderedLog-only built-in boundary;
+- the core distribution manifest;
 - packaged catalog integrity and directory-loaded conformance plugins;
-- absence of Yano X bundles and downstream source/task dependencies; and
 - packaged launchers, config, plugin tools, and executable bits.
 
 The gate uses temporary devnet data. It does not connect to Preview, Preprod,
@@ -118,14 +139,16 @@ For a from-scratch release-style check:
 
 `fullBuild` is intentionally not the normal inner-loop command. Network-specific
 Haskell synchronization, native-image, and public-network acceptance workflows
-retain their dedicated commands and opt-in requirements. Yano X owns connector,
-product, showcase, and eUTxO/ZK gates.
+retain their dedicated commands and opt-in requirements. Yano X owns the
+app-chain, connector, product, showcase, and eUTxO/ZK gates.
 
 ## Continuous integration
 
 Pull-request verification runs the retained core build, integration tests,
-distribution checks, and GraalVM gates independently. Yano X has its own JVM-only
-extension and release-acceptance workflow. Release workflows use the corresponding
+distribution checks, and GraalVM gates independently; the distribution and
+native jobs also run `verifyNoYanoXDependency` over their outputs. Yano X has
+its own JVM-only workflow that builds against published or staged Yano
+artifacts (`.github/COORDINATED_INPUTS.md`). Release workflows use the corresponding
 repository-owned gates before publishing.
 
 ## Performance and diagnostics
