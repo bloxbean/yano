@@ -113,7 +113,7 @@ validate_retention() {
 
 start_bundle() {
   local retention=15d size=2GB line scheme target display cors="" explicit=0 console_origin="" metrics_url encoded_metrics
-  local discovered normalized_output
+  local normalized_output
   local -a raw_targets=() normalized=()
   shift
   while [ "$#" -gt 0 ]; do
