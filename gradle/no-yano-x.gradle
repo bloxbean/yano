@@ -27,6 +27,27 @@ def yanoXToken = Pattern.compile('org[./]yanoproject[./]x(?![a-z0-9_])|yano-x(?!
         Pattern.CASE_INSENSITIVE)
 def ownName = Pattern.compile(Pattern.quote('no-yano-x.gradle'), Pattern.CASE_INSENSITIVE)
 def hasToken = { String text -> yanoXToken.matcher(ownName.matcher(text).replaceAll('')).find() }
+// Scans a stream in bounded chunks so large archive entries (native libraries) never load whole.
+// A match counts once enough text follows it to rule out the guard's own name; at the end of the
+// stream every match counts. The own name is blanked to equal-length spaces to keep offsets.
+def ownNameBlank = ' ' * 'no-yano-x.gradle'.length()
+def firstTokenStart = { String text ->
+    def matcher = yanoXToken.matcher(ownName.matcher(text).replaceAll(ownNameBlank))
+    matcher.find() ? matcher.start() : -1
+}
+def streamHasToken = { InputStream input ->
+    def buffer = new byte[1 << 16]
+    def pending = ''
+    for (int read = input.read(buffer); read > 0; read = input.read(buffer)) {
+        pending += new String(buffer, 0, read, 'ISO-8859-1')
+        def start = firstTokenStart(pending)
+        if (start >= 0 && start < pending.length() - 32) {
+            return true
+        }
+        pending = pending.substring(Math.max(0, pending.length() - 64))
+    }
+    firstTokenStart(pending) >= 0
+}
 
 // Rule 3 exclusions: history and cross-product links, the guard and its probe fixture, and the
 // AGENTS.md section that states this rule.
@@ -121,7 +142,7 @@ gradle.rootProject { root ->
                             void close() {
                             }
                         })
-                    } else if (hasToken(entry.name) || hasToken(new String(entries.readAllBytes(), 'ISO-8859-1'))) {
+                    } else if (hasToken(entry.name) || streamHasToken(entries)) {
                         violations << entryName
                     }
                 }
