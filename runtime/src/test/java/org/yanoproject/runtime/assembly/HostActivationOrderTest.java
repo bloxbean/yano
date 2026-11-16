@@ -15,12 +15,14 @@ import org.yanoproject.api.plugin.NodePlugin;
 import org.yanoproject.api.plugin.PluginContext;
 import org.yanoproject.api.plugin.operations.PluginOperationsRecorder;
 import org.yanoproject.api.plugin.spi.PluginProducts;
+import org.yanoproject.runtime.internal.RuntimeNode;
 import org.yanoproject.runtime.kernel.Subsystem;
 import org.yanoproject.runtime.plugins.PluginLoaderHandle;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.lang.reflect.Field;
 import java.net.URL;
 import java.net.URLClassLoader;
 import java.nio.charset.StandardCharsets;
@@ -49,6 +51,7 @@ class HostActivationOrderTest {
     static final List<String> EVENTS = new CopyOnWriteArrayList<>();
     static final AtomicBoolean READY = new AtomicBoolean(true);
     static final AtomicBoolean FAIL_START = new AtomicBoolean();
+    static final AtomicBoolean FAIL_RESUME = new AtomicBoolean();
     static final AtomicReference<Long> APP_MAGIC = new AtomicReference<>();
     static final AtomicReference<HostApi> HOST = new AtomicReference<>();
     static final AtomicReference<ClassLoader> PLUGIN_LOADER = new AtomicReference<>();
@@ -61,6 +64,7 @@ class HostActivationOrderTest {
         EVENTS.clear();
         READY.set(true);
         FAIL_START.set(false);
+        FAIL_RESUME.set(false);
         APP_MAGIC.set(null);
         HOST.set(null);
         PLUGIN_LOADER.set(null);
@@ -138,6 +142,51 @@ class HostActivationOrderTest {
             EVENTS.clear();
             yano.lifecycle().stop();
             assertThat(EVENTS).containsSubsequence("products.seal", "pre-publication.stop", "stop");
+        } finally {
+            yano.close();
+        }
+    }
+
+    @Test
+    void unsafeDrainStopSealsPluginProductsBeforeItsEarlyReturn() throws Exception {
+        Yano yano = YanoAssembly.relay(YanoConfig.serverOnly(0))
+                .runtimeOptions(requiredOptions())
+                .pluginLoader(fixtureLoader())
+                .build();
+        try {
+            yano.lifecycle().start();
+            // Simulates a ledger apply worker that did not drain (RuntimeNode.stopRuntimeServices).
+            Field unsafe = RuntimeNode.class.getDeclaredField("unsafeLedgerApplyShutdown");
+            unsafe.setAccessible(true);
+            unsafe.setBoolean(yano.chain(), true);
+            EVENTS.clear();
+
+            assertThatThrownBy(() -> yano.lifecycle().stop())
+                    .hasStackTraceContaining("Cannot stop plugins safely because a ledger apply worker");
+            assertThat(EVENTS).contains("products.seal").doesNotContain("stop");
+        } finally {
+            try {
+                yano.close();
+            } catch (RuntimeException expected) {
+                // The unsafe drain keeps apply-owned resources open; close reports it.
+            }
+        }
+    }
+
+    @Test
+    void appLedgerStartupRollbackAfterAFailedResumeSealsPluginProducts() throws Exception {
+        APP_MAGIC.set(77_002L);
+        FAIL_RESUME.set(true);
+        Yano yano = YanoAssembly.fromConfig(appLedgerConfig())
+                .runtimeOptions(requiredOptions())
+                .pluginLoader(fixtureLoader())
+                .build();
+        try {
+            EVENTS.clear();
+            assertThatThrownBy(() -> yano.lifecycle().start()).hasStackTraceContaining("fixture resume failed");
+            // The failed stage seals its own products, then the kernel stops and closes the earlier stages.
+            assertThat(EVENTS).containsExactly("start", "pre-publication.start", "late-registration-rejected",
+                    "products.resume", "products.seal", "pre-publication.stop", "stop", "close");
         } finally {
             yano.close();
         }
@@ -237,7 +286,12 @@ class HostActivationOrderTest {
                     @Override public void stop() { EVENTS.add("pre-publication.stop"); }
                 });
                 PluginOperationsRecorder recorder = lifecycle.registerPluginProducts(ID, new PluginProducts() {
-                    @Override public void resume() { EVENTS.add("products.resume"); }
+                    @Override public void resume() {
+                        EVENTS.add("products.resume");
+                        if (FAIL_RESUME.get()) {
+                            throw new IllegalStateException("fixture resume failed");
+                        }
+                    }
                     @Override public void sealAndAwait() { EVENTS.add("products.seal"); }
                 });
                 assertThat(recorder).isNotNull();

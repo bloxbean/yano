@@ -105,15 +105,10 @@ final class AppLedgerAssembly implements Yano, NodeLifecycle {
             });
             hostLifecycle.seal();
             stages.addAll(hostLifecycle.subsystems());
-            stages.add(new Subsystem() {
-                public String name() { return "app-operations"; }
-                public void start() {
-                    hostLifecycle.resumePluginProducts();
-                    operations.activateTelemetry();
-                    operations.startSampling();
-                }
-                public void stop() { operations.sealAndAwait(); hostLifecycle.sealPluginProducts(); }
-            });
+            stages.add(new OperationsStage(hostLifecycle::resumePluginProducts, () -> {
+                operations.activateTelemetry();
+                operations.startSampling();
+            }, operations::sealAndAwait, hostLifecycle::sealPluginProducts));
             if (config.isEnableServer()) stages.add(server);
             kernel = new NodeKernel(stages,
                     new SubsystemContext(events, schedulers, globals, new ServiceRegistry()));
@@ -140,6 +135,37 @@ final class AppLedgerAssembly implements Yano, NodeLifecycle {
                 "The app-only network is not known before a plugin calls requireAppOnlyNetwork"));
     }
 
+    /**
+     * The {@code app-operations} stage: resumes plugin products, then activates operations telemetry; stop seals
+     * telemetry, then products. Both seals are always attempted and their failures aggregated, and a failed start
+     * seals locally because the kernel never stops a stage whose start failed.
+     */
+    record OperationsStage(Runnable resumeProducts, Runnable activateTelemetry, Runnable sealTelemetry,
+                           Runnable sealProducts) implements Subsystem {
+        @Override public String name() { return "app-operations"; }
+
+        @Override
+        public void start() {
+            try {
+                resumeProducts.run();
+                activateTelemetry.run();
+            } catch (Throwable failure) {
+                seal(failure);
+            }
+        }
+
+        @Override public void stop() { seal(null); }
+
+        private void seal(Throwable failure) {
+            Throwable outcome = failure;
+            try { sealTelemetry.run(); }
+            catch (Throwable next) { outcome = LifecycleFailures.merge(outcome, next); }
+            try { sealProducts.run(); }
+            catch (Throwable next) { outcome = LifecycleFailures.merge(outcome, next); }
+            rethrow(outcome);
+        }
+    }
+
     private static void closeAll(List<AutoCloseable> resources, Throwable failure) {
         Throwable outcome = failure;
         for (int i = resources.size() - 1; i >= 0; i--) {
@@ -148,6 +174,10 @@ final class AppLedgerAssembly implements Yano, NodeLifecycle {
                 outcome = LifecycleFailures.merge(outcome, cleanup);
             }
         }
+        rethrow(outcome);
+    }
+
+    private static void rethrow(Throwable outcome) {
         if (outcome instanceof Error error) throw error;
         if (outcome instanceof RuntimeException exception) throw exception;
         if (outcome != null) throw new IllegalStateException("App-ledger lifecycle failed", outcome);
