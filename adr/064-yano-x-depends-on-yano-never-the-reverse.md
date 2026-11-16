@@ -1,6 +1,6 @@
 # ADR-064: Yano-X depends on Yano, never the reverse
 
-- Status: Proposed (r4)
+- Status: Proposed (r5)
 - Date: 2026-11-16
 - Tracking: [Yano #249](https://github.com/bloxbean/yano/issues/249) (requirement: [#247](https://github.com/bloxbean/yano/issues/247))
 - Baselines inspected: Yano `ebd3eeea4` (merge of #246), Yano-X `1ce50558` (merge of X #102)
@@ -85,7 +85,7 @@ console, configuration projection, tests, QA, docs and the integrated product.
 
 - the mode value `yano.mode=app-ledger` and `RuntimeMode.APP_LEDGER`, which now mean a generic no-L1
   host (D7);
-- the three `yano.app-chain.api.*` key names read by Yano's own plugin-operations filter (D8);
+- the `yano.app-chain.api.keys` key name read by Yano's plugin-operations filter (D8);
 - the plain token `app-chain` in docs or paths.
 
 The namespace rule in `AGENTS.md` already reserves `org.yanoproject.x.*`. This ADR adds the dependency
@@ -185,7 +185,11 @@ A `ContributionKindRegistry` is built once per catalog build or inspection from 
 
 1. the four built-in Yano kinds: `node-plugin`, `utxo-index-contributor`, `health`, `metrics`;
 2. descriptor resources `META-INF/yano/contribution-kinds/<owner>.json` from **trusted origins only**
-   (A5, X8).
+   (A5, X8). The `owner` field inside the JSON equals the file name, so several owners' descriptors
+   survive merging into one uber-JAR. Discovery never lists a directory: at runtime the host loads the
+   descriptor of each owner named by a binding (`ContributionKindBinding.descriptorOwner()`, found
+   through the merged `ServiceLoader` file); at index or CLI time it reads the matching host-artifact
+   entries by name.
 
 Trust is decided by **origin**, not by artifact content (A5 P3). The uber-jar and `framework/cardano`
 legitimately mix host code with a bundle manifest. The trusted origins are:
@@ -442,10 +446,11 @@ and REST.
   - `@QuarkusTest` suites.
 
   Output paths (`app/build/yano.jar`, ZIPs) are unchanged for scripts and QA.
-- `app-core` gets a public CDI producer for the single `Yano` instance, which replaces today's
-  package-private `ensureYano()`.
-- The small surface X compiles against lives in `org.yanoproject.app.spi`: the `Yano` producer,
-  `RuntimeGlobalsContributor`, the shared `ApiKeys` helper, and `RequiresCardano`. Yano has no japicmp
+- `YanoProducer` gets a public `@Produces @ApplicationScoped Yano` method for the single instance;
+  `ensureYano()` stays package-private. Consumers simply `@Inject Yano`.
+- The small surface X compiles against lives in `org.yanoproject.app.spi`:
+  `RuntimeGlobalsContributor`, the shared `ApiKeys` helper, and `RequiresCardano`, plus the injectable
+  `Yano` itself. Yano has no japicmp
   or revapi gate today (B13), so the gate for this surface is the M1 downstream-consumer check. That
   check is a source-compilation and boot check, not full binary-compatibility coverage. It compiles and
   boots a fixture against exactly these symbols from staged publications. It runs in CI, and locally
@@ -741,8 +746,8 @@ Evidence is independent of the code under test:
 
 ## Open questions
 
-None blocking. MD1–MD3 settle the earlier Q1–Q3. Q4 (renaming the `yano.app-chain.api.*` key names that
-Yano's plugin-operations filter reads) is deferred to a later ADR; this ADR keeps the names (D1
+None blocking. MD1–MD3 settle the earlier Q1–Q3. Q4 (renaming the `yano.app-chain.api.keys` key name that
+Yano's plugin-operations filter reads) is deferred to a later ADR; this ADR keeps the name (D1
 exception).
 
 ## Related findings (out of scope)
@@ -816,4 +821,16 @@ exception).
     inputs change; additive-only rule.
   - B14 → contributor keys that collide with host keys fail; `appChainStoragePath` migration note;
     console reachability.
-- r4.1 (2026-11-16): wording only (X19 and reviewer A's P3 nit): close moves from `closeDomainApis()` into the X root's `NodePlugin.close()`, one step later than today.
+- r4.1 (2026-11-16): wording only (X19 and reviewer A's P3 nit): close moves from `closeDomainApis()`
+  into the X root's `NodePlugin.close()`, one step later than today.
+- r5 (2026-11-16): amendments from the M1 implementation code reviews (RC-19 asked that they be
+  recorded and signed off):
+  - D1 / Q4 (RB-9) → Yano's plugin-operations filter reads only `yano.app-chain.api.keys`; the
+    auth-enabled and snapshot-admin key names are X-owned.
+  - D3 (RA-2, RA-10, RX5) → descriptors stay owner-qualified; the `owner` field must equal the file
+    name; runtime discovery goes through `ContributionKindBinding.descriptorOwner()`, and index/CLI
+    discovery reads entries by name. A single fixed name was tried and rejected, because a Quarkus
+    uber-JAR keeps only one copy of an ordinary resource. Directory listing was rejected because it
+    misses JARs without directory entries.
+  - D8 (RB-10) → `YanoProducer` produces the single `Yano` bean; `YanoInstanceProducer` was removed,
+    and consumers `@Inject Yano`.
