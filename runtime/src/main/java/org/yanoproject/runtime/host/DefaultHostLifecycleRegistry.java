@@ -1,8 +1,10 @@
 package org.yanoproject.runtime.host;
 
 import org.yanoproject.api.host.HostLifecycleRegistry;
+import org.yanoproject.api.plugin.PluginActivationException;
 import org.yanoproject.api.plugin.operations.PluginOperationsRecorder;
 import org.yanoproject.api.plugin.spi.PluginProducts;
+import org.yanoproject.catalog.ContributionKind;
 import org.yanoproject.runtime.kernel.Subsystem;
 import org.yanoproject.runtime.kernel.SubsystemContext;
 import org.yanoproject.runtime.kernel.SubsystemHealth;
@@ -131,7 +133,8 @@ public final class DefaultHostLifecycleRegistry implements HostLifecycleRegistry
 
     /**
      * Runs every assembly step once, in registration order, under {@code pluginLoader} as TCCL.
-     * A failure names its owner; the caller performs the reverse construction cleanup.
+     * A failure is a {@link PluginActivationException} naming its owner; the caller performs the reverse
+     * construction cleanup.
      */
     public void runAssemblies(ClassLoader pluginLoader) {
         Objects.requireNonNull(pluginLoader, "pluginLoader");
@@ -152,8 +155,10 @@ public final class DefaultHostLifecycleRegistry implements HostLifecycleRegistry
                 callers.runAsOwner(step.getKey(), step.getValue());
             } catch (Throwable failure) {
                 LifecycleFailures.rethrowIfProcessFatalReachable(failure);
-                throw new IllegalStateException("Plugin bundle '" + step.getKey() + "' failed host assembly",
-                        failure);
+                // The same startup-fatal plugin boundary as a failed NodePlugin.init: applications fail closed
+                // and never render the plugin's own cause chain by default.
+                throw new PluginActivationException("Plugin bundle '" + step.getKey() + "' failed host assembly",
+                        step.getKey(), ContributionKind.NODE_PLUGIN.manifestKey(), step.getKey(), null, failure);
             } finally {
                 thread.setContextClassLoader(previous);
                 assembling.remove();

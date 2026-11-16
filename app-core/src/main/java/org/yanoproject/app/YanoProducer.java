@@ -436,6 +436,7 @@ public class YanoProducer {
 
     private final PluginLoaderHandle pluginLoader;
     private Yano yano;
+    private boolean pluginStartupFailed;
     @jakarta.inject.Inject
     public YanoProducer(@Named("pluginClassLoader") PluginLoaderHandle pluginLoader) {
         this.pluginLoader = pluginLoader;
@@ -453,14 +454,33 @@ public class YanoProducer {
         return ensureYano();
     }
 
-    /** Assembles the application's single {@link Yano} on first use and returns it afterwards. */
-    Yano ensureYano() {
+    /**
+     * Assembles the application's single {@link Yano} on first use and returns it afterwards. A plugin
+     * startup failure is terminal: later callers, such as a metrics cache refreshing in the background,
+     * fail fast instead of assembling Yano again.
+     */
+    synchronized Yano ensureYano() {
         if (apiPrefixContract != null) {
             apiPrefixContract.verify();
         }
         if (yano != null) {
             return yano;
         }
+        if (pluginStartupFailed) {
+            throw new IllegalStateException(
+                    "Yano startup failed on a plugin activation error; fix it and restart the process");
+        }
+        try {
+            return assembleYano();
+        } catch (Throwable failure) {
+            if (isPluginStartupFailure(failure)) {
+                pluginStartupFailed = true;
+            }
+            throw failure;
+        }
+    }
+
+    private Yano assembleYano() {
         if (appConfig != null && RuntimeMode.parse(appConfig.getOptionalValue(YanoPropertyKeys.MODE, String.class)
                 .orElse("cardano")) == RuntimeMode.APP_LEDGER) {
             yano = createStandaloneAppLedger();

@@ -5,6 +5,7 @@ import org.yanoproject.runtime.kernel.NodeKernel;
 import org.yanoproject.runtime.kernel.Schedulers;
 import org.yanoproject.runtime.kernel.Subsystem;
 import org.yanoproject.runtime.kernel.SubsystemContext;
+import org.yanoproject.api.plugin.PluginActivationException;
 import org.yanoproject.api.plugin.operations.PluginOperationsRecorder;
 import org.yanoproject.api.plugin.spi.PluginProducts;
 
@@ -140,7 +141,11 @@ class DefaultHostLifecycleRegistryTest {
         callers.asInit("com.example.later", () -> registry.registerAssembly("com.example.later",
                 () -> calls.add("later")));
         assertThatThrownBy(() -> registry.runAssemblies(getClass().getClassLoader()))
-                .hasMessageContaining("Plugin bundle 'com.example.failing' failed host assembly")
+                .isInstanceOfSatisfying(PluginActivationException.class, failure -> {
+                    assertThat(failure.bundleId()).isEqualTo("com.example.failing");
+                    assertThat(failure.contributionKind()).isEqualTo("node-plugin");
+                })
+                .hasMessage("Plugin bundle 'com.example.failing' failed host assembly")
                 .hasCause(cause);
         assertThat(calls).isEmpty();
         registry.close();

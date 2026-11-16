@@ -165,6 +165,26 @@ class YanoProducerTest {
                 new RuntimeException("unrelated")));
     }
 
+    /** I8-N2: a failed assembly step of a required embedded bundle is a terminal plugin startup failure. */
+    @Test
+    void requiredBundleAssemblyFailureIsASanitisedTerminalPluginStartupFailure() {
+        var producer = new YanoProducer(FailingAssemblyFixture.loader(
+                Thread.currentThread().getContextClassLoader()));
+        producer.appConfig = new PresentConfig(Map.of(
+                YanoPropertyKeys.MODE, "app-ledger",
+                YanoPropertyKeys.Plugins.ENABLED, "false",
+                YanoPropertyKeys.Plugins.REQUIRED, FailingAssemblyFixture.ID));
+
+        PluginStartupException thrown = assertThrows(PluginStartupException.class, () -> producer.onStart(null));
+
+        assertEquals(PluginActivationException.class.getName(), thrown.sourceFailureType());
+        assertNull(thrown.getCause());
+        assertFalse(renderStackTrace(thrown).contains(FailingAssemblyFixture.SECRET));
+        IllegalStateException retry = assertThrows(IllegalStateException.class, producer::ensureYano);
+        assertTrue(retry.getMessage().contains("startup failed on a plugin activation error"));
+        assertNull(retry.getCause());
+    }
+
     @Test
     void startupBuildsPluginRuntimeEvenWhenAutoSyncIsDisabled() {
         var producer = new StartupProbeProducer(null);
