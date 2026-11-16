@@ -7,6 +7,7 @@ import org.junit.jupiter.api.io.TempDir;
 import org.yanoproject.api.config.PluginsOptions;
 import org.yanoproject.api.plugin.NodePlugin;
 import org.yanoproject.api.plugin.PluginContext;
+import org.yanoproject.api.plugin.StorageFilter;
 import org.yanoproject.api.plugin.spi.PluginProducts;
 import org.yanoproject.catalog.ContributionKindRegistry;
 import org.yanoproject.catalog.PluginIndex;
@@ -48,6 +49,8 @@ public class DirectoryBundleHostBoundaryTest {
     public static final AtomicReference<Runnable> GUEST_INIT = new AtomicReference<>(() -> { });
     /** Run by the directory bundle's provider callback {@code FixtureProvider.create}. */
     public static final AtomicReference<Runnable> GUEST_CALLBACK = new AtomicReference<>(() -> { });
+    /** Run by the directory bundle's storage filter, registered in its init. */
+    public static final AtomicReference<Runnable> GUEST_FILTER = new AtomicReference<>(() -> { });
     private static final AtomicReference<Fixture> fixture = new AtomicReference<>();
     private static final List<String> outcomes = new ArrayList<>();
 
@@ -57,6 +60,7 @@ public class DirectoryBundleHostBoundaryTest {
     void reset() {
         GUEST_INIT.set(() -> { });
         GUEST_CALLBACK.set(() -> { });
+        GUEST_FILTER.set(() -> { });
         fixture.set(null);
         outcomes.clear();
     }
@@ -74,6 +78,13 @@ public class DirectoryBundleHostBoundaryTest {
             attempt("nested readiness", () -> registry().registerRestartReadiness(ROOT, () -> true));
             attempt("nested products", () -> registry().registerPluginProducts(ROOT, NO_PRODUCTS));
         });
+        // A managed PluginContext callback attempts every registration, then throws, so the owner's own
+        // registration afterwards proves its authority came back after a failing callback.
+        GUEST_FILTER.set(() -> {
+            attempt("filter readiness", () -> registry().registerRestartReadiness(ROOT, () -> true));
+            attempt("filter products", () -> registry().registerPluginProducts(ROOT, NO_PRODUCTS));
+            throw new IllegalStateException("guest filter failed");
+        });
         try (URLClassLoader host = hostLoader();
              var scheduler = Executors.newSingleThreadScheduledExecutor();
              PluginRuntimeEnvironment environment = PluginRuntimeEnvironment.open(
@@ -84,7 +95,7 @@ public class DirectoryBundleHostBoundaryTest {
                      new NoopOperationsRecorder())) {
             assertThat(environment.embeddedBundle(ROOT)).isTrue();
             assertThat(environment.embeddedBundle(GUEST)).isFalse();
-            fixture.set(new Fixture(registry, environment));
+            fixture.set(new Fixture(registry, environment, manager));
 
             manager.discoverAndInit();
             registry.runAssemblies(environment.classLoader());
@@ -101,12 +112,15 @@ public class DirectoryBundleHostBoundaryTest {
                 "nested assembly: " + nested,
                 "nested readiness: " + nested,
                 "nested products: " + nested,
-                "root init after nested call: accepted",
+                "root init after nested calls: accepted",
                 "root assembly: started",
                 "nested assembly: Assembly steps cannot register further assembly steps",
                 "nested readiness: " + nested,
                 "nested products: " + nested,
-                "root assembly after nested call: accepted");
+                "filter readiness: " + nested,
+                "filter products: " + nested,
+                "root assembly saw: guest filter failed",
+                "root assembly after nested calls: accepted");
     }
 
     @Test
@@ -153,17 +167,38 @@ public class DirectoryBundleHostBoundaryTest {
             attempt("root init", () -> registry().registerAssembly(ROOT, () -> {
                 outcomes.add("root assembly: started");
                 guestProvider().create();
-                attempt("root assembly after nested call", () -> registry().registerPluginProducts(ROOT, NO_PRODUCTS));
+                // Storage filters are published once every plugin initialized, so the host can dispatch them
+                // from an assembly step but never from an init. Event subscriptions and scheduled tasks exist
+                // only from start on, after init and assembly; ManagedOwnerAuthorityTest covers their path.
+                for (StorageFilter filter : fixture.get().manager().getStorageFilters()) {
+                    expectFailure("root assembly", () -> filter.acceptUtxoOutput(null, null, null));
+                }
+                attempt("root assembly after nested calls",
+                        () -> registry().registerPluginProducts(ROOT, NO_PRODUCTS));
             }));
             guestProvider().create();
-            attempt("root init after nested call", () -> registry().registerRestartReadiness(ROOT, () -> true));
+            attempt("root init after nested calls", () -> registry().registerRestartReadiness(ROOT, () -> true));
+        }
+
+        private static void expectFailure(String label, Runnable dispatch) {
+            try {
+                dispatch.run();
+                outcomes.add(label + " saw no failure");
+            } catch (RuntimeException failure) {
+                Throwable cause = failure;
+                while (cause.getCause() != null && !String.valueOf(cause.getMessage()).startsWith("guest ")) {
+                    cause = cause.getCause();
+                }
+                outcomes.add(label + " saw: " + cause.getMessage());
+            }
         }
         @Override public void start() { }
         @Override public void stop() { }
         @Override public void close() { }
     }
 
-    private record Fixture(DefaultHostLifecycleRegistry registry, PluginRuntimeEnvironment environment) {
+    private record Fixture(DefaultHostLifecycleRegistry registry, PluginRuntimeEnvironment environment,
+                           PluginManager manager) {
     }
 
     /** Host loader carrying the embedded owner; plugin manifests and services come only from its own JAR. */
@@ -199,11 +234,22 @@ public class DirectoryBundleHostBoundaryTest {
                 package com.example.guest;
                 import org.yanoproject.api.plugin.NodePlugin;
                 import org.yanoproject.api.plugin.PluginContext;
+                import org.yanoproject.api.plugin.StorageFilter;
                 import org.yanoproject.runtime.plugins.DirectoryBundleHostBoundaryTest;
                 public final class GuestPlugin implements NodePlugin {
                     public String id() { return "%s"; }
                     public String version() { return "1.0.0"; }
-                    public void init(PluginContext context) { DirectoryBundleHostBoundaryTest.GUEST_INIT.get().run(); }
+                    public void init(PluginContext context) {
+                        DirectoryBundleHostBoundaryTest.GUEST_INIT.get().run();
+                        context.registerStorageFilter(new StorageFilter() {
+                            public boolean acceptUtxoOutput(org.yanoproject.api.plugin.UtxoFilterContext ctx,
+                                    com.bloxbean.cardano.yaci.core.model.Block block,
+                                    com.bloxbean.cardano.yaci.core.model.TransactionBody body) {
+                                DirectoryBundleHostBoundaryTest.GUEST_FILTER.get().run();
+                                return true;
+                            }
+                        });
+                    }
                     public void start() { }
                     public void stop() { }
                     public void close() { }

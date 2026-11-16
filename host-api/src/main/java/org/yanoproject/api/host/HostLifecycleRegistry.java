@@ -12,7 +12,12 @@ import java.util.function.BooleanSupplier;
  * and stop before host storage and ordinary plugins. Registrations survive restart.
  *
  * <p>The owner-id methods (Host API 1.2) accept only trusted host-class-path (embedded) bundle ids,
- * and only the id of the calling plugin: the host checks it against the caller's context.</p>
+ * and only the id of the calling plugin: the host checks it against the caller's context. Authority
+ * holds only in the owner's own {@code NodePlugin.init} and assembly step; every plugin callback the host
+ * dispatches from there (contribution providers and products, event listeners and filters, storage
+ * filters, scheduled tasks) runs without it. Raw service objects obtained through
+ * {@code PluginContext.getService} are outside this guarantee: the host does not intercept them, so
+ * their code runs as the caller.</p>
  */
 public interface HostLifecycleRegistry {
     /**

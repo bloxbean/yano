@@ -226,6 +226,22 @@ final class PluginSpiFacades {
             }
         }
 
+        /**
+         * Runs a plugin callback admitted elsewhere (a managed PluginContext
+         * callback) with the owner frame suspended, restoring it afterwards.
+         */
+        <T, X extends Throwable> T callWithoutOwner(
+                PluginThreadContext.ThrowingSupplier<T, X> callback
+        ) throws X {
+            String previous = owner.get();
+            owner.remove();
+            try {
+                return callback.get();
+            } finally {
+                restoreOwner(previous);
+            }
+        }
+
         /** The bundle whose own init or assembly code is innermost on this thread, if any. */
         Optional<String> owner() {
             return Optional.ofNullable(owner.get());

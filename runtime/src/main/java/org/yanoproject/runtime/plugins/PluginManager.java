@@ -275,7 +275,7 @@ public final class PluginManager implements AutoCloseable {
         this.lifecycleObserver = Objects.requireNonNull(
                 lifecycleObserver, "lifecycleObserver");
         this.managedCallbacks = new PluginContextFacades.ManagedCallbackResources(
-                Objects.requireNonNull(callbackRegistrar, "callbackRegistrar"));
+                Objects.requireNonNull(callbackRegistrar, "callbackRegistrar"), catalogCallbacks);
         if (bundleConfigs == null || bundleConfigs.isEmpty()) {
             this.bundleConfigs = Map.of();
         } else {
