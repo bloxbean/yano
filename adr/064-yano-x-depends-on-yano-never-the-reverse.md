@@ -1,6 +1,6 @@
 # ADR-064: Yano-X depends on Yano, never the reverse
 
-- Status: Proposed (r4)
+- Status: Proposed (r5)
 - Date: 2026-11-16
 - Tracking: [Yano #249](https://github.com/bloxbean/yano/issues/249) (requirement: [#247](https://github.com/bloxbean/yano/issues/247))
 - Baselines inspected: Yano `ebd3eeea4` (merge of #246), Yano-X `1ce50558` (merge of X #102)
@@ -290,8 +290,10 @@ where `PluginProducts` has `void resume()` and `void sealAndAwait()`.
 **Permanent close (X18, A14).** `registerPluginProducts` does not transfer close ownership. The X root
 owns the registries it creates (`DomainApiRegistry`, `LocalReadModelContributionRegistry`,
 `LocalReadModelRegistry`) and closes them in reverse creation order from its existing
-`NodePlugin.close()`. The host already invokes that through `closePluginManager()`, at the point where
-`RuntimeNode:3956-3961` closes them today.
+`NodePlugin.close()`. Permanent registry cleanup thus moves from `closeDomainApis()`
+(`RuntimeNode:3948-3961`) into that method, which the host runs from `closePluginManager()`
+(`:3938-3943`). That is one step later than today, after `hostLifecycle.close()`. This is safe, because
+the registries are already sealed at that point (X19).
 
 - If assembly fails part-way, the callback closes whatever it created, in reverse, before rethrowing.
 - Close-before-start and repeated close are no-ops after the first close.
@@ -819,3 +821,16 @@ exception).
     inputs change; additive-only rule.
   - B14 → contributor keys that collide with host keys fail; `appChainStoragePath` migration note;
     console reachability.
+- r4.1 (2026-11-16): wording only (X19 and reviewer A's P3 nit): close moves from `closeDomainApis()`
+  into the X root's `NodePlugin.close()`, one step later than today.
+- r5 (2026-11-16): amendments from the M1 implementation code reviews (RC-19 asked that they be
+  recorded and signed off):
+  - D1 / Q4 (RB-9) → Yano's plugin-operations filter reads only `yano.app-chain.api.keys`; the
+    auth-enabled and snapshot-admin key names are X-owned.
+  - D3 (RA-2, RA-10, RX5) → descriptors stay owner-qualified; the `owner` field must equal the file
+    name; runtime discovery goes through `ContributionKindBinding.descriptorOwner()`, and index/CLI
+    discovery reads entries by name. A single fixed name was tried and rejected, because a Quarkus
+    uber-JAR keeps only one copy of an ordinary resource. Directory listing was rejected because it
+    misses JARs without directory entries.
+  - D8 (RB-10) → `YanoProducer` produces the single `Yano` bean; `YanoInstanceProducer` was removed,
+    and consumers `@Inject Yano`.
