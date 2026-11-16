@@ -788,6 +788,12 @@ final class PluginSpiFacades {
             Function<P, String> selectorFunction,
             FacadeFactory<P> facadeFactory
     ) implements ContributionKindBinding<P> {
+        /** Built-in kinds have no descriptor; their bindings are never loaded through ServiceLoader. */
+        @Override
+        public String descriptorOwner() {
+            return "org.yanoproject";
+        }
+
         @Override
         public String manifestKey() {
             return kind.manifestKey();

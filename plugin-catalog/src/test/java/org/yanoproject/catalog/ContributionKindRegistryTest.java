@@ -65,13 +65,33 @@ class ContributionKindRegistryTest {
     }
 
     @Test
-    void findsTheDescriptorByEntryNameWithAndWithoutJarDirectoryEntries() throws Exception {
+    void findsDescriptorsByEntryNameWithAndWithoutJarDirectoryEntries() throws Exception {
         Path bare = jar("bare.jar", "com.example.bare", descriptor(kind("bare-kind", "com.example.Bare", "")));
         Path withDirectories = jar("dirs.jar", "com.example.dirs",
                 descriptor(kind("dirs-kind", "com.example.Dirs", "")), true);
 
-        assertThat(ContributionKindRegistry.fromHostArtifacts(List.of(bare, withDirectories)).kinds())
-                .extracting(ContributionKind::manifestKey).endsWith("bare-kind", "dirs-kind");
+        ContributionKindRegistry registry = ContributionKindRegistry.fromHostArtifacts(List.of(bare, withDirectories));
+        assertThat(registry.kinds()).extracting(ContributionKind::manifestKey).endsWith("bare-kind", "dirs-kind");
+        assertThat(registry.descriptorOwner(registry.fromManifestKey("dirs-kind"))).contains("com.example.dirs");
+        assertThat(registry.descriptorOwner(ContributionKind.HEALTH)).isEmpty();
+    }
+
+    @Test
+    void oneMergedJarKeepsTheDescriptorsOfSeveralOwners() throws Exception {
+        Path merged = temporary.resolve("uber.jar");
+        try (OutputStream file = Files.newOutputStream(merged); JarOutputStream output = new JarOutputStream(file)) {
+            for (String owner : List.of("com.example.first", "com.example.second")) {
+                output.putNextEntry(new JarEntry(ContributionKindRegistry.resourcePath(owner)));
+                output.write(owned(owner, descriptor(kind(owner.substring(12) + "-kind",
+                        owner + ".Provider", ""))).getBytes(StandardCharsets.UTF_8));
+                output.closeEntry();
+            }
+        }
+
+        ContributionKindRegistry registry = ContributionKindRegistry.fromHostArtifacts(List.of(merged));
+        assertThat(registry.kinds()).extracting(ContributionKind::manifestKey)
+                .endsWith("first-kind", "second-kind");
+        assertThat(registry.descriptorOwner(registry.fromManifestKey("second-kind"))).contains("com.example.second");
     }
 
     @Test
@@ -118,9 +138,11 @@ class ContributionKindRegistryTest {
                         "{\"schemaVersion\": 2, \"kinds\": []}")),
                 "schemaVersion must equal 1");
         assertRejected(List.of(directory("owner", "Not An Owner", descriptor())),
+                "file name must be a reverse-DNS owner id");
+        assertRejected(List.of(directory("no-owner", "com.example.no-owner", null, descriptor())),
                 "owner must be a 3-160 character lowercase reverse-DNS identifier");
-        assertRejected(List.of(directory("no-owner", null, descriptor())),
-                "owner must be a 3-160 character lowercase reverse-DNS identifier");
+        assertRejected(List.of(directory("mismatch", "com.example.file", "com.example.other", descriptor())),
+                "owner 'com.example.other' does not match the file name");
     }
 
     private void assertRejected(List<Path> artifacts, String message) {
@@ -144,9 +166,14 @@ class ContributionKindRegistryTest {
     }
 
     private Path directory(String name, String owner, String descriptor) throws IOException {
-        Path file = temporary.resolve(name).resolve(ContributionKindRegistry.RESOURCE);
+        return directory(name, owner, owner, descriptor);
+    }
+
+    /** {@code owner} names the file; {@code declared} is the JSON owner field, left out when null. */
+    private Path directory(String name, String owner, String declared, String descriptor) throws IOException {
+        Path file = temporary.resolve(name).resolve(ContributionKindRegistry.resourcePath(owner));
         Files.createDirectories(file.getParent());
-        Files.writeString(file, owned(owner, descriptor), StandardCharsets.UTF_8);
+        Files.writeString(file, owned(declared, descriptor), StandardCharsets.UTF_8);
         return temporary.resolve(name);
     }
 
@@ -161,7 +188,7 @@ class ContributionKindRegistryTest {
                 output.putNextEntry(new JarEntry("META-INF/"));
                 output.putNextEntry(new JarEntry("META-INF/yano/"));
             }
-            output.putNextEntry(new JarEntry(ContributionKindRegistry.RESOURCE));
+            output.putNextEntry(new JarEntry(ContributionKindRegistry.resourcePath(owner)));
             output.write(owned(owner, descriptor).getBytes(StandardCharsets.UTF_8));
             output.closeEntry();
         }

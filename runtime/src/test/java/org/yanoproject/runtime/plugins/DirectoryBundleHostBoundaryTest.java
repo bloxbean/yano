@@ -117,7 +117,8 @@ public class DirectoryBundleHostBoundaryTest {
             assertThatThrownBy(() -> PluginRuntimeEnvironment.open(
                     new PluginsOptions(true, false, Set.of(), Set.of(), Map.of()),
                     PluginLoaderHandle.directory(plugins, host)))
-                    .hasStackTraceContaining("contribution-kind descriptor '" + ContributionKindRegistry.RESOURCE
+                    .hasStackTraceContaining("contribution-kind descriptor '"
+                            + ContributionKindRegistry.resourcePath("com.example.guest")
                             + "' is trusted only from host class-path artifacts");
         }
     }
@@ -250,7 +251,7 @@ public class DirectoryBundleHostBoundaryTest {
             }
         }
         if (withDescriptor) {
-            entries.put(ContributionKindRegistry.RESOURCE, """
+            entries.put(ContributionKindRegistry.resourcePath("com.example.guest"), """
                     {"schemaVersion": 1, "owner": "com.example.guest", "kinds": []}
                     """.getBytes(StandardCharsets.UTF_8));
         }

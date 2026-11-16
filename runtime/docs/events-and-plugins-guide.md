@@ -167,10 +167,12 @@ reported by the plugin operations surface.
 
 Yano defines four contribution kinds: `node-plugin`, `utxo-index-contributor`,
 `health` and `metrics`. A framework on the host class path adds kinds with a
-descriptor `META-INF/yano/contribution-kinds.json` (owner, key, service
+descriptor `META-INF/yano/contribution-kinds/<owner>.json` (owner, key, service
 interface, trust tier and manifest rules) plus one
 `org.yanoproject.api.plugin.spi.ContributionKindBinding` per kind, registered
-with `ServiceLoader`. The binding builds the facade through the host's
+with `ServiceLoader`. The host loads the descriptor of each owner a binding
+names (`descriptorOwner()`), so descriptors from several JARs survive merging
+into one uber-JAR. The binding builds the facade through the host's
 `PluginCallbackScope`, which applies callback admission, the plugin TCCL,
 activation diagnostics and product reservations. Descriptors are trusted only
 from the host class path; a plugin-directory bundle that carries one is

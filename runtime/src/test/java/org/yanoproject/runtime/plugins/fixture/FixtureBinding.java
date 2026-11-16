@@ -17,6 +17,11 @@ public final class FixtureBinding implements ContributionKindBinding<FixtureProv
     }
 
     @Override
+    public String descriptorOwner() {
+        return "org.yanoproject.runtime.fixture";
+    }
+
+    @Override
     public String manifestKey() {
         return KIND;
     }

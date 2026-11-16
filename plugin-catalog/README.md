@@ -72,9 +72,9 @@ Policy options must precede artifact paths:
 
 Only the four built-in contribution kinds (`node-plugin`,
 `utxo-index-contributor`, `health`, `metrics`) are known without host
-artifacts. A framework that adds kinds ships one descriptor
-`META-INF/yano/contribution-kinds.json` (its reverse-DNS `owner` is declared
-inside the JSON) in its host-class-path JAR; pass that JAR with `--host-artifact` (repeatable) to validate bundles that use
+artifacts. A framework that adds kinds ships a descriptor
+`META-INF/yano/contribution-kinds/<owner>.json` (whose `owner` field equals the
+file name) in its host-class-path JAR; pass that JAR with `--host-artifact` (repeatable) to validate bundles that use
 its kinds. Descriptors are trusted only from host artifacts: a scanned plugin
 artifact that carries one is rejected, and a manifest that names an unknown
 kind fails with `contribution kind is not supported`.

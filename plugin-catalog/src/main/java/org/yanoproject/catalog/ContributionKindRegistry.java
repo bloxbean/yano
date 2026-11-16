@@ -18,6 +18,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.TreeSet;
 import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
@@ -26,11 +27,14 @@ import java.util.jar.JarFile;
  * The contribution kinds one catalog build or inspection accepts.
  *
  * <p>A registry holds the four built-in Yano kinds plus the kinds declared by
- * the descriptor resource {@value #RESOURCE}, at most one per artifact. The
- * fixed name is found by resource or entry name, so discovery does not depend
- * on JAR directory entries. Descriptors are trusted by origin: they are read
- * only from host artifacts,
- * which are the artifacts of the host class path. A plugin artifact that is
+ * owner-qualified descriptor resources
+ * {@code META-INF/yano/contribution-kinds/<owner>.json}. Each owner has its own
+ * path, so several descriptors survive merging into one uber-JAR. Index and
+ * CLI time read every matching artifact entry by name; at runtime the host
+ * loads the descriptor of each owner named by a {@code ContributionKindBinding},
+ * so neither depends on JAR directory entries. Descriptors are trusted by
+ * origin: they are read only from host artifacts, which are the artifacts of
+ * the host class path. A plugin artifact that is
  * not a host artifact must not carry a descriptor (see
  * {@link PluginArtifactScanner}).</p>
  *
@@ -44,15 +48,17 @@ import java.util.jar.JarFile;
  *             "maxPerBundle": 1, "nameIsBundleId": false, "forbiddenNameChars": ".",
  *             "reservedSystemNames": ["system"], "operationsTracked": false}]}
  * }</pre>
- * <p>{@code owner} is the reverse-DNS id of the declaring framework; two host
- * artifacts must not declare the same owner. {@code apiPackages} are API
+ * <p>{@code owner} is the reverse-DNS id of the declaring framework and must
+ * equal the file name; two host artifacts must not declare the same owner. {@code apiPackages} are API
  * packages a plugin artifact must not package, like the built-in
  * {@code org.yanoproject.api}. The kind fields after {@code trustTier} are
  * optional.</p>
  */
 public final class ContributionKindRegistry {
-    /** Resource name of an artifact's contribution-kind descriptor. */
-    public static final String RESOURCE = "META-INF/yano/contribution-kinds.json";
+    /** Directory containing owner-qualified contribution-kind descriptors. */
+    public static final String RESOURCE_DIRECTORY = "META-INF/yano/contribution-kinds/";
+    /** File suffix of contribution-kind descriptors. */
+    public static final String RESOURCE_SUFFIX = ".json";
     /** Maximum encoded descriptor size. */
     public static final int MAX_DESCRIPTOR_BYTES = 64 * 1024;
     /** Maximum number of kinds one registry accepts. */
@@ -66,18 +72,20 @@ public final class ContributionKindRegistry {
             ContributionKind.HEALTH,
             ContributionKind.METRICS);
     private static final ContributionKindRegistry BUILT_IN_REGISTRY =
-            new ContributionKindRegistry(List.of(), Set.of(), Set.of());
+            new ContributionKindRegistry(List.of(), Set.of(), Set.of(), Map.of());
 
     private final List<ContributionKind> orderedKinds;
     private final Map<String, ContributionKind> byKey;
     private final Map<String, ContributionKind> byInterface;
     private final List<String> apiClassPrefixes;
     private final Set<Path> hostArtifacts;
+    private final Map<String, String> descriptorOwners;
 
     private ContributionKindRegistry(
             List<ContributionKind> descriptorKinds,
             Set<String> descriptorApiPrefixes,
-            Set<Path> hostArtifacts
+            Set<Path> hostArtifacts,
+            Map<String, String> descriptorOwners
     ) {
         Map<String, ContributionKind> keys = new LinkedHashMap<>();
         Map<String, ContributionKind> interfaces = new HashMap<>();
@@ -110,6 +118,7 @@ public final class ContributionKindRegistry {
         prefixes.addAll(new TreeSet<>(descriptorApiPrefixes));
         this.apiClassPrefixes = List.copyOf(prefixes);
         this.hostArtifacts = Set.copyOf(hostArtifacts);
+        this.descriptorOwners = Map.copyOf(descriptorOwners);
         this.orderedKinds = List.copyOf(ordered);
     }
 
@@ -135,6 +144,7 @@ public final class ContributionKindRegistry {
             throws IOException {
         Objects.requireNonNull(hostArtifacts, "hostArtifacts");
         Map<String, Path> owners = new HashMap<>();
+        Map<String, String> kindOwners = new HashMap<>();
         List<ContributionKind> kinds = new ArrayList<>();
         Set<String> apiPrefixes = new HashSet<>();
         Set<Path> canonical = new HashSet<>();
@@ -144,19 +154,42 @@ public final class ContributionKindRegistry {
             if (!canonical.add(real)) {
                 continue;
             }
-            String path = real + "!/" + RESOURCE;
-            Optional<byte[]> bytes = readDescriptor(real, path);
-            if (bytes.isEmpty()) {
-                continue;
+            for (Map.Entry<String, byte[]> descriptor : readDescriptors(real).entrySet()) {
+                String path = real + "!/" + descriptor.getKey();
+                String owner = owner(path, descriptor.getKey());
+                if (owners.putIfAbsent(owner, real) != null) {
+                    throw invalid(path, "owner '" + owner + "' is declared by more than one host artifact");
+                }
+                Descriptor parsed = parse(path, descriptor.getValue());
+                if (!parsed.owner().equals(owner)) {
+                    throw invalid(path, "owner '" + parsed.owner() + "' does not match the file name");
+                }
+                kinds.addAll(parsed.kinds());
+                parsed.kinds().forEach(kind -> kindOwners.put(kind.manifestKey(), owner));
+                apiPrefixes.addAll(parsed.apiClassPrefixes());
             }
-            Descriptor parsed = parse(path, bytes.get());
-            if (owners.putIfAbsent(parsed.owner(), real) != null) {
-                throw invalid(path, "owner '" + parsed.owner() + "' is declared by more than one host artifact");
-            }
-            kinds.addAll(parsed.kinds());
-            apiPrefixes.addAll(parsed.apiClassPrefixes());
         }
-        return new ContributionKindRegistry(kinds, apiPrefixes, canonical);
+        return new ContributionKindRegistry(kinds, apiPrefixes, canonical, kindOwners);
+    }
+
+    /**
+     * Returns the resource path of {@code owner}'s descriptor.
+     *
+     * @param owner reverse-DNS descriptor owner
+     * @return {@code META-INF/yano/contribution-kinds/<owner>.json}
+     */
+    public static String resourcePath(String owner) {
+        return RESOURCE_DIRECTORY + Objects.requireNonNull(owner, "owner") + RESOURCE_SUFFIX;
+    }
+
+    /**
+     * Returns the owner of the descriptor that declared {@code kind}.
+     *
+     * @param kind contribution kind
+     * @return owner, or empty for a built-in kind
+     */
+    public Optional<String> descriptorOwner(ContributionKind kind) {
+        return Optional.ofNullable(descriptorOwners.get(kind.manifestKey()));
     }
 
     /**
@@ -209,27 +242,51 @@ public final class ContributionKindRegistry {
     }
 
     static boolean isDescriptorPath(String path) {
-        return RESOURCE.equals(path);
+        if (!path.startsWith(RESOURCE_DIRECTORY) || !path.endsWith(RESOURCE_SUFFIX)) {
+            return false;
+        }
+        String filename = path.substring(RESOURCE_DIRECTORY.length());
+        return filename.indexOf('/') < 0 && filename.indexOf('\\') < 0;
     }
 
-    private static Optional<byte[]> readDescriptor(Path artifact, String path) throws IOException {
+    /** Every descriptor entry of one artifact, matched by entry name so directory entries are not needed. */
+    private static Map<String, byte[]> readDescriptors(Path artifact) throws IOException {
+        Map<String, byte[]> descriptors = new TreeMap<>();
         if (Files.isDirectory(artifact, LinkOption.NOFOLLOW_LINKS)) {
-            Path file = artifact.resolve(RESOURCE);
-            if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)) {
-                return Optional.empty();
+            Path directory = artifact.resolve(RESOURCE_DIRECTORY);
+            if (!Files.isDirectory(directory, LinkOption.NOFOLLOW_LINKS)) {
+                return descriptors;
             }
-            try (InputStream input = Files.newInputStream(file, LinkOption.NOFOLLOW_LINKS)) {
-                return Optional.of(readBounded(path, input));
+            try (var files = Files.list(directory)) {
+                for (Path file : files.toList()) {
+                    String path = RESOURCE_DIRECTORY + file.getFileName();
+                    if (Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS) && isDescriptorPath(path)) {
+                        try (InputStream input = Files.newInputStream(file, LinkOption.NOFOLLOW_LINKS)) {
+                            descriptors.put(path, readBounded(artifact + "!/" + path, input));
+                        }
+                    }
+                }
             }
+            return descriptors;
         }
         try (JarFile jar = new JarFile(artifact.toFile(), false)) {
-            JarEntry entry = jar.getJarEntry(RESOURCE);
-            if (entry == null || entry.isDirectory()) {
-                return Optional.empty();
+            for (JarEntry entry : jar.stream().toList()) {
+                if (!entry.isDirectory() && isDescriptorPath(entry.getName())) {
+                    try (InputStream input = jar.getInputStream(entry)) {
+                        descriptors.put(entry.getName(), readBounded(artifact + "!/" + entry.getName(), input));
+                    }
+                }
             }
-            try (InputStream input = jar.getInputStream(entry)) {
-                return Optional.of(readBounded(path, input));
-            }
+        }
+        return descriptors;
+    }
+
+    private static String owner(String path, String entry) {
+        String owner = entry.substring(RESOURCE_DIRECTORY.length(), entry.length() - RESOURCE_SUFFIX.length());
+        try {
+            return CatalogValidation.bundleId(owner, "owner");
+        } catch (IllegalArgumentException e) {
+            throw invalid(path, "file name must be a reverse-DNS owner id", e);
         }
     }
 

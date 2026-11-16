@@ -8,7 +8,9 @@ package org.yanoproject.api.plugin.spi;
  * catalog is built. Each descriptor kind must have exactly one binding whose
  * {@link #manifestKey()} equals the kind key and whose {@link #serviceType()}
  * name equals the descriptor's service interface; otherwise catalog
- * construction fails. The host calls {@link #selector} and {@link #facade}
+ * construction fails. The host loads only the descriptors of the owners its
+ * bindings name ({@link #descriptorOwner()}), by resource path, so descriptors
+ * need no directory listing and survive merging into one uber-JAR. The host calls {@link #selector} and {@link #facade}
  * under callback admission with the plugin class loader as TCCL.</p>
  *
  * @param <P> provider SPI type
@@ -20,6 +22,14 @@ public interface ContributionKindBinding<P> {
      * @return provider interface
      */
     Class<P> serviceType();
+
+    /**
+     * Returns the owner of the descriptor that declares this kind; the host
+     * loads it from {@code META-INF/yano/contribution-kinds/<owner>.json}.
+     *
+     * @return reverse-DNS descriptor owner
+     */
+    String descriptorOwner();
 
     /**
      * Returns the manifest key of the bound kind.
