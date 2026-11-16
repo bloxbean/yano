@@ -20,8 +20,6 @@ import org.slf4j.LoggerFactory;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URL;
-import java.net.JarURLConnection;
-import java.net.URISyntaxException;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
@@ -300,7 +298,7 @@ public final class PluginRuntimeEnvironment implements AutoCloseable {
                         "Multiple classpath manifests for host-required embedded plugin bundle '"
                         + id + "'");
             }
-            PluginIndex index = scanner.scan(manifestArtifact(resource, resourcePath));
+            PluginIndex index = scanner.scan(PluginArtifactScanner.classPathArtifact(resource, resourcePath));
             IndexedBundle bundle = index.bundles().stream()
                     .filter(candidate -> candidate.manifest().id().equals(id))
                     .findFirst().orElseThrow(() -> new IllegalStateException(
@@ -311,29 +309,6 @@ public final class PluginRuntimeEnvironment implements AutoCloseable {
             bundle.manifest().dependencies().forEach(dependency -> pending.addLast(dependency.id()));
         }
         return List.copyOf(inputs);
-    }
-
-    /** The JAR file or exploded root that holds a class-path resource. */
-    static Path manifestArtifact(URL resource, String resourcePath) throws IOException {
-        try {
-            if ("jar".equals(resource.getProtocol())) {
-                JarURLConnection connection = (JarURLConnection) resource.openConnection();
-                connection.setUseCaches(false);
-                URL jar = connection.getJarFileURL();
-                if ("file".equals(jar.getProtocol())) return Path.of(jar.toURI());
-            } else if ("file".equals(resource.getProtocol())) {
-                Path root = Path.of(resource.toURI());
-                for (int segment = 0; segment < resourcePath.split("/").length; segment++) {
-                    root = root.getParent();
-                    if (root == null) throw new IOException("Classpath manifest has no artifact root");
-                }
-                return root;
-            }
-        } catch (URISyntaxException invalid) {
-            throw new IOException("Classpath manifest artifact URL is invalid", invalid);
-        }
-        throw new IOException("Classpath resource " + resourcePath
-                + " must belong to a file JAR or exploded artifact");
     }
 
     /**

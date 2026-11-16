@@ -1,22 +1,27 @@
 package org.yanoproject.catalog;
 
 import org.yanoproject.api.plugin.PluginTrustTier;
+import org.yanoproject.api.plugin.spi.ContributionKindBinding;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
+import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.ServiceLoader;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.TreeSet;
@@ -170,6 +175,59 @@ public final class ContributionKindRegistry {
             }
         }
         return new ContributionKindRegistry(kinds, apiPrefixes, canonical, kindOwners);
+    }
+
+    /**
+     * Builds the registry a host class loader trusts: the built-in kinds plus the descriptor of every owner
+     * named by a {@link ContributionKindBinding} the loader's {@link ServiceLoader} provides. This is the
+     * runtime catalog's own rule, for offline tools that need the same registry.
+     *
+     * @param hostLoader trusted host class loader
+     * @return registry whose host artifacts are the artifacts holding those descriptors
+     * @throws IOException if a descriptor or its artifact cannot be read
+     * @throws PluginCatalogException if a binding's owner has no descriptor, or a descriptor is invalid
+     */
+    public static ContributionKindRegistry fromHostClassLoader(ClassLoader hostLoader) throws IOException {
+        List<ContributionKindBinding<?>> bindings = new ArrayList<>();
+        ServiceLoader.load(ContributionKindBinding.class, Objects.requireNonNull(hostLoader, "hostLoader"))
+                .forEach(bindings::add);
+        return fromHostClassLoader(hostLoader, bindings);
+    }
+
+    /**
+     * Builds the registry a host class loader trusts for already discovered bindings: the built-in kinds plus
+     * the descriptor {@code META-INF/yano/contribution-kinds/<owner>.json} of every owner the bindings name,
+     * found by resource path so no directory listing is needed.
+     *
+     * @param hostLoader trusted host class loader
+     * @param bindings contribution-kind bindings discovered on {@code hostLoader}
+     * @return registry whose host artifacts are the artifacts holding those descriptors
+     * @throws IOException if a descriptor or its artifact cannot be read
+     * @throws PluginCatalogException if a binding's owner has no descriptor, or a descriptor is invalid
+     */
+    public static ContributionKindRegistry fromHostClassLoader(
+            ClassLoader hostLoader,
+            Collection<? extends ContributionKindBinding<?>> bindings
+    ) throws IOException {
+        Objects.requireNonNull(hostLoader, "hostLoader");
+        Set<String> owners = new TreeSet<>();
+        for (ContributionKindBinding<?> binding : bindings) {
+            owners.add(Objects.requireNonNull(binding.descriptorOwner(),
+                    "Contribution kind binding '" + binding.manifestKey() + "' names no descriptor owner"));
+        }
+        Set<Path> hostArtifacts = new LinkedHashSet<>();
+        for (String owner : owners) {
+            String path = resourcePath(owner);
+            Enumeration<URL> descriptors = hostLoader.getResources(path);
+            if (!descriptors.hasMoreElements()) {
+                throw new PluginCatalogException("Contribution kind bindings name descriptor owner '" + owner
+                        + "' but the host class path has no " + path);
+            }
+            while (descriptors.hasMoreElements()) {
+                hostArtifacts.add(PluginArtifactScanner.classPathArtifact(descriptors.nextElement(), path));
+            }
+        }
+        return fromHostArtifacts(hostArtifacts);
     }
 
     /**

@@ -6,6 +6,9 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.StringReader;
+import java.net.JarURLConnection;
+import java.net.URISyntaxException;
+import java.net.URL;
 import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
@@ -698,5 +701,35 @@ public final class PluginArtifactScanner {
         private String display() {
             return kind.manifestKey() + ":" + provider;
         }
+    }
+
+    /**
+     * Returns the JAR file or exploded artifact root that holds a class-path resource.
+     *
+     * @param resource URL of the resource, as returned by a class loader
+     * @param resourcePath the resource's class-path name
+     * @return JAR file or exploded artifact root
+     * @throws IOException if the resource does not belong to a file JAR or exploded artifact
+     */
+    public static Path classPathArtifact(URL resource, String resourcePath) throws IOException {
+        try {
+            if ("jar".equals(resource.getProtocol())) {
+                JarURLConnection connection = (JarURLConnection) resource.openConnection();
+                connection.setUseCaches(false);
+                URL jar = connection.getJarFileURL();
+                if ("file".equals(jar.getProtocol())) return Path.of(jar.toURI());
+            } else if ("file".equals(resource.getProtocol())) {
+                Path root = Path.of(resource.toURI());
+                for (int segment = 0; segment < resourcePath.split("/").length; segment++) {
+                    root = root.getParent();
+                    if (root == null) throw new IOException("Classpath manifest has no artifact root");
+                }
+                return root;
+            }
+        } catch (URISyntaxException invalid) {
+            throw new IOException("Classpath manifest artifact URL is invalid", invalid);
+        }
+        throw new IOException("Classpath resource " + resourcePath
+                + " must belong to a file JAR or exploded artifact");
     }
 }

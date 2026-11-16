@@ -5,20 +5,15 @@ import org.yanoproject.catalog.ContributionKind;
 import org.yanoproject.catalog.ContributionKindRegistry;
 
 import java.io.IOException;
-import java.net.URL;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.Enumeration;
 import java.util.HashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.ServiceConfigurationError;
 import java.util.ServiceLoader;
 import java.util.Set;
-import java.util.TreeSet;
 import java.util.stream.Collectors;
 
 /**
@@ -53,28 +48,12 @@ final class PluginKinds {
      */
     static PluginKinds load(ClassLoader hostLoader) {
         Objects.requireNonNull(hostLoader, "hostLoader");
-        Set<Path> hostArtifacts = new LinkedHashSet<>();
         List<ContributionKindBinding<?>> descriptorBindings = new ArrayList<>();
         try {
             ServiceLoader.load(ContributionKindBinding.class, hostLoader)
                     .forEach(descriptorBindings::add);
-            Set<String> owners = new TreeSet<>();
-            for (ContributionKindBinding<?> binding : descriptorBindings) {
-                owners.add(Objects.requireNonNull(binding.descriptorOwner(),
-                        "Contribution kind binding '" + binding.manifestKey() + "' names no descriptor owner"));
-            }
-            for (String owner : owners) {
-                String path = ContributionKindRegistry.resourcePath(owner);
-                Enumeration<URL> descriptors = hostLoader.getResources(path);
-                if (!descriptors.hasMoreElements()) {
-                    throw new IllegalStateException("Contribution kind bindings name descriptor owner '" + owner
-                            + "' but the host class path has no " + path);
-                }
-                while (descriptors.hasMoreElements()) {
-                    hostArtifacts.add(PluginRuntimeEnvironment.manifestArtifact(descriptors.nextElement(), path));
-                }
-            }
-            return of(ContributionKindRegistry.fromHostArtifacts(hostArtifacts), descriptorBindings);
+            return of(ContributionKindRegistry.fromHostClassLoader(hostLoader, descriptorBindings),
+                    descriptorBindings);
         } catch (IOException | ServiceConfigurationError e) {
             throw new IllegalStateException("Host contribution kinds could not be read", e);
         }

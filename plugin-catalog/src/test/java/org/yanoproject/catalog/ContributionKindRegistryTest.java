@@ -3,9 +3,13 @@ package org.yanoproject.catalog;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.yanoproject.api.plugin.PluginTrustTier;
+import org.yanoproject.api.plugin.spi.ContributionKindBinding;
+import org.yanoproject.api.plugin.spi.PluginCallbackScope;
 
 import java.io.IOException;
 import java.io.OutputStream;
+import java.net.URL;
+import java.net.URLClassLoader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -92,6 +96,48 @@ class ContributionKindRegistryTest {
         assertThat(registry.kinds()).extracting(ContributionKind::manifestKey)
                 .endsWith("first-kind", "second-kind");
         assertThat(registry.descriptorOwner(registry.fromManifestKey("second-kind"))).contains("com.example.second");
+    }
+
+    @Test
+    void hostClassLoaderEntryPointLoadsTheDescriptorsOfItsBindingsOwners() throws Exception {
+        Path jar = temporary.resolve("host.jar");
+        try (OutputStream file = Files.newOutputStream(jar); JarOutputStream output = new JarOutputStream(file)) {
+            output.putNextEntry(new JarEntry(ContributionKindRegistry.resourcePath(LoaderBinding.OWNER)));
+            output.write(owned(LoaderBinding.OWNER, descriptor(kind(LoaderBinding.KIND, Runnable.class.getName(), "")))
+                    .getBytes(StandardCharsets.UTF_8));
+            output.putNextEntry(new JarEntry("META-INF/services/" + ContributionKindBinding.class.getName()));
+            output.write(LoaderBinding.class.getName().getBytes(StandardCharsets.UTF_8));
+            output.closeEntry();
+        }
+        try (URLClassLoader loader = new URLClassLoader(new URL[]{jar.toUri().toURL()}, getClass().getClassLoader())) {
+            ContributionKindRegistry registry = ContributionKindRegistry.fromHostClassLoader(loader);
+
+            // The test-resources descriptor has no binding, so its owner is not loaded.
+            assertThat(registry.kinds()).extracting(ContributionKind::manifestKey).containsExactly(
+                    "node-plugin", "utxo-index-contributor", "health", "metrics", LoaderBinding.KIND);
+            assertThat(registry.descriptorOwner(registry.fromManifestKey(LoaderBinding.KIND)))
+                    .contains(LoaderBinding.OWNER);
+            assertThat(registry.isHostArtifact(jar)).isTrue();
+        }
+        try (URLClassLoader empty = new URLClassLoader(new URL[0], getClass().getClassLoader())) {
+            assertThatThrownBy(() -> ContributionKindRegistry.fromHostClassLoader(empty, List.of(new LoaderBinding())))
+                    .isInstanceOf(PluginCatalogException.class)
+                    .hasMessageContaining("descriptor owner '" + LoaderBinding.OWNER
+                            + "' but the host class path has no "
+                            + ContributionKindRegistry.resourcePath(LoaderBinding.OWNER));
+        }
+    }
+
+    /** A binding a host JAR registers through its services file. */
+    public static final class LoaderBinding implements ContributionKindBinding<Runnable> {
+        static final String OWNER = "com.example.loader";
+        static final String KIND = "loader-kind";
+
+        @Override public Class<Runnable> serviceType() { return Runnable.class; }
+        @Override public String descriptorOwner() { return OWNER; }
+        @Override public String manifestKey() { return KIND; }
+        @Override public String selector(Runnable provider) { return KIND; }
+        @Override public Runnable facade(Runnable provider, PluginCallbackScope scope) { return provider; }
     }
 
     @Test
