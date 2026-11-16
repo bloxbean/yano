@@ -258,7 +258,7 @@ tasks.register('verifyLegacyAccountHistoryRemoved') {
             }
         }
         fileTree(rootProject.projectDir) {
-            include 'app/src/main/resources/**/*.yml'
+            include 'app-core/src/main/resources/**/*.yml'
             include 'app/config/**/*.yml'
         }.files.each { configFile ->
             if (configFile.getText('UTF-8').contains('account-history:')) {

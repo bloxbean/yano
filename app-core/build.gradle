@@ -46,19 +46,11 @@ dependencies {
     implementation(project(':tx-services')) {
         exclude group: 'io.netty', module: 'netty-all'
     }
-    // ADR-057: the optional Amaru engine exists only in builds run with -PwithAmaru=true; the uber-jar,
-    // Docker and native images of every other build do not contain it (yano.validation.engine=amaru then
-    // fails startup with a clear message).
-    if (findProject(':amaru-validator') != null) {
-        runtimeOnly project(':amaru-validator')
-    }
     implementation project(':archive-modules:archive-api')
     implementation project(':archive-modules:archive-core')
     runtimeOnly project(':archive-modules:archive-store-ducklake')
 
-    implementation 'com.google.auto.service:auto-service:1.1.1'
     annotationProcessor libs.yaci.events.processor
-    annotationProcessor 'com.google.auto.service:auto-service:1.1.1'
 
     consoleUi project(':console-ui')
 }
@@ -148,6 +140,17 @@ def generateBakedApiPrefixContract = tasks.register('generateBakedApiPrefixContr
         console.parentFile.mkdirs()
         console.setText(groovy.json.JsonOutput.toJson([apiPrefix: prefix])
                 + System.lineSeparator(), 'UTF-8')
+    }
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano Application Core'
+                description = 'Yano Quarkus REST resources, CDI producers, configuration defaults and console assets'
+            }
+        }
     }
 }
 

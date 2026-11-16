@@ -15,6 +15,7 @@ dependencies {
         api project(':node-api')
         api project(':cardano-api')
         api project(':plugin-catalog')
+        api project(':app-core')
         api project(':consensus')
         api project(':p2p')
         api project(':runtime')
