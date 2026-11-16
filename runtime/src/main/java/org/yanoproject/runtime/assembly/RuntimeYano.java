@@ -1,7 +1,5 @@
 package org.yanoproject.runtime.assembly;
 
-
-
 import org.yanoproject.api.ChainQuery;
 import org.yanoproject.api.DevnetControl;
 import org.yanoproject.api.LedgerQuery;

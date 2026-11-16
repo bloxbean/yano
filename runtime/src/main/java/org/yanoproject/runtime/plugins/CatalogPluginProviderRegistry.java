@@ -1,8 +1,5 @@
 package org.yanoproject.runtime.plugins;
 
-
-
-
 import org.yanoproject.api.plugin.NodePlugin;
 import org.yanoproject.api.plugin.PluginActivationException;
 import org.yanoproject.api.plugin.PluginCapability;

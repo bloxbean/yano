@@ -1344,7 +1344,7 @@ final class PluginCatalogBuilder {
                                    ClassLoader loader) {
         String result = legacyMetadataCallback(
                 key, "provider selector", loader, () -> kinds.selector(key.kind(), provider));
-        int maximumLength = key.kind() == ContributionKind.NODE_PLUGIN
+        int maximumLength = ContributionKind.NODE_PLUGIN.equals(key.kind())
                 ? MAX_LEGACY_ID_LENGTH : MAX_LEGACY_SELECTOR_LENGTH;
         return requireMetadata("legacy provider selector", result, maximumLength);
     }
