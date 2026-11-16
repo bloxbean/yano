@@ -807,7 +807,7 @@ final class PluginSpiFacades {
         /** Built-in kinds have no descriptor; their bindings are never loaded through ServiceLoader. */
         @Override
         public String descriptorOwner() {
-            return "org.yanoproject";
+            throw new UnsupportedOperationException("Built-in contribution kinds have no descriptor");
         }
 
         @Override

@@ -106,9 +106,11 @@ final class PluginKinds {
                         + "' redefines a built-in kind");
             }
             String owner = registry.descriptorOwner(kind).orElse(null);
-            if (!binding.descriptorOwner().equals(owner)) {
+            String named = Objects.requireNonNull(binding.descriptorOwner(),
+                    "Contribution kind binding '" + key + "' names no descriptor owner");
+            if (!named.equals(owner)) {
                 throw new IllegalStateException("Contribution kind binding '" + key + "' names descriptor owner '"
-                        + binding.descriptorOwner() + "' but the kind is declared by '" + owner + "'");
+                        + named + "' but the kind is declared by '" + owner + "'");
             }
             if (!kind.serviceInterface().equals(binding.serviceType().getName())) {
                 throw new IllegalStateException("Contribution kind binding '" + key + "' binds "

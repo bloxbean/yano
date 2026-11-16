@@ -10,8 +10,11 @@ package org.yanoproject.api.plugin.spi;
  * name equals the descriptor's service interface; otherwise catalog
  * construction fails. The host loads only the descriptors of the owners its
  * bindings name ({@link #descriptorOwner()}), by resource path, so descriptors
- * need no directory listing and survive merging into one uber-JAR. The host calls {@link #selector} and {@link #facade}
- * under callback admission with the plugin class loader as TCCL.</p>
+ * need no directory listing and survive merging into one uber-JAR. A descriptor
+ * takes effect at runtime only when at least one binding names its owner; index
+ * and CLI tooling read every host descriptor. The host calls {@link #selector}
+ * and {@link #facade} under callback admission with the plugin class loader as
+ * TCCL.</p>
  *
  * @param <P> provider SPI type
  */
