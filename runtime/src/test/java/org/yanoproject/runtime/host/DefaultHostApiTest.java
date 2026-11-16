@@ -57,7 +57,7 @@ class DefaultHostApiTest {
     }
 
     @Test
-    void appOnlyNetworkRejectsConflictsSharedHostsAndLateCalls() {
+    void appOnlyNetworkRejectsCardanoMagicsConflictsSharedHostsAndLateCalls() {
         var shared = new DefaultN2NExtensionRegistry();
         assertThatThrownBy(() -> shared.requireAppOnlyNetwork(77))
                 .isInstanceOf(UnsupportedOperationException.class);
@@ -70,6 +70,14 @@ class DefaultHostApiTest {
                 .hasMessageContaining("conflicting app-only network magics 77 and 78");
         assertThatThrownBy(() -> appOnly.requireAppOnlyNetwork(0x1_0000_0000L))
                 .hasMessageContaining("unsigned 32-bit");
+        for (long cardano : new long[]{764_824_073L, 1L, 2L, 4L, 42L}) {
+            var fresh = new DefaultN2NExtensionRegistry(false);
+            assertThatThrownBy(() -> fresh.requireAppOnlyNetwork(cardano))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessage("App-only network magic " + cardano
+                            + " is a Cardano network magic; use a distinct app network identity");
+            assertThat(fresh.appOnlyNetwork()).isEmpty();
+        }
         appOnly.seal();
         assertThatThrownBy(() -> appOnly.requireAppOnlyNetwork(77))
                 .hasMessageContaining("before sessions start");

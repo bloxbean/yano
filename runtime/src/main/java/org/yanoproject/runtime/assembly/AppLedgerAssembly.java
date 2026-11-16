@@ -1,6 +1,5 @@
 package org.yanoproject.runtime.assembly;
 
-import com.bloxbean.cardano.yaci.core.common.NetworkType;
 import org.yanoproject.api.ChainQuery;
 import org.yanoproject.api.host.HostApi;
 import org.yanoproject.runtime.host.DefaultHostApi;
@@ -41,9 +40,6 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 /**
  * Generic host without Cardano chainstate ({@code yano.mode=app-ledger}): the existing kernel, plugin
@@ -51,10 +47,6 @@ import java.util.stream.Stream;
  */
 final class AppLedgerAssembly implements Yano, NodeLifecycle {
     private static final Logger log = LoggerFactory.getLogger(AppLedgerAssembly.class);
-    // Public Cardano networks plus the existing Yano devnet magic (YanoConfig.devnetDefault).
-    private static final Set<Long> CARDANO_NETWORK_MAGICS = Stream.concat(
-            Stream.of(NetworkType.values()).map(NetworkType::getProtocolMagic),
-            Stream.of(42L)).collect(Collectors.toUnmodifiableSet());
     private final ChainQuery unavailableChain = unavailable(ChainQuery.class);
     private final LedgerQuery unavailableLedger = unavailable(LedgerQuery.class);
     private final TxGateway unavailableTransactions = unavailable(TxGateway.class);
@@ -139,13 +131,8 @@ final class AppLedgerAssembly implements Yano, NodeLifecycle {
     }
 
     private static long appOnlyNetwork(DefaultN2NExtensionRegistry n2n) {
-        long magic = n2n.appOnlyNetwork().orElseThrow(() -> new IllegalStateException(
+        return n2n.appOnlyNetwork().orElseThrow(() -> new IllegalStateException(
                 "app-ledger mode requires a plugin that provides an app-only network"));
-        if (CARDANO_NETWORK_MAGICS.contains(magic)) {
-            throw new IllegalArgumentException("App-only network magic " + magic
-                    + " is a Cardano network magic; use a distinct app network identity");
-        }
-        return magic;
     }
 
     private static String networkName(DefaultN2NExtensionRegistry n2n) {

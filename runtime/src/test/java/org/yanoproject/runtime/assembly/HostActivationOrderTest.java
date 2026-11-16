@@ -155,7 +155,9 @@ class HostActivationOrderTest {
                 .runtimeOptions(requiredOptions())
                 .pluginLoader(fixtureLoader())
                 .build())
-                .hasMessageContaining("is a Cardano network magic");
+                .hasMessageContaining("failed host assembly")
+                .hasRootCauseMessage("App-only network magic 764824073 is a Cardano network magic; "
+                        + "use a distinct app network identity");
         assertThat(EVENTS).contains("close");
     }
 
