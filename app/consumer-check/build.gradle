@@ -11,11 +11,18 @@ plugins {
 def yanoVersion = providers.gradleProperty('yanoVersion').get()
 def yanoStagingRepository = providers.gradleProperty('yanoStagingRepository').get()
 def fixturePluginJar = providers.gradleProperty('fixturePluginJar').get()
+def appEffectiveConfig = providers.gradleProperty('appEffectiveConfig').get()
+def jacksonVersion = providers.gradleProperty('jacksonVersion').get()
+def slf4jApi = providers.gradleProperty('slf4jApi').get()
+def cardanoClientLibVersion = providers.gradleProperty('cardanoClientLibVersion').get()
 
 repositories {
-    maven {
-        url = uri(yanoStagingRepository)
-        content { includeGroup 'org.yanoproject' }
+    // Yano artifacts come only from the staged publications, never from a cache or another repository.
+    exclusiveContent {
+        forRepository {
+            maven { url = uri(yanoStagingRepository) }
+        }
+        filter { includeGroup 'org.yanoproject' }
     }
     mavenCentral()
     maven { url = 'https://central.sonatype.com/repository/maven-snapshots/' }
@@ -30,10 +37,22 @@ java {
     targetCompatibility = JavaVersion.VERSION_25
 }
 
-// Quarkus owns the logging provider, as in Yano's own application.
+// The executable's dependency rules, as in Yano's own app (app/build.gradle): Quarkus owns the
+// logging provider on one SLF4J API, and the Jackson and cardano-client-lib families are aligned.
 configurations.configureEach {
     exclude group: 'org.slf4j', module: 'slf4j-reload4j'
     exclude group: 'ch.qos.reload4j', module: 'reload4j'
+    resolutionStrategy.force(slf4jApi)
+    resolutionStrategy.eachDependency { details ->
+        def group = details.requested.group
+        if (group == 'com.fasterxml.jackson' || group.startsWith('com.fasterxml.jackson.')) {
+            details.useVersion(details.requested.name == 'jackson-annotations'
+                    ? jacksonVersion.replaceFirst(/\.\d+$/, '') : jacksonVersion)
+        }
+        if (group == 'com.bloxbean.cardano' && details.requested.name.startsWith('cardano-client-')) {
+            details.useVersion(cardanoClientLibVersion)
+        }
+    }
 }
 
 configurations.create('pluginIndexGenerator')
@@ -93,6 +112,10 @@ tasks.named('processResources') {
     dependsOn generatePluginIndex
 }
 
+// The effective-config helper is the same source Yano's app dumps with.
+sourceSets.test.java.srcDir('../src/configDump/java')
+
 test {
     systemProperty 'yano.consumer-check.fixture-plugin', fixturePluginJar
+    systemProperty 'yano.consumer-check.app-effective-config', appEffectiveConfig
 }

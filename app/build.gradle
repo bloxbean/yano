@@ -769,10 +769,31 @@ def conformanceFixtureJar = tasks.register('conformanceFixtureJar', Jar) {
     from 'src/conformanceFixture/resources'
 }
 
+// ADR-064 D8: the artifact configuration defaults of Yano's own application, compared by the
+// downstream-consumer check. The helper is shared with app/consumer-check, so both dumps use one rule.
+sourceSets.test.java.srcDir('src/configDump/java')
+def appEffectiveConfig = layout.buildDirectory.file('effective-config/app.properties')
+def effectiveConfigDump = tasks.register('effectiveConfigDump', Test) {
+    group = 'verification'
+    description = 'Dumps the configuration the app inherits from its artifacts for the consumer check'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    filter { includeTestsMatching 'org.yanoproject.app.EffectiveConfigDumpTest' }
+    systemProperty 'yano.effective-config.dump', appEffectiveConfig.get().asFile.absolutePath
+    // app/config holds the distribution's operator files, not configuration inherited from artifacts.
+    def isolatedWorkingDirectory = layout.buildDirectory.dir('effective-config/work').get().asFile
+    workingDir isolatedWorkingDirectory
+    // Quarkus test mode derives its log path from the build directory it finds there.
+    doFirst { new File(isolatedWorkingDirectory, 'build').mkdirs() }
+    outputs.file(appEffectiveConfig)
+}
+
 // ADR-064 D8/M1 downstream-consumer check: app/consumer-check is a separate
-// Quarkus build that composes yano-app-core from the staged publications with a
-// fixture REST resource, globals contributor and directory plugin. It is the
-// gate for org.yanoproject.app.spi and runs only when its inputs change:
+// Quarkus build that composes yano-app-core from the staged publications, with
+// this executable's dependency forces, a fixture REST resource and key filter,
+// a globals contributor and the conformance directory plugin. It is the gate
+// for org.yanoproject.app.spi; CI runs it, and locally it reruns only when the
+// staged publications or the fixture change:
 //   ./gradlew :app:appCoreConsumerCheck -PstagingRepository=file:///abs/staging
 def stagingRepositoryForConsumerCheck = providers.gradleProperty('stagingRepository')
 tasks.register('appCoreConsumerCheck', Exec) {
@@ -782,19 +803,29 @@ tasks.register('appCoreConsumerCheck', Exec) {
         candidate.tasks.matching { it.name == 'publishAllPublicationsToStagingRepository' }
     }
     inputs.files(fileTree('consumer-check') { exclude 'build/**', '.gradle/**' })
-    inputs.files(appCore.tasks.named('jar'), project(':runtime').tasks.named('jar'), conformanceFixtureJar)
+    inputs.files(fileTree('src/configDump'), conformanceFixtureJar, effectiveConfigDump)
+    // Every staged module jar; the staged files themselves carry fresh snapshot timestamps on each run.
+    inputs.files(provider {
+        rootProject.allprojects.findAll { it.pluginManager.hasPlugin('maven-publish') }
+                .collect { it.tasks.findByName('jar') }.findAll { it != null }
+    })
     outputs.dir('consumer-check/build/test-results')
     workingDir 'consumer-check'
     doFirst {
         if (!stagingRepositoryForConsumerCheck.isPresent()) {
             throw new GradleException('appCoreConsumerCheck requires -PstagingRepository=<file repository URI>')
         }
+        def slf4jApi = libs.slf4j.api.get()
         commandLine rootProject.file(isWindowsHost() ? 'gradlew.bat' : 'gradlew').absolutePath,
                 '--no-daemon', 'test',
                 "-PyanoVersion=${project.version}",
                 "-PyanoStagingRepository=${stagingRepositoryForConsumerCheck.get()}",
                 "-PquarkusPluginVersion=${quarkusPluginVersion}",
                 "-PquarkusPlatformVersion=${quarkusPlatformVersion}",
+                "-PjacksonVersion=${jacksonPatchVersion}",
+                "-Pslf4jApi=${slf4jApi.module}:${slf4jApi.versionConstraint.requiredVersion}",
+                "-PcardanoClientLibVersion=${cardanoClientLibVersion}",
+                "-PappEffectiveConfig=${appEffectiveConfig.get().asFile.absolutePath}",
                 "-PfixturePluginJar=${conformanceFixtureJar.get().archiveFile.get().asFile.absolutePath}"
     }
 }
