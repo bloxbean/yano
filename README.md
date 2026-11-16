@@ -81,7 +81,7 @@ java -jar app/build/yano.jar
 ```
 
 The default profile points at the public Cardano **preprod** network (protocol magic `1`,
-upstream peer `localhost:30000` — adjust in `app/src/main/resources/application.yml` or via
+upstream peer `localhost:30000` — adjust in `app-core/src/main/resources/application.yml` or via
 system properties).
 
 ### Run a local devnet block producer

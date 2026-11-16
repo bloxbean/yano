@@ -45,7 +45,7 @@ function flatten(value, prefix = '', rows = []) {
   return rows;
 }
 const configFiles = [
-  'app/src/main/resources/application.yml',
+  'app-core/src/main/resources/application.yml',
   ...(await files(resolve(repo, 'app/config'), '.yml'))
     .filter((f) => /\/application[^/]*\.yml$/.test(f))
     .map((f) => relative(repo, f)),
@@ -144,7 +144,7 @@ catalog += declaredKeys.map((key) => `- ${inline(key)}`).join('\n') + '\n';
 await save(resolve(docs, 'reference/configuration-catalog.md'), catalog);
 // A path inventory, deliberately not represented as an OpenAPI schema.
 const routes = [];
-for (const file of await files(resolve(repo, 'app/src/main/java'), '.java')) {
+for (const file of await files(resolve(repo, 'app-core/src/main/java'), '.java')) {
   const source = (await readFile(file, 'utf8'))
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/^\s*\/\/.*$/gm, '');
