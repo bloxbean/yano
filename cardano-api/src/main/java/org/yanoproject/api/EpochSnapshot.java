@@ -8,8 +8,9 @@ import org.yanoproject.api.model.ProtocolParamsSnapshot;
 import java.math.BigInteger;
 
 /**
- * Read-only ledger view pinned to one completed {@link EpochBoundary}. Every read sees the same
- * consistent store snapshot; any use after {@link #close()} is rejected.
+ * Read-only ledger view pinned to one completed {@link EpochBoundary}. Stake and governance reads see the
+ * same consistent store snapshot; protocol parameters are read from the live store, not from that
+ * snapshot. Any use after {@link #close()} is rejected.
  *
  * <p>Stake reads accept only {@link #previousEpoch()}; protocol parameters and governance reads accept
  * only {@link #newEpoch()}. Any other epoch is rejected with {@link IllegalArgumentException}.</p>
@@ -19,7 +20,7 @@ public interface EpochSnapshot extends AutoCloseable {
 
     long newEpoch();
 
-    /** Parameters effective in {@link #newEpoch()}. */
+    /** Parameters effective in {@link #newEpoch()}, read from the live store rather than the pinned snapshot. */
     ProtocolParamsSnapshot protocolParams(long effectiveEpoch);
 
     /** Whether the stake snapshot of {@link #previousEpoch()} is complete, including an empty one. */
