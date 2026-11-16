@@ -4,6 +4,8 @@ import com.bloxbean.cardano.yaci.events.api.config.EventsOptions;
 import org.junit.jupiter.api.Test;
 import org.yanoproject.api.config.PluginsOptions;
 import org.yanoproject.api.config.RuntimeOptions;
+import org.yanoproject.api.config.UpstreamConfig;
+import org.yanoproject.api.config.UpstreamDiscoveryConfig;
 import org.yanoproject.api.config.YanoConfig;
 import org.yanoproject.api.host.HostApiVersion;
 import org.yanoproject.runtime.plugins.PluginProviderRegistry;
@@ -70,6 +72,29 @@ class DefaultHostApiTest {
 
         config.getBootstrapAddresses().add("addr_test1later");
         assertThat(host.nodeConfig().getBootstrapAddresses()).containsExactly("addr_test1source");
+    }
+
+    @Test
+    void nodeConfigIsolatesNestedUpstreamConfiguration() {
+        YanoConfig config = YanoConfig.serverOnly(0);
+        config.setUpstream(UpstreamConfig.builder()
+                .discovery(UpstreamDiscoveryConfig.builder()
+                        .seeds(new ArrayList<>(List.of("seed:3001"))).build())
+                .build());
+        var host = new DefaultHostApi(new DefaultN2NExtensionRegistry(), PluginProviderRegistry.empty(),
+                DefaultHostLifecycleRegistryTest.newRegistry(), config,
+                new RuntimeOptions(EventsOptions.defaults(), PluginsOptions.defaults(), Map.of()),
+                () -> "devnet", id -> Map.of());
+
+        host.nodeConfig().getUpstream().getValidation().getStart().setMode("checkpoint");
+        host.nodeConfig().getUpstream().getDiscovery().getSeeds().clear();
+        assertThat(host.nodeConfig().getUpstream().getValidation().getStart().getMode()).isEqualTo("immediate");
+        assertThat(host.nodeConfig().getUpstream().getDiscovery().getSeeds()).containsExactly("seed:3001");
+
+        config.getUpstream().getDiscovery().getSeeds().add("seed:3002");
+        config.getUpstream().getValidation().getStart().setMode("era");
+        assertThat(host.nodeConfig().getUpstream().getDiscovery().getSeeds()).containsExactly("seed:3001");
+        assertThat(host.nodeConfig().getUpstream().getValidation().getStart().getMode()).isEqualTo("immediate");
     }
 
     @Test

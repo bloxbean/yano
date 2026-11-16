@@ -259,6 +259,46 @@ class YanoConfigTest {
         assertThat(source.getBootstrapUtxos()).hasSize(1);
     }
 
+    @Test
+    void copyOf_shouldDeepCopyNestedUpstreamValidationStartAndDiscoveryLists() {
+        YanoConfig source = YanoConfig.serverOnly(0);
+        source.setUpstream(UpstreamConfig.builder()
+                .validation(UpstreamValidationConfig.builder()
+                        .start(UpstreamValidationStartConfig.builder().mode("immediate").build())
+                        .build())
+                .discovery(UpstreamDiscoveryConfig.builder()
+                        .seeds(new ArrayList<>(List.of("seed:3001")))
+                        .peerSnapshotUrls(new ArrayList<>(List.of("https://snapshot")))
+                        .peerSnapshotFiles(new ArrayList<>(List.of("peers.json")))
+                        .allowlist(new ArrayList<>(List.of("10.0.0.0/8")))
+                        .denylist(new ArrayList<>(List.of("192.168.0.0/16")))
+                        .build())
+                .build());
+
+        YanoConfig copy = YanoConfig.copyOf(source);
+        copy.getUpstream().getValidation().getStart().setMode("checkpoint");
+        UpstreamDiscoveryConfig copied = copy.getUpstream().getDiscovery();
+        copied.getSeeds().clear();
+        copied.getPeerSnapshotUrls().clear();
+        copied.getPeerSnapshotFiles().clear();
+        copied.getAllowlist().clear();
+        copied.getDenylist().clear();
+
+        UpstreamDiscoveryConfig original = source.getUpstream().getDiscovery();
+        assertThat(source.getUpstream().getValidation().getStart().getMode()).isEqualTo("immediate");
+        assertThat(original.getSeeds()).containsExactly("seed:3001");
+        assertThat(original.getPeerSnapshotUrls()).containsExactly("https://snapshot");
+        assertThat(original.getPeerSnapshotFiles()).containsExactly("peers.json");
+        assertThat(original.getAllowlist()).containsExactly("10.0.0.0/8");
+        assertThat(original.getDenylist()).containsExactly("192.168.0.0/16");
+
+        YanoConfig second = YanoConfig.copyOf(source);
+        source.getUpstream().getValidation().getStart().setMode("era");
+        original.getSeeds().add("seed:3002");
+        assertThat(second.getUpstream().getValidation().getStart().getMode()).isEqualTo("immediate");
+        assertThat(second.getUpstream().getDiscovery().getSeeds()).containsExactly("seed:3001");
+    }
+
     private static List<Method> readableYanoConfigGetters() {
         return Arrays.stream(YanoConfig.class.getMethods())
                 .filter(method -> method.getParameterCount() == 0)
