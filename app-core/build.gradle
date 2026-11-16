@@ -153,6 +153,9 @@ def generateBakedApiPrefixContract = tasks.register('generateBakedApiPrefixContr
 
 tasks.named('processResources', ProcessResources) {
     dependsOn generateBakedApiPrefixContract
+    // The closure below resolves only file paths; depend on the configuration so
+    // Gradle builds the console jar first.
+    dependsOn configurations.consoleUi
     from({ configurations.consoleUi.collect { zipTree(it) } }) {
         include 'META-INF/resources/ui/**'
         // The generated prefix documents above are authoritative.

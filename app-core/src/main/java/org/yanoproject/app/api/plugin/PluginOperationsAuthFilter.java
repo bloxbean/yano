@@ -119,6 +119,6 @@ public class PluginOperationsAuthFilter implements ContainerRequestFilter {
 
     private Optional<String> apiKeysConfig() {
         return apiKeysConfig != null ? apiKeysConfig : ConfigProvider.getConfig()
-                .getOptionalValue(YanoPropertyKeys.AppChain.API_KEYS, String.class);
+                .getOptionalValue(YanoPropertyKeys.PluginOperationsApi.API_KEYS, String.class);
     }
 }
