@@ -2,15 +2,13 @@ package org.yanoproject.runtime.sync.validation;
 
 import com.bloxbean.cardano.client.common.cbor.CborSpan;
 import com.bloxbean.cardano.client.exception.CborRuntimeException;
+import com.bloxbean.cardano.client.transaction.raw.HaskellPolicy;
 import com.bloxbean.cardano.client.transaction.raw.RawHeader;
 import com.bloxbean.cardano.client.transaction.raw.RawItems;
 import com.bloxbean.cardano.client.transaction.raw.RawVrfCert;
 import com.bloxbean.cardano.client.util.HexUtil;
 import com.bloxbean.cardano.yaci.core.model.BlockHeader;
 import com.bloxbean.cardano.yaci.core.util.CborSerializationUtil;
-import org.yanoproject.ledger.rules.conway.tx.HaskellPolicy;
-import org.yanoproject.ledger.rules.conway.tx.StrictCbor;
-import org.yanoproject.ledger.rules.conway.tx.TxDecodingException;
 
 import java.util.Arrays;
 import java.util.List;
@@ -187,22 +185,23 @@ public record ShelleyHeaderView(
 
     /**
      * The header in what chain sync delivers: a byte string, or {@code [era, bytes]}, around it, or the header itself.
-     * {@link HaskellPolicy} decides whether it decodes.
+     * CCL's {@link HaskellPolicy} decides whether it decodes; any {@code CborRuntimeException} of the reading, its
+     * {@code LedgerDecodingException} included, is a header that does not decode (ADR 0005 D7).
      */
     private static RawHeader read(byte[] originalHeaderBytes) {
         try {
-            CborSpan root = StrictCbor.span(originalHeaderBytes);
+            CborSpan root = CborSpan.of(originalHeaderBytes);
             return HaskellPolicy.header(switch (root.majorType()) {
-                case MAJOR_BYTES -> StrictCbor.span(RawItems.bytes(root));
+                case MAJOR_BYTES -> CborSpan.of(RawItems.bytes(root));
                 case MAJOR_ARRAY -> {
                     List<CborSpan> items = RawItems.array(root, "header");
                     boolean wrapped = items.size() == 2 && items.get(1).majorType() == MAJOR_BYTES
                             && items.get(0).majorType() != MAJOR_ARRAY;
-                    yield wrapped ? StrictCbor.span(RawItems.bytes(items.get(1))) : root;
+                    yield wrapped ? CborSpan.of(RawItems.bytes(items.get(1))) : root;
                 }
                 default -> throw new HeaderValidationFailure("shape", "unsupported Shelley header CBOR root");
             });
-        } catch (TxDecodingException | CborRuntimeException e) {
+        } catch (CborRuntimeException e) {
             throw new HeaderValidationFailure("shape", e.getMessage());
         }
     }

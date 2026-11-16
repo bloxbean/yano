@@ -2,9 +2,7 @@ package org.yanoproject.ledger.rules.conway.utxow;
 
 import com.bloxbean.cardano.client.common.cbor.CborSpan;
 import com.bloxbean.cardano.client.exception.CborRuntimeException;
-
-import org.yanoproject.ledger.rules.conway.tx.PlutusData;
-import org.yanoproject.ledger.rules.conway.tx.TxDecodingException;
+import com.bloxbean.cardano.client.transaction.raw.PlutusDataValidator;
 
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
@@ -526,15 +524,15 @@ public final class PlutusScriptDecoder {
     // ------------------------------------------------------------------ Data
 
     /**
-     * {@code Data} constants: {@link PlutusData#validateFirst}, plutus-core's {@code decodeData} through serialise's
+     * {@code Data} constants: CCL's {@link PlutusDataValidator#validateFirst}, plutus-core's {@code decodeData} through serialise's
      * {@code deserialiseOrFail} ({@code FlatViaSerialise}), which ignores bytes after the item.
      */
     private static final class Data {
 
         static void decode(byte[] bytes) {
             try {
-                PlutusData.validateFirst(bytes);
-            } catch (TxDecodingException e) {
+                PlutusDataValidator.validateFirst(bytes);
+            } catch (CborRuntimeException e) {
                 throw new Malformed(e.getMessage());
             }
         }

@@ -1,6 +1,11 @@
 package org.yanoproject.ledger.rules.conway;
 
 import com.bloxbean.cardano.client.api.model.ProtocolParams;
+import com.bloxbean.cardano.client.exception.CborRuntimeException;
+import com.bloxbean.cardano.client.spec.Era;
+import com.bloxbean.cardano.client.transaction.raw.HaskellPolicy;
+import com.bloxbean.cardano.client.transaction.raw.LedgerDecodingException;
+import com.bloxbean.cardano.client.transaction.raw.RawTx;
 import com.bloxbean.cardano.client.transaction.spec.Transaction;
 
 import org.yanoproject.ledger.rules.LedgerFailure;
@@ -145,13 +150,23 @@ public final class JavaLedgerValidationEngine implements LedgerValidationEngine 
                     "the java engine validates Conway at protocol versions " + SUPPORTED + ", not " + major));
         }
 
+        // ADR 0005 D7: CCL's strict read is the first decoding verdict; CCL's model is built after it, and a gap in the
+        // model still rejects the transaction; then the accepted view is mapped into the rules' records.
+        RawTx accepted;
+        try {
+            accepted = HaskellPolicy.forEra(Era.Conway).transaction(txCbor);
+        } catch (LedgerDecodingException e) {
+            return engine(DECODING_FAILURE, "strict read rejects (" + e.reason() + "): " + e.getMessage());
+        } catch (CborRuntimeException e) {
+            return engine(DECODING_FAILURE, "strict read rejects: " + e.getMessage());
+        }
         Transaction tx;
         try {
             tx = Transaction.deserialize(txCbor);
         } catch (Exception e) {
             return engine(DECODING_FAILURE, "the transaction does not decode: " + e.getMessage());
         }
-        RawTransaction raw = RawTransaction.parse(txCbor, tx);
+        RawTransaction raw = RawTransaction.of(accepted, txCbor, tx);
         Map<TxInRef, UtxoEntry> resolved = TransitionContext.resolve(raw, view);
         byte[] resolvedDigest = ReapplyPolicy.resolvedInputsDigest(raw.allInputs(), resolved);
         ValidatedTx previous = request.previous();

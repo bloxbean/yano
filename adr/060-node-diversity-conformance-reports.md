@@ -175,6 +175,16 @@ The harness follows Amaru's `crates/amaru-uplc/tests/conformance.rs`, which defi
 
 ### 6. cbor-decoding: Yano's transaction-validation decoder
 
+> **Note (2026-11-16, CCL ADR 0005, M4).** The Haskell-strict decoding policy and this scenario's harness moved to
+> CCL: `HaskellPolicy`, its validators and the strict reads are in CCL's `ledger-cbor`, and the harness (rule table,
+> placed rules, normalizer, typed outcomes) is CCL's published `cardano-client-ledger-cbor-conformance`, the code CCL's
+> release gate runs on every Conway sample. This report runs it and must produce exactly the outcomes file CCL pinned
+> for the dataset revision (CCL ADR 0005 J3); Yaci's decoders are diagnostics only. Admission now runs CCL's strict
+> read **first** (`HaskellPolicy.transaction`), then CCL's model, then the mapping into the rules' records; a model gap
+> still rejects. Where the text below differs, it is history: the decoding order, `StrictCbor` and the other strict
+> readers named here (now CCL's), `StrictElements` (never added), the header path (headers are read with CCL's
+> `HaskellPolicy.header`; Yaci's header decoding is the diagnostic column) and `CborRuleTest` (now CCL's).
+
 The scenario is meant to exercise the decoder the node relies on. In Yano that is the transaction-validation path:
 
 - CCL's model decoders (`Transaction.deserialize` and the element types it uses), which `java-julc` decodes with

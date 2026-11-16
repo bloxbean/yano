@@ -3,6 +3,7 @@ package org.yanoproject.ledger.rules.conway.tx;
 import com.bloxbean.cardano.client.common.cbor.CborSpan;
 import com.bloxbean.cardano.client.spec.Era;
 import com.bloxbean.cardano.client.transaction.raw.FieldType;
+import com.bloxbean.cardano.client.transaction.raw.HaskellPolicy;
 import com.bloxbean.cardano.client.transaction.raw.RawProtocolParamUpdate;
 import com.bloxbean.cardano.client.transaction.raw.TxBodyField;
 import com.bloxbean.cardano.client.util.HexUtil;
@@ -36,15 +37,15 @@ class RawProposalTest {
 
     /** A parameter update as the walk of a proposal reads it: the policy decides, CCL's view is read. */
     private static RawParamUpdate update(String hex) {
-        CborSpan item = StrictCbor.span(HexUtil.decodeHexString(hex));
-        HaskellPolicy.CONWAY.walk(FieldType.PROTOCOL_PARAM_UPDATE, item);
+        CborSpan item = CborSpan.of(HexUtil.decodeHexString(hex));
+        StrictReads.walk(FieldType.PROTOCOL_PARAM_UPDATE, item);
         return RawParamUpdate.accepted(RawProtocolParamUpdate.of(item, Era.Conway));
     }
 
     /** A proposal procedure as the walk of a transaction reads one. */
     private static RawProposal read(String hex) {
-        CborSpan item = StrictCbor.span(HexUtil.decodeHexString(hex));
-        HaskellPolicy.CONWAY.walk(TxBodyField.PROPOSAL_PROCEDURES.spec().record(), item);
+        CborSpan item = CborSpan.of(HexUtil.decodeHexString(hex));
+        StrictReads.walk(TxBodyField.PROPOSAL_PROCEDURES.spec().record(), item);
         return RawProposal.accepted(com.bloxbean.cardano.client.transaction.raw.RawProposal.of(item, Era.Conway), 0);
     }
 

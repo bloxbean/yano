@@ -1,6 +1,7 @@
 package org.yanoproject.ledger.rules.conway.tx;
 
 import com.bloxbean.cardano.client.common.cbor.CborSpan;
+import com.bloxbean.cardano.client.transaction.raw.HaskellPolicy;
 import com.bloxbean.cardano.client.transaction.raw.ProtocolParamField;
 import com.bloxbean.cardano.client.transaction.raw.RawProtocolParamUpdate;
 
@@ -55,7 +56,8 @@ public final class RawParamUpdate {
             int key = Math.toIntExact(entry.getKey().asLong());
             keys.add(key);
             switch (ProtocolParamField.RECORD.field(key, update.era()).type()) {
-                case COIN, UINT16, UINT32 -> integers.put(key, StrictCbor.unsigned(entry.getValue()));
+                // the policy has read each as an untagged unsigned integer
+                case COIN, UINT16, UINT32 -> integers.put(key, entry.getValue().asBigInteger());
                 default -> {
                 }
             }

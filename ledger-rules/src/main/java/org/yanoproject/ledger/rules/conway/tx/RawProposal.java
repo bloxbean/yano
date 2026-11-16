@@ -2,6 +2,7 @@ package org.yanoproject.ledger.rules.conway.tx;
 
 import com.bloxbean.cardano.client.common.cbor.CborSpan;
 import com.bloxbean.cardano.client.spec.UnitInterval;
+import com.bloxbean.cardano.client.transaction.raw.HaskellPolicy;
 import com.bloxbean.cardano.client.transaction.raw.RawGovAction;
 import com.bloxbean.cardano.client.transaction.raw.RawGovActionId;
 import com.bloxbean.cardano.client.transaction.raw.RawProtocolParamUpdate;

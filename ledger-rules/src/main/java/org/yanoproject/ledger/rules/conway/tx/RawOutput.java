@@ -1,6 +1,7 @@
 package org.yanoproject.ledger.rules.conway.tx;
 
 import com.bloxbean.cardano.client.common.cbor.CborSpan;
+import com.bloxbean.cardano.client.transaction.raw.HaskellPolicy;
 import com.bloxbean.cardano.client.transaction.raw.RawValue;
 
 import java.util.Objects;
@@ -69,7 +70,7 @@ public record RawOutput(int index, CborSpan span, byte[] address, LedgerValue va
         return new RawOutput(index, output.span(), output.addressBytes().orElseThrow(),
                 value(RawValue.of(output.value())), collateralReturn, output.datumHash().orElse(null),
                 output.inlineDatumBytes().orElse(null),
-                output.scriptRefBytes().map(script -> RawScript.readScript(StrictCbor.span(script))).orElse(null));
+                output.scriptRefBytes().map(script -> RawScript.readScript(RawScript.span(script))).orElse(null));
     }
 
     private static LedgerValue value(RawValue value) {

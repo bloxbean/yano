@@ -1,5 +1,22 @@
 package org.yanoproject.ledger.conformance.diversity.cbor;
 
+import co.nstant.in.cbor.model.ByteString;
+import com.bloxbean.cardano.client.common.cbor.CborSerializationUtil;
+import com.bloxbean.cardano.client.common.cbor.CborSpan;
+import com.bloxbean.cardano.client.ledger.conformance.CborConformance;
+import com.bloxbean.cardano.client.ledger.conformance.CborRule;
+import com.bloxbean.cardano.client.ledger.conformance.SampleOutcome;
+import com.bloxbean.cardano.client.spec.Era;
+import com.bloxbean.cardano.client.transaction.raw.RawInput;
+import com.bloxbean.cardano.client.transaction.raw.RawOutput;
+import com.bloxbean.cardano.yaci.core.model.serializers.AuxDataSerializer;
+import com.bloxbean.cardano.yaci.core.model.serializers.BlockHeaderSerializer;
+import com.bloxbean.cardano.yaci.core.model.serializers.BlockSerializer;
+import com.bloxbean.cardano.yaci.core.model.serializers.CertificateSerializer;
+import com.bloxbean.cardano.yaci.core.model.serializers.TransactionBodySerializer;
+import com.bloxbean.cardano.yaci.core.model.serializers.TransactionInputSerializer;
+import com.bloxbean.cardano.yaci.core.model.serializers.TransactionOutputSerializer;
+import com.bloxbean.cardano.yaci.core.model.serializers.WitnessesSerializer;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.junit.jupiter.api.Test;
 import org.yanoproject.ledger.conformance.diversity.NodeDiversity;
@@ -10,19 +27,24 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
+import java.util.Set;
 import java.util.TreeMap;
-import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * ADR-060 §6: the {@code cbor-decoding} report over cardano-cbor-dataset's Conway corpus, in the dataset's report
- * format, version 2. Every {@code *.input.cbor} under {@code valid/} or {@code manual-valid/} must decode and re-encode
- * to its {@code .expected.cbor} (both normalized, except for the rules the dataset compares exactly), and every other
- * one must be rejected.
+ * format, version 2. Since ADR 0005 (M4) it runs CCL's conformance harness ({@code cardano-client-ledger-cbor-conformance}),
+ * the code CCL's release gate runs: every sample through CCL's Haskell-strict reads, which Yano's admission uses, then
+ * CCL's models and writers. A valid sample must decode and re-encode to its {@code .expected.cbor}, an invalid one must
+ * be rejected.
+ *
+ * <p>The run's outcomes must be exactly the harness's pinned outcomes file for the dataset revision (ADR 0005 J3), and
+ * no stage may be an error (J11). Yaci's decoders are added as diagnostics, in the per-decoder table and the
+ * {@code CBOR_DECODER_OUTCOMES} file: the report itself measures the strict reads alone.</p>
  */
 class CborDecodingDiversityReportTest {
 
@@ -30,47 +52,56 @@ class CborDecodingDiversityReportTest {
     static final String DATASET = "cardano-cbor-dataset/dataset";
     static final String PROTOCOL_VERSION = "11.0";
 
+    /** The header rules, which CCL has no model of: Yaci's header decoder is their library column. */
+    private static final Set<String> HEADER_RULES = Set.of("header", "header_body", "block_number", "kes_period",
+            "kes_vkey", "operational_cert", "vrf_vkey");
+
     @Test
     void writesTheReport() throws IOException {
         Path dataset = NodeDiversity.requireCorpus(DATASET);
-        normalizerMatchesTheDatasetVectors(dataset.resolve("normalization"));
-        Path conway = dataset.resolve("conway");
-        Map<String, CborRule> rules = CborRule.all();
-        Map<String, CborRule.Decoder> yaci = CborRule.yaciDecoders();
+        assertThat(CborConformance.normalizationDifferences(dataset)).isEmpty();
+        List<SampleOutcome> outcomes = CborConformance.run(dataset);
+        List<String> outcomesFile = CborConformance.outcomesFile(outcomes);
 
+        Map<String, CborRule> rules = CborRule.conway();
+        Map<String, Decoder> yaci = yaciDecoders();
+        Path conway = dataset.resolve("conway");
+        ObjectNode results = NodeDiversity.JSON.createObjectNode();
         Map<String, int[]> counts = new TreeMap<>();
         Map<String, int[]> decoders = new TreeMap<>();
-        ObjectNode results = NodeDiversity.JSON.createObjectNode();
-        List<String> outcomes = new ArrayList<>();
-        List<CborRejectionGate.Sample> gated = new ArrayList<>();
-        for (Path sample : samples(conway)) {
-            Path relative = conway.relativize(sample);
-            String ruleName = relative.getName(0).toString();
-            boolean valid = isValid(relative.getName(1).toString());
-            int[] c = counts.computeIfAbsent(ruleName, k -> new int[COUNTS]);
-            CborRule rule = rules.get(ruleName);
-            assertThat(rule).as("the harness must have a decoder for rule %s", ruleName).isNotNull();
-            Optional<String> failure = check(rule, valid, sample);
-            tallyDecoders(decoders.computeIfAbsent(ruleName, k -> new int[DECODER_COLUMNS]), rule, yaci.get(ruleName),
-                    valid, read(sample));
-            outcomes.add(relative.toString().replace('\\', '/') + " " + outcomes(rule, yaci.get(ruleName), read(sample)));
-            int offset = valid ? 0 : 2;
+        List<String> perDecoder = new ArrayList<>();
+        for (SampleOutcome outcome : outcomes) {
+            String rule = outcome.rule();
+            byte[] input = read(conway.resolve(outcome.path()));
+            int[] c = counts.computeIfAbsent(rule, k -> new int[COUNTS]);
+            int offset = outcome.valid() ? 0 : 2;
             c[offset + 1]++;
-            String name = relative.toString().replace('\\', '/');
-            boolean strictRejected = Boolean.FALSE.equals(accepts(rule.strict(), read(sample)));
-            gated.add(new CborRejectionGate.Sample(name, valid, strictRejected, failure.isEmpty()));
-            if (failure.isEmpty()) {
+            if (outcome.passes()) {
                 c[offset]++;
-                results.put(name, true);
+                results.put(outcome.path(), true);
             } else {
-                results.put(name, failure.get());
+                results.put(outcome.path(), outcome.failure());
             }
+            Boolean strict = outcome.strict() == SampleOutcome.Strict.ERROR ? null
+                    : outcome.strict() == SampleOutcome.Strict.ACCEPTED;
+            Boolean library = accepts(library(rule, rules.get(rule)), input);
+            Boolean yacis = yaci.containsKey(rule) ? accepts(yaci.get(rule), input) : null;
+            int[] t = decoders.computeIfAbsent(rule, k -> new int[DECODER_COLUMNS]);
+            tally(t, 0, outcome.valid(), strict);
+            tally(t, 4, outcome.valid(), library);
+            if (yaci.containsKey(rule)) {
+                tally(t, 8, outcome.valid(), yacis);
+            }
+            perDecoder.add(outcome.path() + " " + outcome(strict) + " " + outcome(library) + " "
+                    + (yaci.containsKey(rule) ? outcome(yacis) : "-"));
         }
-        assertThat(counts).isNotEmpty();
-        String outcomesFile = System.getenv("CBOR_DECODER_OUTCOMES");
-        if (outcomesFile != null) {
-            Files.write(Path.of(outcomesFile), outcomes);
+        String perDecoderFile = System.getenv("CBOR_DECODER_OUTCOMES");
+        if (perDecoderFile != null) {
+            Files.write(Path.of(perDecoderFile), perDecoder);
         }
+        Path dir = Path.of(System.getProperty("node.diversity.report.dir", "build/node-diversity"));
+        Files.createDirectories(dir);
+        Files.write(dir.resolve("cbor-decoding-outcomes.txt"), outcomesFile);
 
         ObjectNode report = NodeDiversity.JSON.createObjectNode();
         report.put("version", "2");
@@ -88,33 +119,67 @@ class CborDecodingDiversityReportTest {
         });
         System.out.printf("cbor-decoding %-28s %s%n", "TOTAL", summary(totals));
         printDecoders(decoders);
-        assertThat(CborRejectionGate.violations(CborRejectionGate.baseline(), gated)).isEmpty();
+
+        assertThat(NodeDiversity.commit("node.diversity.cborDatasetCommit"))
+                .as("corpora.env pins the dataset revision CCL's outcomes file was made for (ADR 0005 D8)")
+                .isEqualTo(CborConformance.DATASET_REVISION);
+        assertThat(outcomes.stream().filter(SampleOutcome::hasError).map(o -> o.line() + " " + o.detail()))
+                .as("ADR 0005 J11").isEmpty();
+        assertThat(CborConformance.differences(CborConformance.expectedOutcomes(), outcomesFile))
+                .as("ADR 0005 J3: the outcomes CCL's gate pinned (this run's file is in " + dir + ")").isEmpty();
     }
 
     /** valid passed, valid total, invalid rejected, invalid total. */
     private static final int COUNTS = 4;
 
-    /** @return whether a sample in this directory must decode; the dataset's other directories must be rejected */
-    static boolean isValid(String category) {
-        return category.equals("valid") || category.equals("manual-valid");
-    }
-
     /** valid accepted, valid total, invalid rejected, invalid total, for the strict reader, the library and yaci. */
     private static final int DECODER_COLUMNS = 12;
 
-    /** Each decoder on its own: which side of the node a difference from Haskell comes from (not reported). */
-    private static void tallyDecoders(int[] t, CborRule rule, CborRule.Decoder yaci, boolean valid, byte[] input) {
-        tally(t, 0, valid, accepts(rule.strict(), input));
-        tally(t, 4, valid, accepts(rule.library(), input));
-        if (yaci != null) {
-            tally(t, 8, valid, accepts(yaci, input));
-        }
+    @FunctionalInterface
+    interface Decoder {
+        Object decode(byte[] cbor) throws Exception;
     }
 
-    /** ADR 0003 I7: each decoder's outcome on one sample, A accepted, R rejected, C crashed, - no decoder. */
-    private static String outcomes(CborRule rule, CborRule.Decoder yaci, byte[] input) {
-        return outcome(accepts(rule.strict(), input)) + " " + outcome(accepts(rule.library(), input)) + " "
-                + (yaci == null ? "-" : outcome(accepts(yaci, input)));
+    /**
+     * @return the library column's decoder: CCL's model, or for the header rules, which CCL has no model of, yaci's
+     *         header decoding (the only one with header validation off, the default)
+     */
+    private static Decoder library(String name, CborRule rule) {
+        if (HEADER_RULES.contains(name)) {
+            return cbor -> yaciHeader(name.equals("header") ? cbor : CborRule.headerFor(name, cbor));
+        }
+        return rule.model()::decode;
+    }
+
+    /**
+     * @return yaci's decoder for the rules it has one for, apart from headers, which the library column decodes with
+     *         yaci. Sync decodes with yaci by default, so this gives the sync path a number. It is a diagnostic: the
+     *         report measures transaction admission, which does not use these. As in sync, an item yaci recovers from
+     *         (a block, witness set or auxiliary data with a datum or metadata it cannot parse) counts as accepted.
+     *         Each is the reader sync uses: a credential has none, as yaci reads one only in its certificate.
+     */
+    static Map<String, Decoder> yaciDecoders() {
+        return Map.of(
+                "auxiliary_data", AuxDataSerializer.INSTANCE::deserialize,
+                "block", cbor -> BlockSerializer.INSTANCE.deserialize(cat("8207", cbor)),
+                "certificate", cbor -> CertificateSerializer.INSTANCE.read(CborSpan.of(cbor)),
+                "transaction_body", cbor -> TransactionBodySerializer.INSTANCE.read(cbor, Era.Conway),
+                "transaction_input", cbor -> TransactionInputSerializer.INSTANCE.read(RawInput.of(CborSpan.of(cbor))),
+                "transaction_output",
+                cbor -> TransactionOutputSerializer.INSTANCE.read(RawOutput.tolerant(CborSpan.of(cbor))),
+                "transaction_witness_set", WitnessesSerializer.INSTANCE::deserialize);
+    }
+
+    /** A header as chain sync decodes one with header validation off: yaci's decoding alone. */
+    private static Object yaciHeader(byte[] header) throws Exception {
+        return BlockHeaderSerializer.INSTANCE.deserialize(CborSerializationUtil.serialize(new ByteString(header)));
+    }
+
+    private static byte[] cat(String prefix, byte[] item) {
+        byte[] head = HexFormat.of().parseHex(prefix);
+        byte[] out = Arrays.copyOf(head, head.length + item.length);
+        System.arraycopy(item, 0, out, head.length, item.length);
+        return out;
     }
 
     private static String outcome(Boolean accepted) {
@@ -131,7 +196,7 @@ class CborDecodingDiversityReportTest {
     }
 
     /** @return whether the decoder accepts the input, or null when it crashes */
-    private static Boolean accepts(CborRule.Decoder decoder, byte[] input) {
+    private static Boolean accepts(Decoder decoder, byte[] input) {
         try {
             decoder.decode(input);
             return true;
@@ -144,8 +209,8 @@ class CborDecodingDiversityReportTest {
 
     private static void printDecoders(Map<String, int[]> decoders) {
         int[] total = new int[DECODER_COLUMNS];
-        System.out.println("cbor-decoding, each decoder alone (diagnostic; the report counts Yano's alone):");
-        System.out.printf("cbor-decoding %-28s %-36s %-56s %s%n", "rule", "Yano strict: valid ok / invalid ok",
+        System.out.println("cbor-decoding, each decoder alone (diagnostic; the report counts the strict reads alone):");
+        System.out.printf("cbor-decoding %-28s %-36s %-56s %s%n", "rule", "strict (CCL): valid ok / invalid ok",
                 "library (CCL; yaci for headers): valid ok / invalid ok", "yaci (sync): valid ok / invalid ok");
         decoders.forEach((rule, t) -> {
             System.out.printf("cbor-decoding %-28s %s%n", rule, decoderSummary(t));
@@ -158,55 +223,6 @@ class CborDecodingDiversityReportTest {
         return String.format("%-36s %-56s %s", String.format("%d/%d / %d/%d", t[0], t[1], t[2], t[3]),
                 String.format("%d/%d / %d/%d", t[4], t[5], t[6], t[7]),
                 t[9] + t[11] == 0 ? "-" : String.format("%d/%d / %d/%d", t[8], t[9], t[10], t[11]));
-    }
-
-    /**
-     * @return empty when the sample meets its expectation, otherwise why not, as {@code decode: } or
-     *         {@code encode: } and a message: a valid sample must decode and re-encode to the reference, an invalid
-     *         one must be rejected
-     */
-    static Optional<String> check(CborRule rule, boolean valid, Path sample) {
-        byte[] input = read(sample);
-        try {
-            rule.read(input);
-        } catch (Error e) {
-            return Optional.of("decode: crash: " + e);
-        } catch (Exception e) {
-            return valid ? Optional.of("decode: " + e) : Optional.empty();
-        }
-        if (!valid) {
-            return Optional.of("decode: succeeded when expected to fail");
-        }
-        try {
-            byte[] expected = read(sample.resolveSibling(sample.getFileName().toString()
-                    .replace(".input.cbor", ".expected.cbor")));
-            byte[] encoded = rule.encode(input);
-            boolean same = rule.exact() ? Arrays.equals(encoded, expected)
-                    : Arrays.equals(CborNormalizer.normalize(encoded), CborNormalizer.normalize(expected));
-            return same ? Optional.empty() : Optional.of("encode: re-encoding differs from the reference");
-        } catch (Error e) {
-            return Optional.of("encode: crash: " + e);
-        } catch (Exception e) {
-            return Optional.of("encode: " + e);
-        }
-    }
-
-    private static void normalizerMatchesTheDatasetVectors(Path vectors) throws IOException {
-        try (Stream<Path> files = Files.list(vectors)) {
-            List<Path> inputs = files.filter(p -> p.toString().endsWith(".input.cbor")).sorted().toList();
-            for (Path input : inputs) {
-                Path expected = input.resolveSibling(input.getFileName().toString()
-                        .replace(".input.cbor", ".expected.cbor"));
-                assertThat(CborNormalizer.normalize(read(input))).as(input.getFileName().toString())
-                        .isEqualTo(read(expected));
-            }
-        }
-    }
-
-    private static List<Path> samples(Path conway) throws IOException {
-        try (Stream<Path> files = Files.walk(conway)) {
-            return files.filter(p -> p.getFileName().toString().endsWith(".input.cbor")).sorted().toList();
-        }
     }
 
     private static byte[] read(Path file) {

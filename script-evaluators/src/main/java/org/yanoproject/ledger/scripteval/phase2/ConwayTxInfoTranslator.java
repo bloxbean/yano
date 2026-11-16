@@ -20,7 +20,7 @@ import org.yanoproject.ledger.rules.conway.tx.RawRedeemer;
 import org.yanoproject.ledger.rules.conway.tx.RawScript;
 import org.yanoproject.ledger.rules.conway.tx.RawTransaction;
 import org.yanoproject.ledger.rules.conway.tx.RawVoter;
-import org.yanoproject.ledger.rules.conway.tx.StrictCbor;
+import org.yanoproject.ledger.rules.conway.tx.TxDecodingException;
 import org.yanoproject.ledger.rules.conway.tx.TxInRef;
 import org.yanoproject.ledger.rules.phase2.ScriptCollection;
 import org.yanoproject.ledger.rules.view.model.GovActionId;
@@ -785,8 +785,8 @@ final class ConwayTxInfoTranslator {
      */
     private static PlutusData changedParameters(CborSpan update) {
         TreeMap<BigInteger, PlutusData> byKey = new TreeMap<>();
-        for (Map.Entry<CborSpan, CborSpan> entry : StrictCbor.map(update)) {
-            byKey.put(StrictCbor.unsigned(entry.getKey()), parameterValue(entry.getValue()));
+        for (Map.Entry<CborSpan, CborSpan> entry : cborMap(update)) {
+            byKey.put(cborUnsigned(entry.getKey()), parameterValue(entry.getValue()));
         }
         List<PlutusData.Pair> entries = new ArrayList<>();
         byKey.forEach((key, value) -> entries.add(pair(integer(key), value)));
@@ -794,19 +794,19 @@ final class ConwayTxInfoTranslator {
     }
 
     private static PlutusData parameterValue(CborSpan value) {
-        int major = StrictCbor.major(value);
+        int major = cborMajor(value);
         switch (major) {
             case 0, 1 -> {
-                return integer(StrictCbor.integer(value));
+                return integer(cborInteger(value));
             }
             case 4 -> {
                 List<PlutusData> items = new ArrayList<>();
-                StrictCbor.array(value).forEach(item -> items.add(parameterValue(item)));
+                cborArray(value).forEach(item -> items.add(parameterValue(item)));
                 return list(items);
             }
             case 5 -> {
                 List<PlutusData.Pair> entries = new ArrayList<>();
-                StrictCbor.map(value).forEach(entry -> entries.add(pair(parameterValue(entry.getKey()),
+                cborMap(value).forEach(entry -> entries.add(pair(parameterValue(entry.getKey()),
                         parameterValue(entry.getValue()))));
                 entries.sort((a, b) -> a.key() instanceof PlutusData.IntData x && b.key() instanceof PlutusData.IntData y
                         ? x.value().compareTo(y.value()) : 0);
@@ -816,12 +816,60 @@ final class ConwayTxInfoTranslator {
                 if (value.tag() != 30) {
                     throw new IllegalStateException("unexpected tag " + value.tag() + " in a parameter update");
                 }
-                List<CborSpan> ratio = StrictCbor.array(value.untag());
-                BigInteger[] reduced = DataTerms.reduce(StrictCbor.integer(ratio.get(0)),
-                        StrictCbor.integer(ratio.get(1)));
+                List<CborSpan> ratio = cborArray(value.untag());
+                BigInteger[] reduced = DataTerms.reduce(rationalPart(ratio.get(0)), rationalPart(ratio.get(1)));
                 return list(List.of(integer(reduced[0]), integer(reduced[1])));
             }
             default -> throw new IllegalStateException("unexpected CBOR major type " + major + " in a parameter update");
+        }
+    }
+
+    // Reads of an update CCL's HaskellPolicy has accepted, as strict as the policy's: untagged items of the type, an
+    // integer of major type 0 or 1 and no bignum (formerly Yano's StrictCbor, moved to CCL by ADR 0005).
+
+    /** @return the major type of the item's first head: 6 for a tagged item */
+    private static int cborMajor(CborSpan item) {
+        return (item.buffer()[item.offset()] & 0xff) >>> 5;
+    }
+
+    private static List<Map.Entry<CborSpan, CborSpan>> cborMap(CborSpan item) {
+        expectMajor(item, 5, "a map");
+        return item.entries();
+    }
+
+    private static List<CborSpan> cborArray(CborSpan item) {
+        expectMajor(item, 4, "an array");
+        return item.items();
+    }
+
+    private static BigInteger cborUnsigned(CborSpan item) {
+        expectMajor(item, 0, "an unsigned integer");
+        return item.asBigInteger();
+    }
+
+    private static BigInteger cborInteger(CborSpan item) {
+        int major = cborMajor(item);
+        if (major != 0 && major != 1) {
+            throw new TxDecodingException("expected an integer at " + item.offset());
+        }
+        return item.asBigInteger();
+    }
+
+    /**
+     * A rational's part, as CCL's policy accepts it below decoder version 12 ({@code decodeInteger}): an integer, or a
+     * bignum with the one-byte tag head {@code c2}/{@code c3} on a definite byte string.
+     */
+    private static BigInteger rationalPart(CborSpan item) {
+        int initial = item.buffer()[item.offset()] & 0xff;
+        if ((initial == 0xc2 || initial == 0xc3) && !item.untag().isIndefinite()) {
+            return item.asBigInteger();
+        }
+        return cborInteger(item);
+    }
+
+    private static void expectMajor(CborSpan item, int major, String what) {
+        if (cborMajor(item) != major) {
+            throw new TxDecodingException("expected " + what + " at " + item.offset());
         }
     }
 

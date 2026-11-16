@@ -1,5 +1,6 @@
 package org.yanoproject.ledger.scripteval.phase2;
 
+import com.bloxbean.cardano.client.common.cbor.CborSpan;
 import com.bloxbean.cardano.client.util.HexUtil;
 import org.junit.jupiter.api.Test;
 import org.yanoproject.api.util.EpochSlotCalc;
@@ -7,7 +8,6 @@ import org.yanoproject.ledger.rules.LedgerFailure;
 import org.yanoproject.ledger.rules.TxValidationOutcome;
 import org.yanoproject.ledger.rules.TxValidationRequest;
 import org.yanoproject.ledger.rules.conway.JavaLedgerValidationEngine;
-import org.yanoproject.ledger.rules.conway.tx.StrictCbor;
 import org.yanoproject.ledger.rules.fixtures.tx.ConwayTxBuilder;
 import org.yanoproject.ledger.rules.fixtures.tx.MutationWorld;
 import org.yanoproject.ledger.rules.fixtures.tx.TxSpec;
@@ -143,7 +143,7 @@ class JulcScriptPhaseEvaluatorTest {
 
     /** The {@code PlutusBinary}: the contents of a CCL script's {@code cborHex} byte string. */
     static byte[] plutusBinary(String cborHex) {
-        return StrictCbor.bytes(StrictCbor.span(HexUtil.decodeHexString(cborHex)));
+        return CborSpan.of(HexUtil.decodeHexString(cborHex)).byteString();
     }
 
     static TxValidationOutcome validate(TxSpec spec) {
