@@ -17,6 +17,7 @@ import org.yanoproject.ledger.rules.view.model.GovActionId;
 
 import java.math.BigInteger;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.List;
@@ -149,13 +150,14 @@ public final class RawTransaction {
      */
     public static RawTransaction parse(byte[] txCbor, Transaction decoded) {
         Objects.requireNonNull(txCbor, "txCbor");
+        byte[] copy = txCbor.clone();
         RawTx accepted;
         try {
-            accepted = HaskellPolicy.forEra(Builder.ERA).transaction(txCbor);
+            accepted = HaskellPolicy.forEra(Builder.ERA).transaction(copy);
         } catch (CborRuntimeException e) {
             throw new TxDecodingException(e.getMessage(), e);
         }
-        return of(accepted, txCbor, decoded);
+        return read(accepted, copy, decoded);
     }
 
     /**
@@ -163,13 +165,22 @@ public final class RawTransaction {
      * rules' records. Once the strict read accepts, the mapping rejects nothing (ADR 0005 J5); the translation below
      * only keeps the engine's outcome a decoding failure should a reader change break that.
      *
-     * @param accepted the strict read's view of {@code txCbor}
+     * @param accepted the strict read's view of {@code txCbor}; its spans are kept, so they share the buffer the strict
+     *                 read was given
      * @param txCbor   the transaction exactly as received (copied)
      * @param decoded  the CCL decoding of the same bytes, kept for structure
+     * @throws IllegalArgumentException if {@code accepted} is not the view of {@code txCbor}
      */
     public static RawTransaction of(RawTx accepted, byte[] txCbor, Transaction decoded) {
         Objects.requireNonNull(accepted, "accepted");
-        Builder b = new Builder(txCbor.clone(), decoded);
+        if (!Arrays.equals(accepted.span().bytes(), txCbor)) {
+            throw new IllegalArgumentException("the accepted view is not of these bytes");
+        }
+        return read(accepted, txCbor.clone(), decoded);
+    }
+
+    private static RawTransaction read(RawTx accepted, byte[] txCbor, Transaction decoded) {
+        Builder b = new Builder(txCbor, decoded);
         try {
             b.read(accepted);
         } catch (CborRuntimeException e) {
