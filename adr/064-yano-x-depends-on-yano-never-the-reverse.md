@@ -21,6 +21,9 @@
   downstream. Wording in #249 that implied plugin-directory installation is superseded.
 - **MD2 — native.** Yano-X stays JVM-only. Yano's native binary has no application-ledger support after
   this change. A downstream native build of the X application is a possible later follow-up.
+- **MD4 — one version per repository (2026-11-16).** Every Yano module, `yano-host-api` included, is
+  published at the Yano project version; every Yano-X module at the Yano-X version. Host compatibility
+  is the code-level `HostApiVersion` contract, not a separate artifact version train (amends ADR-063 D6).
 - **MD3 — embedding.** Yano-X must remain embeddable as a library, together with Yano, in any JVM
   application (for example Spring Boot), without Quarkus (D12).
 
@@ -534,7 +537,7 @@ Yano's resource needs no annotation, because its filter matches by class.
 
 ### D10. X builds against Yano artifacts only
 
-X keeps its `yanoVersion`/`nodeApiVersion`/`hostApiVersion` pins and its repositories: Central,
+X pins one Yano version for every Yano artifact (MD4), and keeps its repositories: Central,
 `repo.bloxbean.org` snapshots, an explicit staging repository, and opt-in Maven Local.
 `gradle/framework-project-resolution.gradle` and the plugin-bundle host-class stripping follow the new
 integrated jar. No X module is consumed by Yano, so `framework-stage` and the X-to-Yano staging scopes
@@ -834,3 +837,5 @@ exception).
     misses JARs without directory entries.
   - D8 (RB-10) → `YanoProducer` produces the single `Yano` bean; `YanoInstanceProducer` was removed,
     and consumers `@Inject Yano`.
+- r6 (2026-11-16): MD4 — one version per repository; `yano-host-api` follows the Yano version (the
+  separate `hostApiVersion` train broke snapshot publishing); D10 pins a single Yano version.

@@ -13,11 +13,10 @@ plugin-catalog and app-ledger smokes.
 
 The run uploads `yano-inputs-<commit>` as an Actions artifact retained for 90
 days. It contains a file Maven repository (`maven/`), the JVM ZIP,
-`yano-inputs.json` (commit, version, Host API version, distribution) and a
+`yano-inputs.json` (commit, version, distribution) and a
 `SHA256SUMS` inventory. Versions are `<base>-<commit prefix>`, so staged
-artifacts never collide with snapshots or releases. The Host API keeps its own
-version (`hostApiVersion`), by default `<major>.<level>.0-<commit prefix>` from
-`HostApiVersion.CURRENT`, for example `1.2.0-<commit prefix>`.
+artifacts never collide with snapshots or releases. Every Yano module, the Host
+API included, is staged at that one version.
 
 A consumer records the run ID and full commit, verifies the manifest and the
 checksum inventory, and points an ordinary Maven repository at `maven/`.

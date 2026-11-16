@@ -19,21 +19,14 @@ if [[ -e "$staged_directory" ]]; then
   echo 'Refusing to overwrite an existing input staging directory' >&2
   exit 1
 fi
-# The default Host API version follows the contract level, HostApiVersion.CURRENT.
-host_api_contract="$(sed -n 's/.*CURRENT = new HostApiVersion(\([0-9][0-9]*\), *\([0-9][0-9]*\)).*/\1.\2/p' \
-  host-api/src/main/java/org/yanoproject/api/host/HostApiVersion.java)"
-[[ "$host_api_contract" =~ ^[0-9]+\.[0-9]+$ ]] || { echo 'Cannot read HostApiVersion.CURRENT' >&2; exit 1; }
-host_api_version="${ORG_GRADLE_PROJECT_hostApiVersion:-$host_api_contract.0-${commit:0:9}}"
-[[ "$host_api_version" =~ ^[0-9A-Za-z.-]+$ && "$host_api_version" != *-SNAPSHOT ]]
 mkdir -p "$staged_directory/maven"
 ./gradlew publishAllPublicationsToStagingRepository :app:yanoDistZip :app:packagedJvmPluginCatalogSmoke \
   :app:packagedJvmAppLedgerSmoke \
-  "-PstagingRepository=$staged_directory/maven" "-Pversion=$staged_version" \
-  "-PhostApiVersion=$host_api_version" -PskipSigning=true --no-parallel
+  "-PstagingRepository=$staged_directory/maven" "-Pversion=$staged_version" -PskipSigning=true --no-parallel
 cp "app/build/distributions/yano-$staged_version.zip" "$staged_directory/"
-jq -n --arg commit "$commit" --arg version "$staged_version" --arg hostApiVersion "$host_api_version" \
+jq -n --arg commit "$commit" --arg version "$staged_version" \
   '{schemaVersion:1,repository:"bloxbean/yano",commit:$commit,version:$version,
-    hostApiVersion:$hostApiVersion,mavenDirectory:"maven",distribution:("yano-"+$version+".zip")}' \
+    mavenDirectory:"maven",distribution:("yano-"+$version+".zip")}' \
   > "$staged_directory/yano-inputs.json"
 (
   cd "$staged_directory"
