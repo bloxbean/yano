@@ -695,21 +695,15 @@ public final class YanoPropertyKeys {
     }
 
     /**
-     * Key names read by the host's own plugin-operations API filter. They keep the historical
-     * {@code yano.app-chain.api.*} names (ADR-064 D1 exception) and carry no application-ledger semantics.
+     * Key name read by the host's own plugin-operations API filter. It keeps the historical
+     * {@code yano.app-chain.api.keys} name (ADR-064 D1 exception) and carries no application-ledger semantics.
      */
     public static final class PluginOperationsApi {
-        /** Opt-in API-key authentication for READ/SUBMIT; PRIVILEGED always requires a full key. */
-        public static final String API_AUTH_ENABLED = "yano.app-chain.api.auth.enabled";
         /**
-         * Comma-separated API keys. An unscoped {@code key} enables privileged
-         * operations; {@code key=topicA|topicB} is submission-topic scoped when
-         * broad API authentication is enabled.
+         * Comma-separated API keys. Only an unscoped {@code key} authorizes the plugin-operations API;
+         * a topic-scoped {@code key=topicA|topicB} entry is rejected there.
          */
         public static final String API_KEYS = "yano.app-chain.api.keys";
-        /** Comma-separated keys authorized only for authenticated-snapshot lifecycle administration. */
-        public static final String SNAPSHOT_ADMIN_API_KEYS =
-                "yano.app-chain.api.snapshot-admin-keys";
 
         private PluginOperationsApi() {
         }

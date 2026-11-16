@@ -85,7 +85,7 @@ console, configuration projection, tests, QA, docs and the integrated product.
 
 - the mode value `yano.mode=app-ledger` and `RuntimeMode.APP_LEDGER`, which now mean a generic no-L1
   host (D7);
-- the three `yano.app-chain.api.*` key names read by Yano's own plugin-operations filter (D8);
+- the `yano.app-chain.api.keys` key name read by Yano's plugin-operations filter (D8);
 - the plain token `app-chain` in docs or paths.
 
 The namespace rule in `AGENTS.md` already reserves `org.yanoproject.x.*`. This ADR adds the dependency
@@ -741,8 +741,8 @@ Evidence is independent of the code under test:
 
 ## Open questions
 
-None blocking. MD1–MD3 settle the earlier Q1–Q3. Q4 (renaming the `yano.app-chain.api.*` key names that
-Yano's plugin-operations filter reads) is deferred to a later ADR; this ADR keeps the names (D1
+None blocking. MD1–MD3 settle the earlier Q1–Q3. Q4 (renaming the `yano.app-chain.api.keys` key name that
+Yano's plugin-operations filter reads) is deferred to a later ADR; this ADR keeps the name (D1
 exception).
 
 ## Related findings (out of scope)
