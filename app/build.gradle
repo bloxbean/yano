@@ -386,7 +386,14 @@ def jvmDistributionManifest = generatedDistributionMetadata.map {
 def nativeDistributionManifest = generatedDistributionMetadata.map {
     it.file('native/yano-distribution-v1.json')
 }
-def aggregateSbom = rootProject.ext.yanoAggregateSbomJson
+// The release SBOM describes what the executable ships: this project's resolved runtime classpath.
+def executableSbom = layout.buildDirectory.file("reports/cyclonedx/yano-${project.version}.cdx.json")
+tasks.named('cyclonedxDirectBom') {
+    componentName = 'yano'
+    projectType = 'application'
+    jsonOutput = executableSbom
+    xmlOutput.convention((RegularFile) null)
+}
 def releaseSbom = layout.buildDirectory.file(
         'generated/distribution-metadata/sbom/yano.cdx.json')
 def releaseLicenseOverrides = rootProject.file(
@@ -421,22 +428,22 @@ tasks.register('generateCoreDistributionManifests') {
 }
 
 tasks.register('normalizeYanoReleaseSbom') {
-    dependsOn rootProject.tasks.named('cyclonedxBom')
+    dependsOn tasks.named('cyclonedxDirectBom')
     group = 'distribution'
     description = 'Normalizes and license-checks the Yano CycloneDX release SBOM.'
-    inputs.file(aggregateSbom)
+    inputs.file(executableSbom)
     inputs.file(rootProject.file('LICENSE'))
     inputs.file(releaseLicenseOverrides)
     outputs.file(releaseSbom)
 
     doLast {
-        def body = new groovy.json.JsonSlurper().parse(aggregateSbom.get().asFile)
+        def body = new groovy.json.JsonSlurper().parse(executableSbom.get().asFile)
         if (body.bomFormat != 'CycloneDX' || body.specVersion != '1.6'
                 || body.metadata?.component?.name != 'yano'
                 || body.metadata.component.version != project.version.toString()
                 || !(body.components instanceof Collection)
                 || body.components.isEmpty()) {
-            throw new GradleException('Yano aggregate SBOM identity is incomplete')
+            throw new GradleException('Yano executable SBOM identity is incomplete')
         }
         body.remove('serialNumber')
         body.metadata.remove('timestamp')

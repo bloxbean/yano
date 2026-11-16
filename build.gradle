@@ -46,8 +46,6 @@ repositories {
     }
 }
 
-def aggregateSbomJson = layout.buildDirectory.file(
-        "reports/cyclonedx/yano-${project.version}.cdx.json")
 allprojects { candidate ->
     candidate.tasks.named('cyclonedxDirectBom') {
         includeConfigs = ['runtimeClasspath']
@@ -55,15 +53,6 @@ allprojects { candidate ->
         includeBuildSystem = false
     }
 }
-tasks.named('cyclonedxBom') {
-    includeBomSerialNumber = false
-    includeBuildSystem = false
-    componentName = 'yano'
-    projectType = 'application'
-    jsonOutput = aggregateSbomJson
-    xmlOutput.convention((org.gradle.api.file.RegularFile) null)
-}
-ext.yanoAggregateSbomJson = aggregateSbomJson
 
 compileJava {
     sourceCompatibility = '25'
