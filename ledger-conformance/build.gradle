@@ -41,6 +41,8 @@ dependencies {
     testImplementation libs.yaci.core
     testImplementation libs.jackson.databind
     testImplementation libs.cardano.client.address
+    // ADR 0005 D5: CCL's CBOR conformance harness, which the cbor-decoding report runs
+    testImplementation libs.cardano.client.ledger.cbor.conformance
     if (withAmaru) {
         testImplementation project(':amaru-validator')
     }

@@ -26,6 +26,7 @@ yaci-events-processor = { module = "com.bloxbean.cardano:yaci-events-processor",
 
 cardano-client-core = { module = "com.bloxbean.cardano:cardano-client-core", version.ref = "cardano-client-lib" }
 cardano-client-address = { module = "com.bloxbean.cardano:cardano-client-address", version.ref = "cardano-client-lib" }
+cardano-client-ledger-cbor-conformance = { module = "com.bloxbean.cardano:cardano-client-ledger-cbor-conformance", version.ref = "cardano-client-lib" }
 cardano-client-common = { module = "com.bloxbean.cardano:cardano-client-common", version.ref = "cardano-client-lib" }
 cardano-client-crypto = { module = "com.bloxbean.cardano:cardano-client-crypto", version.ref = "cardano-client-lib" }
 cardano-client-governance = { module = "com.bloxbean.cardano:cardano-client-governance", version.ref = "cardano-client-lib" }
