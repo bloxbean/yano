@@ -62,7 +62,7 @@ Yano's initial goal is to fill three roles:
 ### Build
 
 ```bash
-./gradlew clean build              # all modules + L1/app-chain core tests
+./gradlew clean build              # all modules + core tests
 ./gradlew fullBuild                # optional extended + crypto + distribution verification
 ./gradlew :app:quarkusBuild        # produce app/build/yano.jar (Quarkus uber-jar)
 ```
@@ -81,7 +81,7 @@ java -jar app/build/yano.jar
 ```
 
 The default profile points at the public Cardano **preprod** network (protocol magic `1`,
-upstream peer `localhost:30000` — adjust in `app/src/main/resources/application.yml` or via
+upstream peer `localhost:30000` — adjust in `app-core/src/main/resources/application.yml` or via
 system properties).
 
 ### Run a local devnet block producer
@@ -206,8 +206,7 @@ For deeper coverage of how to operate and extend Yano, see:
 
 | Doc | What's inside |
 |---|---|
-| **[`docs/appchain/README.md`](docs/appchain/README.md)** | Yano's generic app-chain host, `ordered-log`, proofs, plugin contracts, and L1 anchoring. |
-| **[Yano X](https://github.com/bloxbean/yano-x)** | JVM extensions: additional state machines, capabilities, connectors, products, examples, and tools. |
+| **[Yano X](https://github.com/bloxbean/yano-x)** | Separate product built on Yano: application ledgers (app chains), their state machines, connectors, products, examples, and tools. |
 | **[`app/README.md`](app/README.md)** | Operator's guide — run modes (relay, devnet, native), `start.sh` / `start-devnet.sh`, configuration knobs, REST API reference, profiles, Swagger UI, integration with [yaci-store](https://github.com/bloxbean/yaci-store), and the test tiers (unit / integration / e2e). |
 | **[`app/ARCHITECTURE.md`](app/ARCHITECTURE.md)** | Internal architecture — high-level topology, header/body split sync pipeline, event system, plugin system, module overview, REST API surface, configuration modes, and extension points. |
 | **[`docs/PLUGIN_OPERATIONS.md`](docs/PLUGIN_OPERATIONS.md)** | Plugin catalog validation, operations API authentication, health/metrics exposure, dashboard behavior, and JVM/native deployment notes. |
@@ -225,7 +224,7 @@ and `adr/014-slot-leader-selection-block-production.md` for block production.
   (Yano is the underlying node)
 - **[Cardano Client Lib](https://github.com/bloxbean/cardano-client-lib)** — transaction
   building, address handling, crypto
-- **[Yano X](https://github.com/bloxbean/yano-x)** — JVM extension ecosystem for Yano app chains
+- **[Yano X](https://github.com/bloxbean/yano-x)** — application ledgers (app chains) built on Yano
 
 ---
 

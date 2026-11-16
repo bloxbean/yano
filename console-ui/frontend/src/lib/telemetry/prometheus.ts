@@ -11,13 +11,7 @@ export type QueryId =
   | 'node.mempool-transactions'
   | 'node.mempool-kib'
   | 'node.utxo-lag'
-  | 'node.tx-rate'
-  | 'appchain.tip-rate'
-  | 'appchain.pool'
-  | 'appchain.block-interval-ms'
-  | 'appchain.anchor-lag'
-  | 'appchain.effects-open'
-  | 'appchain.effects-rate';
+  | 'node.tx-rate';
 
 export interface PrometheusSeries {
   labels: Readonly<Record<string, string>>;
@@ -32,23 +26,14 @@ export interface QueryRange {
 
 interface CredentialEnvelope { origin: string; bearer: string; }
 
-const queries: Record<QueryId, (chain?: string) => string> = {
-  health: () => 'up',
-  'node.sync-gap': () => 'max(yano_node_sync_gap_blocks)',
-  'node.peers': () => 'sum by (type) (yano_node_peers_connections)',
-  'node.mempool-transactions': () => 'sum(yano_node_mempool_transactions)',
-  'node.mempool-kib': () => 'sum(yano_node_mempool_bytes) / 1024',
-  'node.utxo-lag': () => 'max(yano_node_utxo_lag_blocks)',
-  'node.tx-rate': () => 'sum by (outcome) (rate(yano_node_tx_diffusion_total[5m]))',
-  'appchain.tip-rate': (chain) => `rate(yano_appchain_blocks_finalized_total${selector(chain)}[5m])`,
-  'appchain.pool': (chain) => `yano_appchain_pool_size${selector(chain)}`,
-  'appchain.block-interval-ms': (chain) =>
-    `1000 * rate(yano_appchain_block_interval_seconds_sum${selector(chain)}[5m]) / `
-    + `clamp_min(rate(yano_appchain_block_interval_seconds_count${selector(chain)}[5m]), 0.000001)`,
-  'appchain.anchor-lag': (chain) => `yano_appchain_anchor_lag_blocks${selector(chain)}`,
-  'appchain.effects-open': (chain) => `yano_appchain_effects_open${selector(chain)}`,
-  'appchain.effects-rate': (chain) =>
-    `sum by (outcome) (rate(yano_appchain_effects_execution_total${selector(chain)}[5m]))`
+const queries: Record<QueryId, string> = {
+  health: 'up',
+  'node.sync-gap': 'max(yano_node_sync_gap_blocks)',
+  'node.peers': 'sum by (type) (yano_node_peers_connections)',
+  'node.mempool-transactions': 'sum(yano_node_mempool_transactions)',
+  'node.mempool-kib': 'sum(yano_node_mempool_bytes) / 1024',
+  'node.utxo-lag': 'max(yano_node_utxo_lag_blocks)',
+  'node.tx-rate': 'sum by (outcome) (rate(yano_node_tx_diffusion_total[5m]))'
 };
 
 export function normalizeMetricsBase(value: string,
@@ -64,8 +49,8 @@ export function normalizeMetricsBase(value: string,
   return parsed.origin;
 }
 
-export function queryExpression(id: QueryId, chain?: string): string {
-  return queries[id](chain);
+export function queryExpression(id: QueryId): string {
+  return queries[id];
 }
 
 export function resolveMetricsBase(storage: Storage = localStorage): string {
@@ -122,23 +107,22 @@ export class PrometheusHistoryProvider {
   }
 
   async health(signal?: AbortSignal): Promise<boolean> {
-    const series = await this.instant('health', undefined, signal);
+    const series = await this.instant('health', signal);
     return series.some((entry) => entry.points.some((point) => point[1] === 1));
   }
 
-  async instant(id: QueryId, chain?: string, signal?: AbortSignal): Promise<PrometheusSeries[]> {
-    return this.request('/api/v1/query', { query: queryExpression(id, chain) }, signal);
+  async instant(id: QueryId, signal?: AbortSignal): Promise<PrometheusSeries[]> {
+    return this.request('/api/v1/query', { query: queryExpression(id) }, signal);
   }
 
-  async range(id: QueryId, range: QueryRange, chain?: string,
-              signal?: AbortSignal): Promise<PrometheusSeries[]> {
+  async range(id: QueryId, range: QueryRange, signal?: AbortSignal): Promise<PrometheusSeries[]> {
     if (!Number.isFinite(range.start) || !Number.isFinite(range.end) || !Number.isFinite(range.step)
       || range.start <= 0 || range.end <= range.start || range.end - range.start > 90 * 86_400
       || range.step < 1 || Math.ceil((range.end - range.start) / range.step) > MAX_POINTS) {
       throw new Error('Metrics range is outside the supported bounds');
     }
     return this.request('/api/v1/query_range', {
-      query: queryExpression(id, chain), start: String(range.start), end: String(range.end), step: String(range.step)
+      query: queryExpression(id), start: String(range.start), end: String(range.end), step: String(range.step)
     }, signal);
   }
 
@@ -160,12 +144,6 @@ export class PrometheusHistoryProvider {
       signal?.removeEventListener('abort', forwardAbort);
     }
   }
-}
-
-function selector(chain?: string): string {
-  if (!chain) throw new Error('A known app-chain id is required for this query');
-  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(chain)) throw new Error('Invalid app-chain id');
-  return `{chain="${chain}"}`;
 }
 
 async function boundedBody(response: Response): Promise<unknown> {

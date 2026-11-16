@@ -13,7 +13,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class BundleManifestParserTest {
     private static final String ID = "com.example.product-passport";
     private static final String RESOURCE = "META-INF/yano/plugins/" + ID + ".json";
-    private static final BundleManifestParser PARSER = new BundleManifestParser();
+    private static final BundleManifestParser PARSER = new BundleManifestParser(TestKinds.REGISTRY);
 
     @Test
     void parsesAFullManifest() {
@@ -32,7 +32,7 @@ class BundleManifestParserTest {
                   ],
                   "contributions": [
                     {
-                      "kind": "app-state-machine",
+                      "kind": "fixture-sink",
                       "name": "product-passport",
                       "provider": "com.example.passport.PassportStateMachineProvider"
                     }
@@ -47,7 +47,7 @@ class BundleManifestParserTest {
         assertThat(manifest.dependencies()).containsExactly(new BundleDependency(
                 "com.example.shared-claims", SemVersion.parse("1.0.0"), SemVersion.parse("2.0.0")));
         assertThat(manifest.contributions()).containsExactly(new BundleContribution(
-                ContributionKind.APP_STATE_MACHINE,
+                TestKinds.SINK,
                 "product-passport",
                 "com.example.passport.PassportStateMachineProvider"));
         assertThat(manifest.resourcePath()).isEqualTo(RESOURCE);
@@ -70,7 +70,7 @@ class BundleManifestParserTest {
                 1, ID, SemVersion.parse("1.0.0"), new YanoApiRange(1, 1, 1), dependencies, contributions);
         dependencies.add(new BundleDependency("com.example.other", null, null));
         contributions.add(new BundleContribution(
-                ContributionKind.FINALIZED_SINK, "sink", "com.example.SinkProvider"));
+                TestKinds.SINK, "sink", "com.example.SinkProvider"));
 
         assertThat(manifest.dependencies()).isEmpty();
         assertThat(manifest.contributions()).isEmpty();
@@ -169,26 +169,23 @@ class BundleManifestParserTest {
         assertInvalid(withContribution(template.formatted(
                 "unknown", "valid", "com.example.Provider")), "contribution", "not supported");
         assertInvalid(withContribution(template.formatted(
-                "finalized-sink", " leading", "com.example.Provider")), "contributions[].name", "selector");
+                "fixture-sink", " leading", "com.example.Provider")), "contributions[].name", "selector");
         assertInvalid(withContribution(template.formatted(
-                        "finalized-sink", "com.example.kafka", "com.example.Provider")),
+                        "fixture-sink", "com.example.kafka", "com.example.Provider")),
                 "contributions[].name", "must not contain '.'");
         assertInvalid(withContribution(template.formatted(
-                        "effect-executor", "com.example.cardano", "com.example.Provider")),
-                "contributions[].name", "must not contain '.'");
-        assertInvalid(withContribution(template.formatted(
-                        "signer-provider", "vault:prod", "com.example.Provider")),
+                        "fixture-sink", "vault:prod", "com.example.Provider")),
                 "contributions[].name", "must not contain ':'");
         assertInvalid(withContribution(template.formatted(
-                        "finalized-sink", "valid", "not-qualified")),
+                        "fixture-sink", "valid", "not-qualified")),
                 "contributions[].provider", "fully qualified");
         assertInvalid(withContribution(template.formatted(
-                        "finalized-sink", "valid", "com.example.Providér")),
+                        "fixture-sink", "valid", "com.example.Providér")),
                 "contributions[].provider", "fully qualified");
         assertThat(new BundleContribution(
-                ContributionKind.FINALIZED_SINK, "valid", "com.example.Outer$Provider").provider())
+                TestKinds.SINK, "valid", "com.example.Outer$Provider").provider())
                 .isEqualTo("com.example.Outer$Provider");
-        assertThat(new BundleContribution(ContributionKind.APP_STATE_MACHINE,
+        assertThat(new BundleContribution(ContributionKind.NODE_PLUGIN,
                 "com.example:query", "com.example.Provider").name())
                 .isEqualTo("com.example:query");
     }
@@ -206,8 +203,8 @@ class BundleManifestParserTest {
 
         String duplicateContributions = """
                 , "contributions": [
-                  {"kind": "finalized-sink", "name": "kafka", "provider": "com.example.One"},
-                  {"kind": "finalized-sink", "name": "kafka", "provider": "com.example.Two"}
+                  {"kind": "fixture-sink", "name": "kafka", "provider": "com.example.One"},
+                  {"kind": "fixture-sink", "name": "kafka", "provider": "com.example.Two"}
                 ]
                 """;
         assertInvalid(minimalManifest().replace("\n}", duplicateContributions + "\n}"),
@@ -215,51 +212,51 @@ class BundleManifestParserTest {
     }
 
     @Test
-    void domainApiIsManifestedOnceAndOwnedByTheContainingBundleId() {
+    void bundleOwnedSingletonKindIsManifestedOnceAndOwnedByTheContainingBundleId() {
         String valid = withContribution("""
                 , "contributions": [{
-                  "kind": "domain-api",
+                  "kind": "fixture-domain",
                   "name": "com.example.product-passport",
                   "provider": "com.example.passport.PassportDomainApiProvider"
                 }]
                 """);
 
         assertThat(parse(valid).contributions()).containsExactly(new BundleContribution(
-                ContributionKind.DOMAIN_API,
+                TestKinds.DOMAIN,
                 ID,
                 "com.example.passport.PassportDomainApiProvider"));
-        assertThat(ContributionKind.DOMAIN_API.manifestRequired()).isTrue();
-        assertThat(ContributionKind.DOMAIN_API.serviceType().getName())
-                .isEqualTo("org.yanoproject.x.framework.api.plugin.domain.DomainApiProvider");
+        assertThat(TestKinds.DOMAIN.manifestRequired()).isTrue();
+        assertThat(TestKinds.DOMAIN.serviceInterface())
+                .isEqualTo("org.yanoproject.catalog.fixture.FixtureDomainProvider");
 
         assertInvalid(valid.replace(
                         "\"name\": \"com.example.product-passport\"",
                         "\"name\": \"com.example.other\""),
-                "domain-api", "must equal the containing bundle id");
+                "fixture-domain", "must equal the containing bundle id");
 
         String duplicate = minimalManifest().replace("\n}", """
                 , "contributions": [
                   {
-                    "kind": "domain-api",
+                    "kind": "fixture-domain",
                     "name": "com.example.product-passport",
                     "provider": "com.example.passport.FirstDomainApiProvider"
                   },
                   {
-                    "kind": "domain-api",
+                    "kind": "fixture-domain",
                     "name": "com.example.product-passport",
                     "provider": "com.example.passport.SecondDomainApiProvider"
                   }
                 ]
                 }
                 """);
-        assertInvalid(duplicate, "contributions", "at most one domain-api");
+        assertInvalid(duplicate, "contributions", "at most 1 fixture-domain contributions");
     }
 
     @Test
-    void domainApiSelectorUsesTheFullBundleIdGrammarAndLength() {
+    void bundleOwnedSelectorUsesTheFullBundleIdGrammarAndLength() {
         String longId = "com." + "a".repeat(63) + "." + "b".repeat(63) + ".example";
         BundleContribution contribution = new BundleContribution(
-                ContributionKind.DOMAIN_API, longId, "com.example.DomainProvider");
+                TestKinds.DOMAIN, longId, "com.example.DomainProvider");
         BundleManifest manifest = new BundleManifest(
                 1,
                 longId,
@@ -271,7 +268,7 @@ class BundleManifestParserTest {
         assertThat(longId.length()).isGreaterThan(CatalogValidation.MAX_NAME_LENGTH);
         assertThat(manifest.contributions()).containsExactly(contribution);
         assertThatThrownBy(() -> new BundleContribution(
-                ContributionKind.DOMAIN_API, "domain-api", "com.example.DomainProvider"))
+                TestKinds.DOMAIN, "fixture-domain", "com.example.DomainProvider"))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("reverse-DNS");
     }
@@ -305,9 +302,9 @@ class BundleManifestParserTest {
                         "com.example.passport.PassportMetricsProvider"));
         assertThat(ContributionKind.HEALTH.manifestRequired()).isTrue();
         assertThat(ContributionKind.METRICS.manifestRequired()).isTrue();
-        assertThat(ContributionKind.HEALTH.serviceType().getName())
+        assertThat(ContributionKind.HEALTH.serviceInterface())
                 .isEqualTo("org.yanoproject.api.plugin.operations.PluginHealthProvider");
-        assertThat(ContributionKind.METRICS.serviceType().getName())
+        assertThat(ContributionKind.METRICS.serviceInterface())
                 .isEqualTo("org.yanoproject.api.plugin.operations.PluginMetricsProvider");
 
         assertInvalid(valid.replace(
@@ -328,7 +325,7 @@ class BundleManifestParserTest {
                     "provider": "com.example.passport.SecondHealthProvider"
                   }
                 """);
-        assertInvalid(duplicateHealth, "contributions", "at most one health provider");
+        assertInvalid(duplicateHealth, "contributions", "at most 1 health contributions");
     }
 
     private static BundleManifest parse(String json) {

@@ -20,8 +20,8 @@ class PluginIndexGeneratorTest {
     @TempDir
     Path temporary;
 
-    private final PluginIndexGenerator generator = new PluginIndexGenerator();
-    private final PluginIndexCodec codec = new PluginIndexCodec();
+    private final PluginIndexGenerator generator = new PluginIndexGenerator(TestKinds.REGISTRY);
+    private final PluginIndexCodec codec = new PluginIndexCodec(TestKinds.REGISTRY);
 
     @Test
     void retainsTwoBundlesAndIsIndependentOfArtifactOrder() throws Exception {
@@ -77,7 +77,7 @@ class PluginIndexGeneratorTest {
 
         Path legacy = Files.createDirectories(temporary.resolve("legacy"));
         Path service = legacy.resolve("META-INF/services/"
-                + ContributionKind.L1_OBSERVER.serviceType().getName());
+                + TestKinds.SINK.serviceInterface());
         Files.createDirectories(service.getParent());
         Files.writeString(service, "com.example.ObserverProvider\n");
         writeProviderClass(legacy, "com.example.ObserverProvider");
@@ -210,7 +210,7 @@ class PluginIndexGeneratorTest {
     void strictClosureModeRejectsLegacyProvidersWithoutAClosureIdentity() throws Exception {
         Path legacy = Files.createDirectories(temporary.resolve("strict-legacy"));
         Path service = legacy.resolve("META-INF/services/"
-                + ContributionKind.L1_OBSERVER.serviceType().getName());
+                + TestKinds.SINK.serviceInterface());
         Files.createDirectories(service.getParent());
         Files.writeString(service, "com.example.LegacyObserver\n");
         writeProviderClass(legacy, "com.example.LegacyObserver");
@@ -275,13 +275,14 @@ class PluginIndexGeneratorTest {
         PluginIndexGenerator.main(new String[]{
                 "--output", inlineOutput.toString(),
                 "--bundle-closure", "com.example.argsfile", bundle.toString(),
-                "--", bundle.toString()});
+                "--", bundle.toString(), TestKinds.HOST_ARTIFACT.toString()});
 
         Path argumentsFile = temporary.resolve("arguments.txt");
         Files.writeString(argumentsFile, String.join("\n", List.of(
                 "--output", fileOutput.toString(),
                 "--bundle-closure", "com.example.argsfile", bundle.toString(),
-                "--", bundle.toString())) + "\n", StandardCharsets.UTF_8);
+                "--", bundle.toString(), TestKinds.HOST_ARTIFACT.toString())) + "\n",
+                StandardCharsets.UTF_8);
 
         PluginIndexGenerator.main(new String[]{"--args-file", argumentsFile.toString()});
 
@@ -333,14 +334,14 @@ class PluginIndexGeneratorTest {
                   "yanoApi":{"min":1,"max":1,"minLevel":1},
                   "dependencies":[],
                   "contributions":[{
-                    "kind":"finalized-sink",
+                    "kind":"fixture-sink",
                     "name":"%s",
                     "provider":"%s"
                   }]
                 }
                 """.formatted(id, name, provider), StandardCharsets.UTF_8);
         Path service = root.resolve("META-INF/services/"
-                + ContributionKind.FINALIZED_SINK.serviceType().getName());
+                + TestKinds.SINK.serviceInterface());
         Files.createDirectories(service.getParent());
         Files.writeString(service, provider + "\n", StandardCharsets.UTF_8);
         writeProviderClass(root, provider);

@@ -54,7 +54,10 @@ class PluginOperationsDashboardPageTest {
     void existingDashboardsLinkToPluginOperations() {
         given().when().get("/ui/status/index.html").then().statusCode(200)
                 .body(Matchers.containsString("href=\"../plugins/\""));
-        given().when().get("/ui/app-chain/index.html").then().statusCode(200)
-                .body(Matchers.containsString("href=\"../plugins/\""));
+    }
+
+    @Test
+    void consoleServesNothingUnderTheAppChainPath() {
+        given().when().get("/ui/app-chain/index.html").then().statusCode(404);
     }
 }

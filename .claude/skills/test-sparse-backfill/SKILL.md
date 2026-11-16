@@ -222,7 +222,7 @@ disable UTXOs to make it pass, and never report it as PASS.
 
 ## Isolation and cleanup
 
-- Per case: its own genesis copy, chainstate, history archive, app-chain store, Haskell
+- Per case: its own genesis copy, chainstate, history archive, Haskell
   database + socket + config + topology, logs, and probed ports (never 7070 / 13337 /
   3002 / 32000 / 12788 / 12798).
 - Only PIDs this run started are ever signalled — recorded in `<run-dir>/started-pids`, no

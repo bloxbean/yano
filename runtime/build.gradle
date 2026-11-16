@@ -2,11 +2,6 @@ dependencies {
     api project(':node-api')
     api project(':cardano-api')
     api project(':host-api')
-    api "org.yanoproject.x:yano-x-appchain-cardano:${providers.gradleProperty('appLedgerFrameworkVersion').get()}"
-    // Compile the embedded framework's service keys; its selected root supplies
-    // the adapter at runtime, so the host does not pin a second runtime copy.
-    compileOnly "org.yanoproject.x:yano-x-appchain-host-adapter:${providers.gradleProperty('appLedgerFrameworkVersion').get()}"
-    implementation project(':appchain-config')
     api project(':plugin-catalog')
     api project(':consensus')
     api project(':p2p')
@@ -25,33 +20,22 @@ dependencies {
 
     implementation libs.cardano.client.core
     implementation libs.cardano.client.crypto.ext
-    // Retained consumer regression tests exercise X-owned storage implementations.
-    testImplementation "org.yanoproject.x:yano-x-appchain-core:${providers.gradleProperty('appLedgerFrameworkVersion').get()}:test-fixtures"
-    testImplementation libs.cardano.client.mpf
-    testImplementation libs.cardano.client.mpf.rocksdb
-    testImplementation libs.cardano.client.jmt
     api project(':ledger-rules')
     api project(':ledger-state')
     implementation libs.jackson.databind
-
-    // Host-backed transaction builder still uses QuickTx directly.
-    implementation libs.cardano.client.quicktx
 
     testImplementation libs.project.reactor.test
     testImplementation project(':script-evaluators')
     // ADR-056 Phase 6a: the mempool gates validate real Conway transactions with the java engine
     testImplementation testFixtures(project(':ledger-rules'))
     testImplementation libs.netty
-    // ADR app-layer/039 V6: the showcase verifies topic-policy proofs offline
-    integrationTestImplementation project(':appchain-proof-verifier')
 
     // Generate @DomainEventListener bindings at build time
     annotationProcessor libs.yaci.events.processor
 }
 
-// Since ADR-025.2 Phase E the stdlib jar registers a domain-api ServiceLoader
-// provider, and that contribution kind requires an owning bundle manifest
-// from an embedded aggregate index. Generate the index over the test runtime
+// Manifest-required contribution kinds need an owning bundle manifest from an
+// embedded aggregate index. Generate the index over the test runtime
 // classpath (dependency jars plus this module's own test providers, merged
 // into one artifact) so catalog-opening tests see the same
 // authoritative-input shape as packaged runtimes.
@@ -195,4 +179,3 @@ tasks.register('verifyWalletHistory', JavaExec) {
             providers.gradleProperty('walletVerifyOutput').getOrElse('')
 }
 
-apply from: rootProject.file('qa/app-ledger/artifact-verification.gradle')

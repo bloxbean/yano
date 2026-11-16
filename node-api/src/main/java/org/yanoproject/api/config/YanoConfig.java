@@ -17,8 +17,6 @@ import java.util.Objects;
 @Builder(toBuilder = true)
 public class YanoConfig implements NodeConfig {
 
-    public static final String DEFAULT_APP_CHAIN_STORAGE_PATH = "appchain-chainstate";
-
     @Builder.Default
     private RuntimeMode mode = RuntimeMode.CARDANO;
 
@@ -36,8 +34,6 @@ public class YanoConfig implements NodeConfig {
     // Storage configuration
     private boolean useRocksDB;
     private String rocksDBPath;
-    @Builder.Default
-    private String appChainStoragePath = DEFAULT_APP_CHAIN_STORAGE_PATH;
 
     // Sync configuration
     private long fullSyncThreshold; // If behind by more than this many slots, do full sync
@@ -239,12 +235,34 @@ public class YanoConfig implements NodeConfig {
                         .toList()
                         : null)
                 .selection(source.getSelection() != null ? source.getSelection().toBuilder().build() : null)
-                .validation(source.getValidation() != null ? source.getValidation().toBuilder().build() : null)
+                .validation(copyValidation(source.getValidation()))
                 .sync(source.getSync() != null ? source.getSync().toBuilder().build() : null)
                 .failover(source.getFailover() != null ? source.getFailover().toBuilder().build() : null)
                 .tx(source.getTx() != null ? source.getTx().toBuilder().build() : null)
                 .governor(source.getGovernor() != null ? source.getGovernor().toBuilder().build() : null)
-                .discovery(source.getDiscovery() != null ? source.getDiscovery().toBuilder().build() : null)
+                .discovery(copyDiscovery(source.getDiscovery()))
+                .build();
+    }
+
+    private static UpstreamValidationConfig copyValidation(UpstreamValidationConfig source) {
+        if (source == null) {
+            return null;
+        }
+        return source.toBuilder()
+                .start(source.getStart() != null ? source.getStart().toBuilder().build() : null)
+                .build();
+    }
+
+    private static UpstreamDiscoveryConfig copyDiscovery(UpstreamDiscoveryConfig source) {
+        if (source == null) {
+            return null;
+        }
+        return source.toBuilder()
+                .seeds(copyStrings(source.getSeeds()))
+                .peerSnapshotUrls(copyStrings(source.getPeerSnapshotUrls()))
+                .peerSnapshotFiles(copyStrings(source.getPeerSnapshotFiles()))
+                .allowlist(copyStrings(source.getAllowlist()))
+                .denylist(copyStrings(source.getDenylist()))
                 .build();
     }
 

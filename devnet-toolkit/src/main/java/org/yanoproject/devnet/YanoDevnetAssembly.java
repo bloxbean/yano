@@ -1,11 +1,5 @@
 package org.yanoproject.devnet;
 
-import org.yanoproject.x.framework.api.appchain.AppChainGateway;
-import org.yanoproject.x.framework.api.appchain.AppChainGateways;
-import org.yanoproject.x.framework.api.plugin.domain.DomainApiGateway;
-import org.yanoproject.x.framework.api.plugin.domain.LocalReadModelHost;
-
-
 import org.yanoproject.api.ChainQuery;
 import org.yanoproject.api.DevnetControl;
 import org.yanoproject.api.LedgerQuery;
@@ -240,24 +234,8 @@ public final class YanoDevnetAssembly {
         }
 
         @Override
-        public Optional<AppChainGateway> appChain() {
-            return delegate.appChain();
-        }
-
-        @Override
-        public AppChainGateways appChains() {
-            return delegate.appChains();
-        }
-
-        @Override
-        public DomainApiGateway domainApis() {
-            return delegate.domainApis();
-        }
-
-        @Override
-        public Optional<LocalReadModelHost>
-                localReadModels() {
-            return delegate.localReadModels();
+        public <T> Optional<T> service(String key, Class<T> type) {
+            return delegate.service(key, type);
         }
 
         @Override

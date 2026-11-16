@@ -12,52 +12,6 @@ import com.bloxbean.cardano.yaci.events.api.PublishOptions;
 import com.bloxbean.cardano.yaci.events.api.SubscriptionHandle;
 import com.bloxbean.cardano.yaci.events.api.SubscriptionOptions;
 import com.bloxbean.cardano.yaci.events.impl.NoopEventBus;
-import org.yanoproject.x.framework.api.appchain.AppBlock;
-import org.yanoproject.x.framework.api.appchain.AppBlockExecutionContext;
-import org.yanoproject.x.framework.api.appchain.AppChainInfo;
-import org.yanoproject.x.framework.api.appchain.AppQueryContext;
-import org.yanoproject.x.framework.api.appchain.AppStateMachine;
-import org.yanoproject.x.framework.api.appchain.AppStateMachineContext;
-import org.yanoproject.x.framework.api.appchain.AppStateMachineProvider;
-import org.yanoproject.x.framework.api.appchain.AppStateReader;
-import org.yanoproject.x.framework.api.appchain.AppStateWriter;
-import org.yanoproject.x.framework.api.appchain.codec.MessageCodec;
-import org.yanoproject.x.framework.api.appchain.transition.CommandDescriptor;
-import org.yanoproject.x.framework.api.appchain.transition.ConfigurationDescriptor;
-import org.yanoproject.x.framework.api.appchain.transition.EventDescriptor;
-import org.yanoproject.x.framework.api.appchain.transition.OrderedLogKernel;
-import org.yanoproject.x.framework.api.appchain.transition.RuleFact;
-import org.yanoproject.x.framework.api.appchain.transition.RuleValueView;
-import org.yanoproject.x.framework.api.appchain.transition.TransitionContext;
-import org.yanoproject.x.framework.api.appchain.transition.TransitionDecision;
-import org.yanoproject.x.framework.api.appchain.transition.TransitionKernel;
-import org.yanoproject.x.framework.api.appchain.transition.TransitionWorkBudget;
-import org.yanoproject.x.framework.api.appchain.transition.TransitionWorkReference;
-import org.yanoproject.x.framework.api.appchain.transition.TransitionWorkRequest;
-import org.yanoproject.x.framework.api.appchain.effects.AppEffectEmitter;
-import org.yanoproject.x.framework.api.appchain.effects.AppEffectExecutor;
-import org.yanoproject.x.framework.cardano.api.effects.AppEffectExecutorFactory;
-import org.yanoproject.x.framework.api.appchain.effects.EffectExecution;
-import org.yanoproject.x.framework.api.appchain.effects.EffectExecutionContext;
-import org.yanoproject.x.framework.api.appchain.effects.EffectExecutorOperationalSnapshot;
-import org.yanoproject.x.framework.api.appchain.effects.EffectResult;
-import org.yanoproject.x.framework.api.appchain.effects.PendingEffect;
-import org.yanoproject.x.framework.api.appchain.l1view.L1Observation;
-import org.yanoproject.x.framework.api.appchain.l1view.L1Observer;
-import org.yanoproject.x.framework.api.appchain.l1view.L1ObserverProvider;
-import org.yanoproject.x.framework.api.appchain.sequencer.SequencerContext;
-import org.yanoproject.x.framework.api.appchain.sequencer.SequencerMode;
-import org.yanoproject.x.framework.api.appchain.sequencer.SequencerModeProvider;
-import org.yanoproject.x.framework.api.appchain.signer.SignerProvider;
-import org.yanoproject.x.framework.api.appchain.signer.SignerProviderFactory;
-import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSink;
-import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSinkFactory;
-import org.yanoproject.x.framework.api.appchain.snapshot.AuthenticatedSnapshotSeriesDescriptorV1;
-import org.yanoproject.x.framework.api.appchain.snapshot.AuthenticatedSnapshotSourceCommitmentV1;
-import org.yanoproject.x.framework.api.appchain.snapshot.SnapshotDescriptorDraftV1;
-import org.yanoproject.x.framework.api.appchain.snapshot.SnapshotEntry;
-import org.yanoproject.x.framework.api.appchain.snapshot.SnapshotSourceBoundary;
-import org.yanoproject.x.framework.api.appchain.state.StateCommitmentProfiles;
 import org.yanoproject.api.config.PluginsOptions;
 import org.yanoproject.api.plugin.NodePlugin;
 import org.yanoproject.api.plugin.PluginActivationException;
@@ -68,6 +22,9 @@ import org.yanoproject.api.plugin.UtxoFilterContext;
 import org.yanoproject.catalog.BundleDependency;
 import org.yanoproject.catalog.BundleManifest;
 import org.yanoproject.catalog.ContributionKind;
+import org.yanoproject.runtime.plugins.fixture.FixtureBinding;
+import org.yanoproject.runtime.plugins.fixture.FixtureProduct;
+import org.yanoproject.runtime.plugins.fixture.FixtureProvider;
 import org.yanoproject.catalog.SemVersion;
 import org.yanoproject.catalog.YanoApiRange;
 import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
@@ -100,7 +57,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.catchThrowable;
 
 class PluginTcclBoundaryTest {
-
+    private static final FixtureBinding FIXTURE_BINDING = new FixtureBinding();
     @Test
     void productReservationsUseWeakIdentityAndPruneUnreachableRuntimeProducts()
             throws Exception {
@@ -148,165 +105,6 @@ class PluginTcclBoundaryTest {
     }
 
     @Test
-    void providerFactoriesAndEveryReturnedSpiCallbackUsePluginTcclAndRestoreCaller()
-            throws Exception {
-        ClassLoader original = Thread.currentThread().getContextClassLoader();
-        ClassLoader caller = new MarkerClassLoader(original);
-        ClassLoader plugin = new MarkerClassLoader(original);
-        ContextProbe probe = new ContextProbe(plugin);
-
-        AssertingStateMachineProvider machines = new AssertingStateMachineProvider(probe);
-        AssertingSequencerProvider sequencers = new AssertingSequencerProvider(probe);
-        AssertingObserverProvider observers = new AssertingObserverProvider(probe);
-        AssertingSignerFactory signers = new AssertingSignerFactory(probe);
-        AssertingExecutorFactory executors = new AssertingExecutorFactory(probe);
-        AssertingSinkFactory sinks = new AssertingSinkFactory(probe);
-        List<CatalogPluginProviderRegistry.Entry> entries = List.of(
-                entry("machine-bundle", ContributionKind.APP_STATE_MACHINE,
-                        "machine", machines, probe),
-                entry("sequencer-bundle", ContributionKind.SEQUENCER_MODE,
-                        "sequencer", sequencers, probe),
-                entry("observer-bundle", ContributionKind.L1_OBSERVER,
-                        "observer", observers, probe),
-                entry("signer-bundle", ContributionKind.SIGNER_PROVIDER,
-                        "signer", signers, probe),
-                entry("executor-bundle", ContributionKind.EFFECT_EXECUTOR,
-                        "executor", executors, probe),
-                entry("sink-bundle", ContributionKind.FINALIZED_SINK,
-                        "sink", sinks, probe));
-        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(
-                entries, entries.stream().map(CatalogPluginProviderRegistry.Entry::bundleId).toList(),
-                List.of(), plugin);
-
-        Thread.currentThread().setContextClassLoader(caller);
-        try {
-            AppStateMachineProvider machineProvider = registry.require(
-                    AppStateMachineProvider.class, "machine");
-            assertCaller(caller);
-            assertThat(machineProvider.id()).isEqualTo("machine");
-            AppStateMachine firstMachine = machineProvider.create();
-            AppStateMachine secondMachine = machineProvider.create(null);
-            assertThat(secondMachine).isNotSameAs(firstMachine);
-            firstMachine.id();
-            exerciseKernel(firstMachine.transitionKernel().orElseThrow());
-            assertCaller(caller);
-            firstMachine.init(null, null);
-            firstMachine.validate(null);
-            firstMachine.validateForBlock(null, 1, null);
-            assertThat(firstMachine.validatePrivilegedSystemSubmission(
-                    "~governance/profile", new byte[]{1}).isAccepted()).isTrue();
-            Map<String, Object> machineStatus = firstMachine.operationalStatus();
-            assertThat(machineStatus).containsEntry("profile", "ready");
-            assertThatThrownBy(() -> machineStatus.put("mutate", true))
-                    .isInstanceOf(UnsupportedOperationException.class);
-            List<AuthenticatedSnapshotSeriesDescriptorV1> snapshotSeries =
-                    firstMachine.authenticatedSnapshotSeries();
-            assertThat(snapshotSeries)
-                    .extracting(AuthenticatedSnapshotSeriesDescriptorV1::seriesId)
-                    .containsExactly("history");
-            AuthenticatedSnapshotSourceCommitmentV1 source = firstMachine
-                    .authenticatedSnapshotSourceCommitments().getFirst();
-            assertThat(source.seriesId()).isEqualTo("history");
-            assertThat(source.algorithm()).isEqualTo("test");
-            assertThat(source.wireVersion()).isEqualTo("test-v1");
-            assertThat(source.compatibilityId()).isEqualTo("test@test-v1");
-            byte[] accumulator = source.initial(new SnapshotDescriptorDraftV1(
-                    snapshotSeries.getFirst(), 0, "history-0",
-                    new SnapshotSourceBoundary.AppHeight(0), 0, 0, 0,
-                    new byte[32], 0, 0));
-            assertThat(source.append(accumulator, 0, List.of())).containsExactly(2);
-            assertThat(accumulator).containsExactly(1);
-            assertThat(source.finish(accumulator, 0, 0)).containsExactly(3);
-            firstMachine.apply(null, null, null);
-            firstMachine.onEffectResult(null, null, null, null);
-            assertThatThrownBy(() -> firstMachine.query(
-                    "failure", new byte[0], (AppQueryContext) null))
-                    .isInstanceOf(IllegalStateException.class)
-                    .hasMessage("expected query failure");
-            assertCaller(caller);
-
-            SequencerModeProvider sequencerProvider = registry.require(
-                    SequencerModeProvider.class, "sequencer");
-            sequencerProvider.id();
-            SequencerMode sequencer = sequencerProvider.create(null);
-            sequencer.id();
-            sequencer.init(null);
-            sequencer.shouldProposeNow(1);
-            sequencer.checkProposal(new byte[0], 1);
-            Map<String, Object> sequencerStatus = sequencer.status();
-            assertThat(sequencerStatus).containsEntry("mode", "ready");
-            assertThatThrownBy(() -> sequencerStatus.put("mutate", true))
-                    .isInstanceOf(UnsupportedOperationException.class);
-            assertCaller(caller);
-
-            L1ObserverProvider observerProvider = registry.require(
-                    L1ObserverProvider.class, "observer");
-            observerProvider.type();
-            L1Observer observer = observerProvider.create("instance", Map.of());
-            observer.observerId();
-            List<L1Observation> observations = observer.observe(1, new byte[32], null);
-            assertThat(observations).singleElement()
-                    .satisfies(observation -> assertThat(observation.observerId())
-                            .isEqualTo("instance"));
-            assertThatThrownBy(() -> observations.add(observations.getFirst()))
-                    .isInstanceOf(UnsupportedOperationException.class);
-            Map<String, Object> observerStatus = observer.status();
-            assertThat(observerStatus).containsEntry("observer", "ready");
-            assertThatThrownBy(() -> observerStatus.put("mutate", true))
-                    .isInstanceOf(UnsupportedOperationException.class);
-            assertCaller(caller);
-
-            SignerProviderFactory signerFactory = registry.require(
-                    SignerProviderFactory.class, "signer");
-            signerFactory.scheme();
-            SignerProvider signer = signerFactory.create("key");
-            signer.sign(new byte[0]);
-            signer.publicKey();
-            signer.publicKeyHex();
-            assertCaller(caller);
-
-            AppEffectExecutorFactory executorFactory = registry.require(
-                    AppEffectExecutorFactory.class, "executor");
-            executorFactory.scheme();
-            List<AppEffectExecutor> executorProducts = executorFactory.create("chain", Map.of());
-            assertThat(executorProducts).hasSize(2);
-            assertThat(executorProducts.get(1)).isSameAs(executorProducts.getFirst());
-            AppEffectExecutor executor = executorProducts.getFirst();
-            executor.id();
-            assertThat(executor.effectTypes()).containsExactly("effect");
-            assertThat(executor.operationalSnapshot().readiness())
-                    .isEqualTo(EffectExecutorOperationalSnapshot.Readiness.READY);
-            executor.supports("effect");
-            executor.execute(null, null);
-            executor.close();
-            assertCaller(caller);
-
-            FinalizedStreamSinkFactory sinkFactory = registry.require(
-                    FinalizedStreamSinkFactory.class, "sink");
-            sinkFactory.scheme();
-            List<FinalizedStreamSink> sinkProducts = sinkFactory.create("chain", Map.of());
-            assertThat(sinkProducts).hasSize(2);
-            assertThat(sinkProducts.get(1)).isSameAs(sinkProducts.getFirst());
-            FinalizedStreamSink sink = sinkProducts.getFirst();
-            sink.id();
-            sink.legacyCursorKey();
-            assertThatThrownBy(() -> sink.deliver(null))
-                    .isInstanceOf(IOException.class)
-                    .hasMessage("expected delivery failure");
-            assertCaller(caller);
-            sink.close();
-
-            registry.close();
-            assertCaller(caller);
-            assertThat(sinks.closeCalls).hasValue(1);
-            assertThat(probe.callbacks.get()).isGreaterThan(35);
-        } finally {
-            registry.close();
-            Thread.currentThread().setContextClassLoader(original);
-        }
-    }
-
-    @Test
     void providerConstructionSelectorAndFailedCloseUseIndependentTcclScopes() {
         ClassLoader original = Thread.currentThread().getContextClassLoader();
         ClassLoader caller = new MarkerClassLoader(original);
@@ -314,14 +112,16 @@ class PluginTcclBoundaryTest {
         ClassLoader rogue = new MarkerClassLoader(original);
         ContextProbe probe = new ContextProbe(plugin);
 
-        AssertingStateMachine machine = new AssertingStateMachine(probe);
-        AppStateMachineProvider valid = new AppStateMachineProvider() {
+        FixtureProduct machine = new FixtureProduct() {
+            @Override public String id() { probe.check(); return "machine"; }
+        };
+        FixtureProvider valid = new FixtureProvider() {
             @Override public String id() {
                 probe.check();
                 Thread.currentThread().setContextClassLoader(rogue);
                 return "valid";
             }
-            @Override public AppStateMachine create() {
+            @Override public FixtureProduct create() {
                 probe.check();
                 Thread.currentThread().setContextClassLoader(rogue);
                 return machine;
@@ -329,24 +129,24 @@ class PluginTcclBoundaryTest {
         };
         CatalogPluginProviderRegistry.Entry validEntry =
                 new CatalogPluginProviderRegistry.Entry(
-                        "valid-bundle", ContributionKind.APP_STATE_MACHINE,
+                        "valid-bundle", TestPluginKinds.FIXTURE,
                         "valid", valid.getClass().getName(), null, () -> {
                     probe.check();
                     Thread.currentThread().setContextClassLoader(rogue);
                     return valid;
                 });
         CatalogPluginProviderRegistry validRegistry =
-                new CatalogPluginProviderRegistry(
+                new CatalogPluginProviderRegistry(TestPluginKinds.KINDS,
                         List.of(validEntry), List.of("valid-bundle"), List.of(), plugin);
 
         AtomicInteger failedCloses = new AtomicInteger();
-        class InvalidProvider implements AppStateMachineProvider, AutoCloseable {
+        class InvalidProvider implements FixtureProvider, AutoCloseable {
             @Override public String id() {
                 probe.check();
                 Thread.currentThread().setContextClassLoader(rogue);
                 return "wrong";
             }
-            @Override public AppStateMachine create() { return machine; }
+            @Override public FixtureProduct create() { return machine; }
             @Override public void close() {
                 probe.check();
                 failedCloses.incrementAndGet();
@@ -356,27 +156,27 @@ class PluginTcclBoundaryTest {
         InvalidProvider invalid = new InvalidProvider();
         CatalogPluginProviderRegistry.Entry invalidEntry =
                 new CatalogPluginProviderRegistry.Entry(
-                        "invalid-bundle", ContributionKind.APP_STATE_MACHINE,
+                        "invalid-bundle", TestPluginKinds.FIXTURE,
                         "expected", invalid.getClass().getName(), null, () -> {
                     probe.check();
                     Thread.currentThread().setContextClassLoader(rogue);
                     return invalid;
                 });
         CatalogPluginProviderRegistry invalidRegistry =
-                new CatalogPluginProviderRegistry(
+                new CatalogPluginProviderRegistry(TestPluginKinds.KINDS,
                         List.of(invalidEntry), List.of("invalid-bundle"), List.of(), plugin);
 
         Thread.currentThread().setContextClassLoader(caller);
         try {
-            AppStateMachineProvider exposed = validRegistry.require(
-                    AppStateMachineProvider.class, "valid");
+            FixtureProvider exposed = validRegistry.require(
+                    FixtureProvider.class, "valid");
             assertCaller(caller);
             assertThat(exposed.id()).isEqualTo("valid");
             assertThat(exposed.create().id()).isEqualTo("machine");
             assertCaller(caller);
 
             assertThatThrownBy(() -> invalidRegistry.require(
-                    AppStateMachineProvider.class, "expected"))
+                    FixtureProvider.class, "expected"))
                     .isInstanceOf(PluginActivationException.class)
                     .hasMessageContaining("construct provider");
             assertThat(failedCloses).hasValue(1);
@@ -391,294 +191,18 @@ class PluginTcclBoundaryTest {
     }
 
     @Test
-    void observerResultsOwnConsensusCriticalByteArraysAfterCallback() {
-        byte[] txHash = new byte[32];
-        byte[] blockHash = new byte[32];
-        byte[] claim = new byte[]{1, 2, 3};
-        L1Observation retained = L1Observation.transaction(
-                "retained", txHash, 7, blockHash, claim);
-        L1Observer rawObserver = new L1Observer() {
-            @Override public String observerId() { return "retained"; }
-            @Override public List<L1Observation> observe(
-                    long slot, byte[] hash, Block block) {
-                return List.of(retained);
-            }
-        };
-        L1ObserverProvider rawProvider = new L1ObserverProvider() {
-            @Override public String type() { return "retained"; }
-            @Override public L1Observer create(String id, Map<String, String> settings) {
-                return rawObserver;
-            }
-        };
-        L1ObserverProvider provider = (L1ObserverProvider) PluginSpiFacades.provider(
-                ContributionKind.L1_OBSERVER, rawProvider,
-                getClass().getClassLoader(), "retained-bundle", "retained",
-                rawProvider.getClass().getName());
-
-        L1Observation snapshot = provider.create("retained", Map.of())
-                .observe(7, new byte[32], null).getFirst();
-        txHash[0] = 9;
-        blockHash[0] = 9;
-        claim[0] = 9;
-        byte[] exposed = snapshot.claim();
-        exposed[1] = 9;
-
-        assertThat(snapshot.transactionAnchor().transactionHash()).containsOnly(0);
-        assertThat(snapshot.blockHash()).containsOnly(0);
-        assertThat(snapshot.claim()).containsExactly(1, 2, 3);
-    }
-
-    @Test
-    void observerAggregateClaimBudgetStopsLazyTraversalAtFirstOverflow() {
-        ClassLoader original = Thread.currentThread().getContextClassLoader();
-        ClassLoader caller = new MarkerClassLoader(original);
-        ClassLoader plugin = new MarkerClassLoader(original);
-        ClassLoader rogue = new MarkerClassLoader(original);
-        ContextProbe probe = new ContextProbe(plugin);
-        byte[] blockHash = new byte[32];
-        InfiniteProbeList<L1Observation> observations = new InfiniteProbeList<>(
-                probe, rogue, ignored -> L1Observation.transaction(
-                        "observer-instance", new byte[32], 9, blockHash,
-                        new byte[PluginSpiFacades.MAX_OBSERVATION_CLAIM_BYTES]));
-        L1Observer rawObserver = new L1Observer() {
-            @Override public String observerId() { probe.check(); return "observer-instance"; }
-            @Override public List<L1Observation> observe(
-                    long slot, byte[] callbackHash, Block block) {
-                probe.check();
-                return observations;
-            }
-        };
-        L1ObserverProvider rawProvider = new L1ObserverProvider() {
-            @Override public String type() { probe.check(); return "bounded-observer"; }
-            @Override public L1Observer create(String id, Map<String, String> settings) {
-                probe.check();
-                return rawObserver;
-            }
-        };
-        L1ObserverProvider provider = providerFacade(
-                L1ObserverProvider.class, ContributionKind.L1_OBSERVER,
-                rawProvider, plugin, "observer-bundle", "bounded-observer");
-
-        Thread.currentThread().setContextClassLoader(caller);
-        try {
-            L1Observer observer = provider.create("observer-instance", Map.of());
-            assertThatThrownBy(() -> observer.observe(9, blockHash, null))
-                    .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessage("L1 observer aggregate claims exceed 4194304 bytes");
-            assertThat(observations.hasNextCalls).hasValue(5);
-            assertThat(observations.nextCalls).hasValue(5);
-            assertCaller(caller);
-        } finally {
-            Thread.currentThread().setContextClassLoader(original);
-        }
-    }
-
-    @Test
-    void observerSnapshotsRejectIdentitySlotAndBlockHashMismatches() {
-        ClassLoader original = Thread.currentThread().getContextClassLoader();
-        ClassLoader caller = new MarkerClassLoader(original);
-        ClassLoader plugin = new MarkerClassLoader(original);
-        ContextProbe probe = new ContextProbe(plugin);
-        byte[] blockHash = new byte[32];
-        blockHash[0] = 1;
-        AtomicReference<L1Observation> result = new AtomicReference<>();
-        AtomicReference<byte[]> callbackInput = new AtomicReference<>();
-        AtomicInteger mutateCallback = new AtomicInteger();
-        L1Observer rawObserver = new L1Observer() {
-            @Override public String observerId() { probe.check(); return "observer-instance"; }
-            @Override public List<L1Observation> observe(
-                    long slot, byte[] callbackHash, Block block) {
-                probe.check();
-                callbackInput.set(callbackHash);
-                if (mutateCallback.get() != 0) {
-                    callbackHash[0] = 2;
-                    return List.of(L1Observation.transaction(
-                            "observer-instance", new byte[32], slot,
-                            callbackHash, new byte[0]));
-                }
-                return List.of(result.get());
-            }
-        };
-        L1ObserverProvider rawProvider = new L1ObserverProvider() {
-            @Override public String type() { probe.check(); return "verified-observer"; }
-            @Override public L1Observer create(String id, Map<String, String> settings) {
-                probe.check();
-                return rawObserver;
-            }
-        };
-        L1ObserverProvider provider = providerFacade(
-                L1ObserverProvider.class, ContributionKind.L1_OBSERVER,
-                rawProvider, plugin, "observer-bundle", "verified-observer");
-
-        Thread.currentThread().setContextClassLoader(caller);
-        try {
-            L1Observer observer = provider.create("observer-instance", Map.of());
-            result.set(L1Observation.transaction(
-                    "wrong-observer", new byte[32], 9, blockHash, new byte[0]));
-            assertThatThrownBy(() -> observer.observe(9, blockHash, null))
-                    .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessage("L1 observation id does not match configured observer");
-
-            result.set(L1Observation.transaction(
-                    "observer-instance", new byte[32], 10, blockHash, new byte[0]));
-            assertThatThrownBy(() -> observer.observe(9, blockHash, null))
-                    .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessage("L1 observation slot does not match callback slot");
-
-            result.set(L1Observation.transaction(
-                    "observer-instance", new byte[32], 9, new byte[32], new byte[0]));
-            assertThatThrownBy(() -> observer.observe(9, blockHash, null))
-                    .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessage("L1 observation block hash does not match callback block hash");
-
-            mutateCallback.set(1);
-            assertThatThrownBy(() -> observer.observe(9, blockHash, null))
-                    .isInstanceOf(IllegalArgumentException.class)
-                    .hasMessage("L1 observation block hash does not match callback block hash");
-            assertThat(callbackInput.get()).isNotSameAs(blockHash);
-            assertThat(blockHash[0]).isEqualTo((byte) 1);
-            assertCaller(caller);
-        } finally {
-            Thread.currentThread().setContextClassLoader(original);
-        }
-    }
-
-    @Test
-    void signerFacadeOwnsBuffersValidatesSignatureAndSanitizesFailures() {
-        ClassLoader original = Thread.currentThread().getContextClassLoader();
-        ClassLoader caller = new MarkerClassLoader(original);
-        ClassLoader plugin = new MarkerClassLoader(original);
-        ContextProbe probe = new ContextProbe(plugin);
-        AtomicReference<byte[]> pluginInput = new AtomicReference<>();
-        AtomicReference<byte[]> pluginOutput = new AtomicReference<>(filledBytes(64, (byte) 7));
-        AtomicReference<RuntimeException> pluginFailure = new AtomicReference<>();
-        SignerProvider rawSigner = new SignerProvider() {
-            @Override public byte[] sign(byte[] message) {
-                probe.check();
-                RuntimeException failure = pluginFailure.get();
-                if (failure != null) {
-                    throw failure;
-                }
-                pluginInput.set(message);
-                if (message.length > 0) {
-                    message[0] = 99;
-                }
-                return pluginOutput.get();
-            }
-            @Override public byte[] publicKey() { probe.check(); return new byte[32]; }
-        };
-        SignerProviderFactory rawFactory = new SignerProviderFactory() {
-            @Override public String scheme() { probe.check(); return "safe-signer"; }
-            @Override public SignerProvider create(String keyReference) {
-                probe.check();
-                return rawSigner;
-            }
-        };
-        SignerProviderFactory factory = providerFacade(
-                SignerProviderFactory.class, ContributionKind.SIGNER_PROVIDER,
-                rawFactory, plugin, "signer-bundle", "safe-signer");
-
-        Thread.currentThread().setContextClassLoader(caller);
-        try {
-            SignerProvider signer = factory.create("key-reference");
-            byte[] message = new byte[]{1, 2, 3};
-            byte[] rawSignature = pluginOutput.get();
-            byte[] signature = signer.sign(message);
-
-            assertThat(pluginInput.get()).isNotSameAs(message);
-            assertThat(message).containsExactly(1, 2, 3);
-            assertThat(signature).isNotSameAs(rawSignature).containsOnly(7);
-            rawSignature[0] = 8;
-            signature[1] = 9;
-            assertThat(signature[0]).isEqualTo((byte) 7);
-            assertThat(rawSignature[1]).isEqualTo((byte) 7);
-            assertCaller(caller);
-
-            pluginOutput.set(new byte[63]);
-            PluginActivationException lengthFailure = assertActivationFailure(
-                    () -> signer.sign(new byte[0]), ContributionKind.SIGNER_PROVIDER,
-                    "signer-bundle", "safe-signer", rawFactory);
-            assertThat(lengthFailure.getCause())
-                    .isInstanceOf(IllegalStateException.class)
-                    .hasMessageContaining("64-byte Ed25519 signature");
-            assertCaller(caller);
-
-            String secret = "secret signer backend detail";
-            IllegalStateException backendFailure = new IllegalStateException(secret);
-            pluginFailure.set(backendFailure);
-            assertSecretSafeActivationFailure(
-                    () -> signer.sign(new byte[0]), backendFailure, secret,
-                    ContributionKind.SIGNER_PROVIDER,
-                    "signer-bundle", "safe-signer", rawFactory);
-            assertCaller(caller);
-        } finally {
-            Thread.currentThread().setContextClassLoader(original);
-        }
-    }
-
-    @Test
-    void sequencerFacadeDoesNotExposeTheConsensusBlockProposerBuffer() {
-        ClassLoader original = Thread.currentThread().getContextClassLoader();
-        ClassLoader caller = new MarkerClassLoader(original);
-        ClassLoader plugin = new MarkerClassLoader(original);
-        ContextProbe probe = new ContextProbe(plugin);
-        AtomicReference<byte[]> pluginInput = new AtomicReference<>();
-        SequencerMode rawMode = new SequencerMode() {
-            @Override public String id() { probe.check(); return "safe-sequencer"; }
-            @Override public void init(SequencerContext context) { probe.check(); }
-            @Override public boolean shouldProposeNow(long height) { probe.check(); return false; }
-            @Override public ProposalEligibility checkProposal(byte[] proposerKey, long height) {
-                probe.check();
-                pluginInput.set(proposerKey);
-                proposerKey[0] = 99;
-                return ProposalEligibility.ACCEPT;
-            }
-        };
-        SequencerModeProvider rawProvider = new SequencerModeProvider() {
-            @Override public String id() { probe.check(); return "safe-sequencer"; }
-            @Override public SequencerMode create(SequencerContext context) {
-                probe.check();
-                return rawMode;
-            }
-        };
-        SequencerModeProvider provider = providerFacade(
-                SequencerModeProvider.class, ContributionKind.SEQUENCER_MODE,
-                rawProvider, plugin, "sequencer-bundle", "safe-sequencer");
-
-        Thread.currentThread().setContextClassLoader(caller);
-        try {
-            SequencerMode sequencer = provider.create(null);
-            byte[] proposerKey = new byte[]{1, 2, 3};
-            assertThat(sequencer.checkProposal(proposerKey, 7))
-                    .isEqualTo(SequencerMode.ProposalEligibility.ACCEPT);
-            assertThat(pluginInput.get()).isNotSameAs(proposerKey);
-            assertThat(proposerKey).containsExactly(1, 2, 3);
-            assertCaller(caller);
-        } finally {
-            Thread.currentThread().setContextClassLoader(original);
-        }
-    }
-
-    @Test
     void pluginStatusIsDeeplyNormalizedAndRejectsCyclesOrArbitraryBeans() {
         AtomicReference<Map<String, Object>> rawStatus = new AtomicReference<>();
-        SequencerMode rawMode = new SequencerMode() {
-            @Override public String id() { return "status-mode"; }
-            @Override public void init(SequencerContext context) { }
-            @Override public boolean shouldProposeNow(long height) { return false; }
-            @Override public ProposalEligibility checkProposal(
-                    byte[] proposerKey, long height) { return ProposalEligibility.REJECT; }
+        FixtureProduct rawMode = new FixtureProduct() {
             @Override public Map<String, Object> status() { return rawStatus.get(); }
         };
-        SequencerModeProvider rawProvider = new SequencerModeProvider() {
+        FixtureProvider rawProvider = new FixtureProvider() {
             @Override public String id() { return "status-mode"; }
-            @Override public SequencerMode create(SequencerContext context) { return rawMode; }
+            @Override public FixtureProduct create() { return rawMode; }
         };
-        SequencerModeProvider provider = (SequencerModeProvider) PluginSpiFacades.provider(
-                ContributionKind.SEQUENCER_MODE, rawProvider,
-                getClass().getClassLoader(), "status-bundle", "status-mode",
-                rawProvider.getClass().getName());
-        SequencerMode mode = provider.create(null);
+        FixtureProvider provider = providerFacade(FixtureProvider.class, TestPluginKinds.FIXTURE,
+                rawProvider, getClass().getClassLoader(), "status-bundle", "status-mode");
+        FixtureProduct mode = provider.create();
 
         List<Object> rawList = new ArrayList<>();
         rawList.add("first");
@@ -730,9 +254,8 @@ class PluginTcclBoundaryTest {
     void failedProviderCandidateSafelyWrapsSharedNonProcessFatalCloseFailure() {
         AssertionError sharedFatal = new AssertionError("shared provider fatal");
         AtomicInteger closeCalls = new AtomicInteger();
-        class SameFatalProvider implements AppStateMachineProvider, AutoCloseable {
+        class SameFatalProvider implements FixtureProvider, AutoCloseable {
             @Override public String id() { throw sharedFatal; }
-            @Override public AppStateMachine create() { throw new AssertionError("unused"); }
             @Override public void close() {
                 closeCalls.incrementAndGet();
                 throw sharedFatal;
@@ -741,13 +264,13 @@ class PluginTcclBoundaryTest {
         SameFatalProvider provider = new SameFatalProvider();
         CatalogPluginProviderRegistry.Entry entry =
                 new CatalogPluginProviderRegistry.Entry(
-                        "fatal-bundle", ContributionKind.APP_STATE_MACHINE,
+                        "fatal-bundle", TestPluginKinds.FIXTURE,
                         "expected", provider.getClass().getName(), null, () -> provider);
-        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(
+        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(TestPluginKinds.KINDS,
                 List.of(entry), List.of("fatal-bundle"), List.of());
 
         assertThatThrownBy(() -> registry.require(
-                AppStateMachineProvider.class, "expected"))
+                FixtureProvider.class, "expected"))
                 .isInstanceOf(PluginActivationException.class)
                 .hasCause(sharedFatal);
         assertThat(sharedFatal.getSuppressed()).isEmpty();
@@ -758,118 +281,28 @@ class PluginTcclBoundaryTest {
     }
 
     @Test
-    void stateMachineProductIdentityAssertionStaysInsideActivationBoundary() {
-        String secret = "state-machine-identity-secret";
-        AppStateMachine rawMachine = new AppStateMachine() {
-            @Override public String id() { throw new AssertionError(secret); }
-            @Override public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) { }
-        };
-        AppStateMachineProvider rawProvider = new AppStateMachineProvider() {
-            @Override public String id() { return "secret-safe-machine"; }
-            @Override public AppStateMachine create() { return rawMachine; }
-        };
-        CatalogPluginProviderRegistry.Entry entry =
-                new CatalogPluginProviderRegistry.Entry(
-                        "secret-safe-bundle", ContributionKind.APP_STATE_MACHINE,
-                        "secret-safe-machine", rawProvider.getClass().getName(), null,
-                        () -> rawProvider);
-        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(
-                List.of(entry), List.of("secret-safe-bundle"), List.of());
-        try {
-            AppStateMachine product = registry.require(
-                    AppStateMachineProvider.class, "secret-safe-machine").create();
-
-            assertThatThrownBy(product::id)
-                    .isInstanceOf(PluginActivationException.class)
-                    .hasMessageContaining("identify state-machine product")
-                    .hasMessageNotContaining(secret)
-                    .hasRootCauseMessage(secret);
-        } finally {
-            registry.close();
-        }
-    }
-
-    @Test
     void factoryProductsAreExclusiveAcrossCreateInvocationsAndRejectedBatchesAreCleaned() {
         ClassLoader original = Thread.currentThread().getContextClassLoader();
         ClassLoader caller = new MarkerClassLoader(original);
         ClassLoader plugin = new MarkerClassLoader(original);
         ContextProbe probe = new ContextProbe(plugin);
 
-        AppStateMachine machine = new AssertingStateMachine(probe);
-        AppStateMachineProvider rawMachines = new AppStateMachineProvider() {
-            @Override public String id() { probe.check(); return "machine"; }
-            @Override public AppStateMachine create() { probe.check(); return machine; }
-            @Override public AppStateMachine create(AppStateMachineContext context) {
-                probe.check();
-                return machine;
-            }
-        };
-        SequencerMode mode = new AssertingSequencerMode(probe);
-        SequencerModeProvider rawSequencers = new SequencerModeProvider() {
-            @Override public String id() { probe.check(); return "sequencer"; }
-            @Override public SequencerMode create(SequencerContext context) {
-                probe.check();
-                return mode;
-            }
-        };
-        L1Observer observer = new AssertingObserver(probe);
-        L1ObserverProvider rawObservers = new L1ObserverProvider() {
-            @Override public String type() { probe.check(); return "observer"; }
-            @Override public L1Observer create(
-                    String observerId,
-                    Map<String, String> settings
-            ) {
-                probe.check();
-                return observer;
-            }
-        };
-        SignerProvider signer = new AssertingSigner(probe);
-        SignerProviderFactory rawSigners = new SignerProviderFactory() {
-            @Override public String scheme() { probe.check(); return "signer"; }
-            @Override public SignerProvider create(String keyReference) {
-                probe.check();
-                return signer;
-            }
-        };
-
-        List<String> executorCloseOrder = new ArrayList<>();
-        RuntimeException executorCleanupFailure =
-                new IllegalStateException("expected executor cleanup failure");
-        TrackingExecutor ownedExecutor = new TrackingExecutor(
-                "owned-executor", probe, executorCloseOrder, null);
-        TrackingExecutor freshExecutorOne = new TrackingExecutor(
-                "fresh-executor-1", probe, executorCloseOrder, null);
-        TrackingExecutor freshExecutorTwo = new TrackingExecutor(
-                "fresh-executor-2", probe, executorCloseOrder, executorCleanupFailure);
-        AtomicInteger executorCreates = new AtomicInteger();
-        AppEffectExecutorFactory rawExecutors = new AppEffectExecutorFactory() {
-            @Override public String scheme() { probe.check(); return "executor"; }
-            @Override public List<AppEffectExecutor> create(
-                    String chainId,
-                    Map<String, String> config
-            ) {
-                probe.check();
-                if (executorCreates.incrementAndGet() == 1) {
-                    return List.of(ownedExecutor, ownedExecutor);
-                }
-                return List.of(
-                        freshExecutorOne, ownedExecutor,
-                        freshExecutorTwo, freshExecutorOne);
-            }
+        FixtureProduct single = new TrackingSink("single", probe, new ArrayList<>());
+        FixtureProvider rawSingles = new FixtureProvider() {
+            @Override public String id() { probe.check(); return "single"; }
+            @Override public FixtureProduct create() { probe.check(); return single; }
         };
 
         List<String> sinkCloseOrder = new ArrayList<>();
+        RuntimeException cleanupFailure = new IllegalStateException("expected cleanup failure");
         TrackingSink ownedSink = new TrackingSink("owned-sink", probe, sinkCloseOrder);
         TrackingSink freshSinkOne = new TrackingSink("fresh-sink-1", probe, sinkCloseOrder);
-        TrackingSink freshSinkTwo = new TrackingSink("fresh-sink-2", probe, sinkCloseOrder);
+        TrackingSink freshSinkTwo = new TrackingSink(
+                "fresh-sink-2", probe, sinkCloseOrder, cleanupFailure);
         AtomicInteger sinkCreates = new AtomicInteger();
-        FinalizedStreamSinkFactory rawSinks = new FinalizedStreamSinkFactory() {
-            @Override public String scheme() { probe.check(); return "sink"; }
-            @Override public List<FinalizedStreamSink> create(
-                    String chainId,
-                    Map<String, String> config
-            ) {
+        FixtureProvider rawSinks = new FixtureProvider() {
+            @Override public String id() { probe.check(); return "sink"; }
+            @Override public List<FixtureProduct> createAll() {
                 probe.check();
                 if (sinkCreates.incrementAndGet() == 1) {
                     return List.of(ownedSink, ownedSink);
@@ -878,77 +311,33 @@ class PluginTcclBoundaryTest {
             }
         };
 
-        AppStateMachineProvider machines = providerFacade(
-                AppStateMachineProvider.class, ContributionKind.APP_STATE_MACHINE,
-                rawMachines, plugin, "machine-bundle", "machine");
-        SequencerModeProvider sequencers = providerFacade(
-                SequencerModeProvider.class, ContributionKind.SEQUENCER_MODE,
-                rawSequencers, plugin, "sequencer-bundle", "sequencer");
-        L1ObserverProvider observers = providerFacade(
-                L1ObserverProvider.class, ContributionKind.L1_OBSERVER,
-                rawObservers, plugin, "observer-bundle", "observer");
-        SignerProviderFactory signers = providerFacade(
-                SignerProviderFactory.class, ContributionKind.SIGNER_PROVIDER,
-                rawSigners, plugin, "signer-bundle", "signer");
-        AppEffectExecutorFactory executors = providerFacade(
-                AppEffectExecutorFactory.class, ContributionKind.EFFECT_EXECUTOR,
-                rawExecutors, plugin, "executor-bundle", "executor");
-        FinalizedStreamSinkFactory sinks = providerFacade(
-                FinalizedStreamSinkFactory.class, ContributionKind.FINALIZED_SINK,
+        FixtureProvider singles = providerFacade(
+                FixtureProvider.class, TestPluginKinds.FIXTURE,
+                rawSingles, plugin, "single-bundle", "single");
+        FixtureProvider sinks = providerFacade(
+                FixtureProvider.class, TestPluginKinds.FIXTURE,
                 rawSinks, plugin, "sink-bundle", "sink");
 
         Thread.currentThread().setContextClassLoader(caller);
         try {
-            machines.create(null);
+            singles.create();
             assertReuseFailure(
-                    () -> machines.create(null), ContributionKind.APP_STATE_MACHINE,
-                    "machine-bundle", "machine", rawMachines);
+                    singles::create, TestPluginKinds.FIXTURE,
+                    "single-bundle", "single", rawSingles);
 
-            sequencers.create(null);
-            assertReuseFailure(
-                    () -> sequencers.create(null), ContributionKind.SEQUENCER_MODE,
-                    "sequencer-bundle", "sequencer", rawSequencers);
-
-            observers.create("chain-a-observer", Map.of());
-            assertReuseFailure(
-                    () -> observers.create("chain-b-observer", Map.of()),
-                    ContributionKind.L1_OBSERVER,
-                    "observer-bundle", "observer", rawObservers);
-
-            signers.create("chain-a-key");
-            assertReuseFailure(
-                    () -> signers.create("chain-b-key"), ContributionKind.SIGNER_PROVIDER,
-                    "signer-bundle", "signer", rawSigners);
-
-            List<AppEffectExecutor> firstExecutors = executors.create("chain-a", Map.of());
-            assertThat(firstExecutors).hasSize(2);
-            assertThat(firstExecutors.get(1)).isSameAs(firstExecutors.getFirst());
-            PluginActivationException executorFailure = assertReuseFailure(
-                    () -> executors.create("chain-b", Map.of()),
-                    ContributionKind.EFFECT_EXECUTOR,
-                    "executor-bundle", "executor", rawExecutors);
-            assertThat(ownedExecutor.closeCalls).hasValue(0);
-            assertThat(freshExecutorOne.closeCalls).hasValue(1);
-            assertThat(freshExecutorTwo.closeCalls).hasValue(1);
-            assertThat(executorCloseOrder)
-                    .containsExactly("fresh-executor-2", "fresh-executor-1");
-            assertThat(executorFailure.getCause().getSuppressed())
-                    .containsExactly(executorCleanupFailure);
-
-            List<FinalizedStreamSink> firstSinks = sinks.create("chain-a", Map.of());
+            List<FixtureProduct> firstSinks = sinks.createAll();
             assertThat(firstSinks).hasSize(2);
             assertThat(firstSinks.get(1)).isSameAs(firstSinks.getFirst());
-            assertReuseFailure(
-                    () -> sinks.create("chain-b", Map.of()), ContributionKind.FINALIZED_SINK,
+            PluginActivationException sinkFailure = assertReuseFailure(
+                    sinks::createAll, TestPluginKinds.FIXTURE,
                     "sink-bundle", "sink", rawSinks);
             assertThat(ownedSink.closeCalls).hasValue(0);
             assertThat(freshSinkOne.closeCalls).hasValue(1);
             assertThat(freshSinkTwo.closeCalls).hasValue(1);
             assertThat(sinkCloseOrder).containsExactly("fresh-sink-2", "fresh-sink-1");
+            assertThat(sinkFailure.getCause().getSuppressed()).containsExactly(cleanupFailure);
 
-            firstExecutors.getFirst().close();
             firstSinks.getFirst().close();
-            assertThat(ownedExecutor.closeCalls).hasValue(1);
             assertThat(ownedSink.closeCalls).hasValue(1);
             assertCaller(caller);
         } finally {
@@ -971,10 +360,9 @@ class PluginTcclBoundaryTest {
         RuntimeException traversalFailure =
                 new IllegalStateException("expected iterator failure");
         AtomicInteger creates = new AtomicInteger();
-        FinalizedStreamSinkFactory rawFactory = new FinalizedStreamSinkFactory() {
-            @Override public String scheme() { probe.check(); return "failing-list"; }
-            @Override public List<FinalizedStreamSink> create(
-                    String chainId, Map<String, String> config) {
+        FixtureProvider rawFactory = new FixtureProvider() {
+            @Override public String id() { probe.check(); return "failing-list"; }
+            @Override public List<FixtureProduct> createAll() {
                 probe.check();
                 return switch (creates.incrementAndGet()) {
                     case 1 -> List.of(owned);
@@ -984,15 +372,15 @@ class PluginTcclBoundaryTest {
                 };
             }
         };
-        FinalizedStreamSinkFactory factory = providerFacade(
-                FinalizedStreamSinkFactory.class, ContributionKind.FINALIZED_SINK,
+        FixtureProvider factory = providerFacade(
+                FixtureProvider.class, TestPluginKinds.FIXTURE,
                 rawFactory, plugin, "sink-bundle", "failing-list");
 
         Thread.currentThread().setContextClassLoader(caller);
         try {
-            FinalizedStreamSink owner = factory.create("chain-a", Map.of()).getFirst();
+            FixtureProduct owner = factory.createAll().getFirst();
             Throwable failure = catchThrowable(
-                    () -> factory.create("chain-b", Map.of()));
+                    () -> factory.createAll());
             assertThat(failure)
                     .isInstanceOf(PluginActivationException.class)
                     .hasMessageNotContaining(fatalCleanup.getMessage())
@@ -1003,8 +391,8 @@ class PluginTcclBoundaryTest {
             assertThat(freshOne.closeCalls).hasValue(1);
             assertThat(freshTwo.closeCalls).hasValue(1);
 
-            assertReuseFailure(() -> factory.create("chain-c", Map.of()),
-                    ContributionKind.FINALIZED_SINK,
+            assertReuseFailure(() -> factory.createAll(),
+                    TestPluginKinds.FIXTURE,
                     "sink-bundle", "failing-list", rawFactory);
             assertThat(freshOne.closeCalls).hasValue(1);
             assertThat(owned.closeCalls).hasValue(0);
@@ -1024,74 +412,39 @@ class PluginTcclBoundaryTest {
         ClassLoader rogue = new MarkerClassLoader(original);
         ContextProbe probe = new ContextProbe(plugin);
 
-        List<String> executorCloseOrder = new ArrayList<>();
-        TrackingExecutor executorOne = new TrackingExecutor(
-                "executor-1", probe, executorCloseOrder, null);
-        TrackingExecutor executorTwo = new TrackingExecutor(
-                "executor-2", probe, executorCloseOrder, null);
-        TrackingExecutor unexpectedExecutor = new TrackingExecutor(
-                "unexpected-executor", probe, executorCloseOrder, null);
-        ChangingTraversalList<AppEffectExecutor> executorProducts =
-                new ChangingTraversalList<>(probe,
-                        List.of(executorOne, executorTwo), List.of(unexpectedExecutor));
-        AppEffectExecutorFactory rawExecutors = new AppEffectExecutorFactory() {
-            @Override public String scheme() { probe.check(); return "changing-executor"; }
-            @Override public List<AppEffectExecutor> create(
-                    String chainId, Map<String, String> config) {
-                probe.check();
-                Thread.currentThread().setContextClassLoader(rogue);
-                return executorProducts;
-            }
-        };
-
         List<String> sinkCloseOrder = new ArrayList<>();
         TrackingSink sinkOne = new TrackingSink("sink-1", probe, sinkCloseOrder);
         TrackingSink sinkTwo = new TrackingSink("sink-2", probe, sinkCloseOrder);
         TrackingSink unexpectedSink = new TrackingSink(
                 "unexpected-sink", probe, sinkCloseOrder);
-        ChangingTraversalList<FinalizedStreamSink> sinkProducts =
+        ChangingTraversalList<FixtureProduct> sinkProducts =
                 new ChangingTraversalList<>(probe,
                         List.of(sinkOne, sinkTwo), List.of(unexpectedSink));
-        FinalizedStreamSinkFactory rawSinks = new FinalizedStreamSinkFactory() {
-            @Override public String scheme() { probe.check(); return "changing-sink"; }
-            @Override public List<FinalizedStreamSink> create(
-                    String chainId, Map<String, String> config) {
+        FixtureProvider rawSinks = new FixtureProvider() {
+            @Override public String id() { probe.check(); return "changing-sink"; }
+            @Override public List<FixtureProduct> createAll() {
                 probe.check();
                 Thread.currentThread().setContextClassLoader(rogue);
                 return sinkProducts;
             }
         };
 
-        AppEffectExecutorFactory executors = providerFacade(
-                AppEffectExecutorFactory.class, ContributionKind.EFFECT_EXECUTOR,
-                rawExecutors, plugin, "executor-bundle", "changing-executor");
-        FinalizedStreamSinkFactory sinks = providerFacade(
-                FinalizedStreamSinkFactory.class, ContributionKind.FINALIZED_SINK,
+        FixtureProvider sinks = providerFacade(
+                FixtureProvider.class, TestPluginKinds.FIXTURE,
                 rawSinks, plugin, "sink-bundle", "changing-sink");
 
         Thread.currentThread().setContextClassLoader(caller);
         try {
-            List<AppEffectExecutor> activatedExecutors =
-                    executors.create("chain", Map.of());
-            assertThat(activatedExecutors).hasSize(2);
-            assertThat(activatedExecutors)
-                    .extracting(AppEffectExecutor::id)
-                    .containsExactly("executor-1", "executor-2");
-            assertThat(executorProducts.traversals()).isEqualTo(1);
-
-            List<FinalizedStreamSink> activatedSinks = sinks.create("chain", Map.of());
+            List<FixtureProduct> activatedSinks = sinks.createAll();
             assertThat(activatedSinks).hasSize(2);
             assertThat(activatedSinks)
-                    .extracting(FinalizedStreamSink::id)
+                    .extracting(FixtureProduct::id)
                     .containsExactly("sink-1", "sink-2");
             assertThat(sinkProducts.traversals()).isEqualTo(1);
             assertCaller(caller);
 
-            activatedExecutors.forEach(AppEffectExecutor::close);
-            activatedSinks.forEach(FinalizedStreamSink::close);
-            assertThat(executorCloseOrder).containsExactly("executor-1", "executor-2");
+            activatedSinks.forEach(FixtureProduct::close);
             assertThat(sinkCloseOrder).containsExactly("sink-1", "sink-2");
-            assertThat(unexpectedExecutor.closeCalls).hasValue(0);
             assertThat(unexpectedSink.closeCalls).hasValue(0);
             assertCaller(caller);
         } finally {
@@ -1111,18 +464,16 @@ class PluginTcclBoundaryTest {
         AtomicInteger corruptingCloses = new AtomicInteger();
 
         TrackingSink owned = new TrackingSink("owned", probe, closeOrder);
-        FinalizedStreamSink firstFresh = new FinalizedStreamSink() {
+        FixtureProduct firstFresh = new FixtureProduct() {
             @Override public String id() { probe.check(); return "first-fresh"; }
-            @Override public boolean deliver(AppBlock block) { return true; }
             @Override public void close() {
                 probe.check();
                 firstCloses.incrementAndGet();
                 closeOrder.add("first-fresh");
             }
         };
-        FinalizedStreamSink corruptingFresh = new FinalizedStreamSink() {
+        FixtureProduct corruptingFresh = new FixtureProduct() {
             @Override public String id() { probe.check(); return "corrupting-fresh"; }
-            @Override public boolean deliver(AppBlock block) { return true; }
             @Override public void close() {
                 probe.check();
                 corruptingCloses.incrementAndGet();
@@ -1131,25 +482,24 @@ class PluginTcclBoundaryTest {
             }
         };
         AtomicInteger creates = new AtomicInteger();
-        FinalizedStreamSinkFactory rawFactory = new FinalizedStreamSinkFactory() {
-            @Override public String scheme() { probe.check(); return "rogue-close"; }
-            @Override public List<FinalizedStreamSink> create(
-                    String chainId, Map<String, String> config) {
+        FixtureProvider rawFactory = new FixtureProvider() {
+            @Override public String id() { probe.check(); return "rogue-close"; }
+            @Override public List<FixtureProduct> createAll() {
                 probe.check();
                 return creates.incrementAndGet() == 1
                         ? List.of(owned)
                         : List.of(firstFresh, owned, corruptingFresh);
             }
         };
-        FinalizedStreamSinkFactory factory = providerFacade(
-                FinalizedStreamSinkFactory.class, ContributionKind.FINALIZED_SINK,
+        FixtureProvider factory = providerFacade(
+                FixtureProvider.class, TestPluginKinds.FIXTURE,
                 rawFactory, plugin, "sink-bundle", "rogue-close");
 
         Thread.currentThread().setContextClassLoader(caller);
         try {
-            FinalizedStreamSink firstOwner = factory.create("chain-a", Map.of()).getFirst();
-            assertReuseFailure(() -> factory.create("chain-b", Map.of()),
-                    ContributionKind.FINALIZED_SINK,
+            FixtureProduct firstOwner = factory.createAll().getFirst();
+            assertReuseFailure(() -> factory.createAll(),
+                    TestPluginKinds.FIXTURE,
                     "sink-bundle", "rogue-close", rawFactory);
 
             assertThat(closeOrder).containsExactly("corrupting-fresh", "first-fresh");
@@ -1167,62 +517,6 @@ class PluginTcclBoundaryTest {
     }
 
     @Test
-    void startupIdentityAndStatusFailuresRetainPluginActivationIdentity() {
-        ClassLoader original = Thread.currentThread().getContextClassLoader();
-        ClassLoader caller = new MarkerClassLoader(original);
-        ClassLoader plugin = new MarkerClassLoader(original);
-        ContextProbe probe = new ContextProbe(plugin);
-
-        SequencerMode failingMode = new FailingStartupSequencerMode(probe);
-        SequencerModeProvider rawSequencers = new SequencerModeProvider() {
-            @Override public String id() { probe.check(); return "sequencer"; }
-            @Override public SequencerMode create(SequencerContext context) {
-                probe.check();
-                return failingMode;
-            }
-        };
-        L1Observer failingObserver = new FailingStartupObserver(probe);
-        L1ObserverProvider rawObservers = new L1ObserverProvider() {
-            @Override public String type() { probe.check(); return "observer"; }
-            @Override public L1Observer create(
-                    String observerId,
-                    Map<String, String> settings
-            ) {
-                probe.check();
-                return failingObserver;
-            }
-        };
-        SequencerModeProvider sequencers = providerFacade(
-                SequencerModeProvider.class, ContributionKind.SEQUENCER_MODE,
-                rawSequencers, plugin, "sequencer-bundle", "sequencer");
-        L1ObserverProvider observers = providerFacade(
-                L1ObserverProvider.class, ContributionKind.L1_OBSERVER,
-                rawObservers, plugin, "observer-bundle", "observer");
-
-        Thread.currentThread().setContextClassLoader(caller);
-        try {
-            SequencerMode sequencer = sequencers.create(null);
-            assertActivationFailure(
-                    sequencer::id, ContributionKind.SEQUENCER_MODE,
-                    "sequencer-bundle", "sequencer", rawSequencers);
-            assertActivationFailure(
-                    sequencer::status, ContributionKind.SEQUENCER_MODE,
-                    "sequencer-bundle", "sequencer", rawSequencers);
-
-            L1Observer observer = observers.create("observer-instance", Map.of());
-            assertActivationFailure(
-                    observer::observerId, ContributionKind.L1_OBSERVER,
-                    "observer-bundle", "observer", rawObservers);
-            assertActivationFailure(
-                    observer::status, ContributionKind.L1_OBSERVER,
-                    "observer-bundle", "observer", rawObservers);
-            assertCaller(caller);
-        } finally {
-            Thread.currentThread().setContextClassLoader(original);
-        }
-    }
-
-    @Test
     void activationBoundariesWrapEveryNonProcessFatalWithoutPromotingPluginMessages() {
         ClassLoader original = Thread.currentThread().getContextClassLoader();
         ClassLoader caller = new MarkerClassLoader(original);
@@ -1230,327 +524,89 @@ class PluginTcclBoundaryTest {
         ClassLoader rogue = new MarkerClassLoader(original);
         ContextProbe probe = new ContextProbe(plugin);
 
-        String assertionSecret = "secret signer assertion";
+        String assertionSecret = "secret create assertion";
         AssertionError assertion = new AssertionError(assertionSecret);
-        SignerProviderFactory rawSigners = new SignerProviderFactory() {
-            @Override public String scheme() { probe.check(); return "signer"; }
-            @Override public SignerProvider create(String keyReference) {
+        FixtureProvider rawCreators = new FixtureProvider() {
+            @Override public String id() { probe.check(); return "creator"; }
+            @Override public FixtureProduct create() {
                 probe.check();
                 Thread.currentThread().setContextClassLoader(rogue);
                 throw assertion;
             }
         };
-        SignerProviderFactory signers = providerFacade(
-                SignerProviderFactory.class, ContributionKind.SIGNER_PROVIDER,
-                rawSigners, plugin, "signer-bundle", "signer");
+        FixtureProvider creators = providerFacade(FixtureProvider.class, TestPluginKinds.FIXTURE,
+                rawCreators, plugin, "creator-bundle", "creator");
 
-        String linkageSecret = "secret sequencer linkage detail";
+        String linkageSecret = "secret status linkage detail";
         LinkageError linkage = new LinkageError(linkageSecret);
-        SequencerMode rawMode = new SequencerMode() {
-            @Override public String id() { probe.check(); return "sequencer"; }
-            @Override public void init(SequencerContext context) { probe.check(); }
-            @Override public boolean shouldProposeNow(long height) { return false; }
-            @Override public ProposalEligibility checkProposal(byte[] key, long height) {
-                return ProposalEligibility.ACCEPT;
-            }
+        FixtureProduct rawStatus = new FixtureProduct() {
             @Override public Map<String, Object> status() {
                 probe.check();
                 Thread.currentThread().setContextClassLoader(rogue);
                 throw linkage;
             }
         };
-        SequencerModeProvider rawSequencers = new SequencerModeProvider() {
-            @Override public String id() { probe.check(); return "sequencer"; }
-            @Override public SequencerMode create(SequencerContext context) {
-                probe.check();
-                return rawMode;
-            }
-        };
-        SequencerModeProvider sequencers = providerFacade(
-                SequencerModeProvider.class, ContributionKind.SEQUENCER_MODE,
-                rawSequencers, plugin, "sequencer-bundle", "sequencer");
-
-        String checkedSecret = "secret interrupted observer detail";
+        String checkedSecret = "secret interrupted identity detail";
         InterruptedException checked = new InterruptedException(checkedSecret);
-        L1Observer rawObserver = new L1Observer() {
-            @Override public String observerId() {
+        FixtureProduct rawInterrupted = new FixtureProduct() {
+            @Override public String id() {
                 probe.check();
                 Thread.currentThread().setContextClassLoader(rogue);
                 return sneakyThrow(checked);
             }
-            @Override public List<L1Observation> observe(
-                    long slot, byte[] blockHash, Block block) {
-                return List.of();
-            }
         };
-        L1ObserverProvider rawObservers = new L1ObserverProvider() {
-            @Override public String type() { probe.check(); return "observer"; }
-            @Override public L1Observer create(
-                    String observerId, Map<String, String> settings) {
-                probe.check();
-                return rawObserver;
-            }
-        };
-        L1ObserverProvider observers = providerFacade(
-                L1ObserverProvider.class, ContributionKind.L1_OBSERVER,
-                rawObservers, plugin, "observer-bundle", "observer");
-
         String spoofedSecret = "secret spoofed activation diagnostic";
         PluginActivationException spoofed = new PluginActivationException(
                 spoofedSecret, new IllegalStateException("nested plugin detail"));
-        AppEffectExecutor rawExecutor = new AppEffectExecutor() {
+        FixtureProduct rawSpoofed = new FixtureProduct() {
             @Override public String id() {
                 probe.check();
                 Thread.currentThread().setContextClassLoader(rogue);
                 throw spoofed;
             }
-            @Override public boolean supports(String effectType) { return true; }
-            @Override public EffectExecution execute(
-                    EffectExecutionContext context, PendingEffect effect) {
-                return EffectExecution.confirmed(new byte[0]);
-            }
         };
-        AppEffectExecutorFactory rawExecutors = executorFactory(
-                "executor", probe, List.of(rawExecutor));
-        AppEffectExecutorFactory executors = providerFacade(
-                AppEffectExecutorFactory.class, ContributionKind.EFFECT_EXECUTOR,
-                rawExecutors, plugin, "executor-bundle", "executor");
-
-        TestVirtualMachineError fatal = new TestVirtualMachineError(
-                "process-fatal sink identity");
-        FinalizedStreamSink rawSink = new FinalizedStreamSink() {
+        TestVirtualMachineError fatal = new TestVirtualMachineError("process-fatal product identity");
+        FixtureProduct rawFatal = new FixtureProduct() {
             @Override public String id() {
                 probe.check();
                 Thread.currentThread().setContextClassLoader(rogue);
                 throw fatal;
             }
-            @Override public boolean deliver(AppBlock block) { return true; }
         };
-        FinalizedStreamSinkFactory rawSinks = sinkFactory(
-                "sink", probe, List.of(rawSink));
-        FinalizedStreamSinkFactory sinks = providerFacade(
-                FinalizedStreamSinkFactory.class, ContributionKind.FINALIZED_SINK,
-                rawSinks, plugin, "sink-bundle", "sink");
+        FixtureProvider rawProducts = sinkFactory(
+                "products", probe, List.of(rawStatus, rawInterrupted, rawSpoofed, rawFatal));
+        FixtureProvider products = providerFacade(FixtureProvider.class, TestPluginKinds.FIXTURE,
+                rawProducts, plugin, "product-bundle", "products");
 
         Thread.currentThread().setContextClassLoader(caller);
         try {
             assertSecretSafeActivationFailure(
-                    () -> signers.create("key"), assertion, assertionSecret,
-                    ContributionKind.SIGNER_PROVIDER,
-                    "signer-bundle", "signer", rawSigners);
+                    creators::create, assertion, assertionSecret, TestPluginKinds.FIXTURE,
+                    "creator-bundle", "creator", rawCreators);
             assertCaller(caller);
 
-            SequencerMode sequencer = sequencers.create(null);
+            List<FixtureProduct> created = products.createAll();
             assertSecretSafeActivationFailure(
-                    sequencer::status, linkage, linkageSecret,
-                    ContributionKind.SEQUENCER_MODE,
-                    "sequencer-bundle", "sequencer", rawSequencers);
+                    created.get(0)::status, linkage, linkageSecret, TestPluginKinds.FIXTURE,
+                    "product-bundle", "products", rawProducts);
             assertCaller(caller);
 
-            L1Observer observer = observers.create("instance", Map.of());
             assertSecretSafeActivationFailure(
-                    observer::observerId, checked, checkedSecret,
-                    ContributionKind.L1_OBSERVER,
-                    "observer-bundle", "observer", rawObservers);
+                    created.get(1)::id, checked, checkedSecret, TestPluginKinds.FIXTURE,
+                    "product-bundle", "products", rawProducts);
             assertThat(Thread.currentThread().isInterrupted()).isTrue();
             assertCaller(caller);
             Thread.interrupted();
 
-            AppEffectExecutor executor = executors.create("chain", Map.of()).getFirst();
             assertSecretSafeActivationFailure(
-                    executor::id, spoofed, spoofedSecret,
-                    ContributionKind.EFFECT_EXECUTOR,
-                    "executor-bundle", "executor", rawExecutors);
+                    created.get(2)::id, spoofed, spoofedSecret, TestPluginKinds.FIXTURE,
+                    "product-bundle", "products", rawProducts);
             assertCaller(caller);
 
-            FinalizedStreamSink sink = sinks.create("chain", Map.of()).getFirst();
-            assertThatThrownBy(sink::id).isSameAs(fatal);
+            assertThatThrownBy(created.get(3)::id).isSameAs(fatal);
             assertCaller(caller);
         } finally {
             Thread.interrupted();
-            Thread.currentThread().setContextClassLoader(original);
-        }
-    }
-
-    @Test
-    void lazyObserverAndStatusCollectionsGetFreshTcclScopesAfterRogueCallbacks() {
-        ClassLoader original = Thread.currentThread().getContextClassLoader();
-        ClassLoader caller = new MarkerClassLoader(original);
-        ClassLoader plugin = new MarkerClassLoader(original);
-        ClassLoader rogue = new MarkerClassLoader(original);
-        ContextProbe probe = new ContextProbe(plugin);
-        L1Observation observation = L1Observation.transaction(
-                "observer-instance", new byte[32], 1, new byte[32], new byte[0]);
-
-        SequencerMode mode = new SequencerMode() {
-            @Override public String id() { probe.check(); return "sequencer"; }
-            @Override public void init(SequencerContext context) { probe.check(); }
-            @Override public boolean shouldProposeNow(long height) { return false; }
-            @Override public ProposalEligibility checkProposal(byte[] key, long height) {
-                return ProposalEligibility.ACCEPT;
-            }
-            @Override public Map<String, Object> status() {
-                probe.check();
-                Thread.currentThread().setContextClassLoader(rogue);
-                return new ProbeMap<>(probe, Map.of("mode", "ready"));
-            }
-        };
-        SequencerModeProvider sequencers = providerFacade(
-                SequencerModeProvider.class, ContributionKind.SEQUENCER_MODE,
-                new SequencerModeProvider() {
-                    @Override public String id() { probe.check(); return "sequencer"; }
-                    @Override public SequencerMode create(SequencerContext context) {
-                        probe.check();
-                        return mode;
-                    }
-                }, plugin, "sequencer-bundle", "sequencer");
-
-        L1Observer observer = new L1Observer() {
-            @Override public String observerId() {
-                probe.check();
-                return "observer-instance";
-            }
-            @Override public List<L1Observation> observe(
-                    long slot, byte[] blockHash, Block block) {
-                probe.check();
-                Thread.currentThread().setContextClassLoader(rogue);
-                return new ProbeList<>(probe, observation);
-            }
-            @Override public Map<String, Object> status() {
-                probe.check();
-                Thread.currentThread().setContextClassLoader(rogue);
-                return new ProbeMap<>(probe, Map.of("observer", "ready"));
-            }
-        };
-        L1ObserverProvider observers = providerFacade(
-                L1ObserverProvider.class, ContributionKind.L1_OBSERVER,
-                new L1ObserverProvider() {
-                    @Override public String type() { probe.check(); return "observer"; }
-                    @Override public L1Observer create(
-                            String observerId, Map<String, String> settings) {
-                        probe.check();
-                        return observer;
-                    }
-                }, plugin, "observer-bundle", "observer");
-
-        Thread.currentThread().setContextClassLoader(caller);
-        try {
-            assertThat(sequencers.create(null).status()).containsEntry("mode", "ready");
-            L1Observer exposed = observers.create("observer-instance", Map.of());
-            assertThat(exposed.observe(1, new byte[32], null)).singleElement()
-                    .satisfies(snapshot -> {
-                        assertThat(snapshot.observerId()).isEqualTo(observation.observerId());
-                        assertThat(snapshot.slot()).isEqualTo(observation.slot());
-                        assertThat(snapshot.transactionAnchor().transactionHash())
-                                .isEqualTo(observation.transactionAnchor().transactionHash());
-                        assertThat(snapshot.blockHash()).isEqualTo(observation.blockHash());
-                        assertThat(snapshot.claim()).isEqualTo(observation.claim());
-                    });
-            assertThat(exposed.status()).containsEntry("observer", "ready");
-            assertCaller(caller);
-        } finally {
-            Thread.currentThread().setContextClassLoader(original);
-        }
-    }
-
-    @Test
-    void statusAndObservationSnapshotsRejectInfinitePluginCollectionsUnderTccl() {
-        ClassLoader original = Thread.currentThread().getContextClassLoader();
-        ClassLoader caller = new MarkerClassLoader(original);
-        ClassLoader plugin = new MarkerClassLoader(original);
-        ClassLoader rogue = new MarkerClassLoader(original);
-        ContextProbe probe = new ContextProbe(plugin);
-        InfiniteProbeMap sequencerStatus = new InfiniteProbeMap(probe, rogue);
-        InfiniteProbeMap observerStatus = new InfiniteProbeMap(probe, rogue);
-        L1Observation observation = L1Observation.transaction(
-                "observer-instance", new byte[32], 1, new byte[32], new byte[0]);
-        InfiniteProbeList<L1Observation> observations = new InfiniteProbeList<>(
-                probe, rogue, ignored -> observation);
-
-        SequencerMode rawMode = new SequencerMode() {
-            @Override public String id() { probe.check(); return "bounded-status"; }
-            @Override public void init(SequencerContext context) { probe.check(); }
-            @Override public boolean shouldProposeNow(long height) { return false; }
-            @Override public ProposalEligibility checkProposal(byte[] key, long height) {
-                return ProposalEligibility.ACCEPT;
-            }
-            @Override public Map<String, Object> status() {
-                probe.check();
-                Thread.currentThread().setContextClassLoader(rogue);
-                return sequencerStatus;
-            }
-        };
-        SequencerModeProvider rawSequencers = new SequencerModeProvider() {
-            @Override public String id() { probe.check(); return "bounded-status"; }
-            @Override public SequencerMode create(SequencerContext context) {
-                probe.check();
-                return rawMode;
-            }
-        };
-        SequencerModeProvider sequencers = providerFacade(
-                SequencerModeProvider.class, ContributionKind.SEQUENCER_MODE,
-                rawSequencers, plugin, "sequencer-bundle", "bounded-status");
-
-        L1Observer rawObserver = new L1Observer() {
-            @Override public String observerId() {
-                probe.check();
-                return "observer-instance";
-            }
-            @Override public List<L1Observation> observe(
-                    long slot, byte[] blockHash, Block block) {
-                probe.check();
-                Thread.currentThread().setContextClassLoader(rogue);
-                return observations;
-            }
-            @Override public Map<String, Object> status() {
-                probe.check();
-                Thread.currentThread().setContextClassLoader(rogue);
-                return observerStatus;
-            }
-        };
-        L1ObserverProvider rawObservers = new L1ObserverProvider() {
-            @Override public String type() { probe.check(); return "bounded-observer"; }
-            @Override public L1Observer create(
-                    String observerId, Map<String, String> settings) {
-                probe.check();
-                return rawObserver;
-            }
-        };
-        L1ObserverProvider observers = providerFacade(
-                L1ObserverProvider.class, ContributionKind.L1_OBSERVER,
-                rawObservers, plugin, "observer-bundle", "bounded-observer");
-
-        Thread.currentThread().setContextClassLoader(caller);
-        try {
-            PluginActivationException sequencerFailure = assertActivationFailure(
-                    () -> sequencers.create(null).status(),
-                    ContributionKind.SEQUENCER_MODE, "sequencer-bundle",
-                    "bounded-status", rawSequencers);
-            assertThat(sequencerFailure.getCause())
-                    .isInstanceOf(IllegalStateException.class)
-                    .hasMessage("Plugin status must contain at most 256 entries");
-            assertThat(sequencerStatus.hasNextCalls).hasValue(257);
-            assertThat(sequencerStatus.nextCalls).hasValue(256);
-            assertCaller(caller);
-
-            L1Observer observer = observers.create("observer-instance", Map.of());
-            assertThatThrownBy(() -> observer.observe(1, new byte[32], null))
-                    .isInstanceOf(IllegalStateException.class)
-                    .hasMessage("L1 observer result must contain at most 4096 observations");
-            assertThat(observations.hasNextCalls).hasValue(4_097);
-            assertThat(observations.nextCalls).hasValue(4_096);
-            assertCaller(caller);
-
-            PluginActivationException observerFailure = assertActivationFailure(
-                    observer::status, ContributionKind.L1_OBSERVER,
-                    "observer-bundle", "bounded-observer", rawObservers);
-            assertThat(observerFailure.getCause())
-                    .isInstanceOf(IllegalStateException.class)
-                    .hasMessage("Plugin status must contain at most 256 entries");
-            assertThat(observerStatus.hasNextCalls).hasValue(257);
-            assertThat(observerStatus.nextCalls).hasValue(256);
-            assertCaller(caller);
-        } finally {
             Thread.currentThread().setContextClassLoader(original);
         }
     }
@@ -1563,71 +619,34 @@ class PluginTcclBoundaryTest {
         ClassLoader rogue = new MarkerClassLoader(original);
         ContextProbe probe = new ContextProbe(plugin);
 
-        List<String> executorCloseOrder = new ArrayList<>();
-        List<TrackingExecutor> capturedExecutors = new ArrayList<>();
-        InfiniteProbeList<AppEffectExecutor> executorProducts = new InfiniteProbeList<>(
-                probe, rogue, index -> {
-                    TrackingExecutor executor = new TrackingExecutor(
-                            "executor-" + index, probe, executorCloseOrder, null);
-                    capturedExecutors.add(executor);
-                    return executor;
-                });
-        AppEffectExecutorFactory rawExecutors = new AppEffectExecutorFactory() {
-            @Override public String scheme() { probe.check(); return "bounded-executor"; }
-            @Override public List<AppEffectExecutor> create(
-                    String chainId, Map<String, String> config) {
-                probe.check();
-                Thread.currentThread().setContextClassLoader(rogue);
-                return executorProducts;
-            }
-        };
-        AppEffectExecutorFactory executors = providerFacade(
-                AppEffectExecutorFactory.class, ContributionKind.EFFECT_EXECUTOR,
-                rawExecutors, plugin, "executor-bundle", "bounded-executor");
-
         List<String> sinkCloseOrder = new ArrayList<>();
         List<TrackingSink> capturedSinks = new ArrayList<>();
-        InfiniteProbeList<FinalizedStreamSink> sinkProducts = new InfiniteProbeList<>(
+        InfiniteProbeList<FixtureProduct> sinkProducts = new InfiniteProbeList<>(
                 probe, rogue, index -> {
                     TrackingSink sink = new TrackingSink(
                             "sink-" + index, probe, sinkCloseOrder);
                     capturedSinks.add(sink);
                     return sink;
                 });
-        FinalizedStreamSinkFactory rawSinks = new FinalizedStreamSinkFactory() {
-            @Override public String scheme() { probe.check(); return "bounded-sink"; }
-            @Override public List<FinalizedStreamSink> create(
-                    String chainId, Map<String, String> config) {
+        FixtureProvider rawSinks = new FixtureProvider() {
+            @Override public String id() { probe.check(); return "bounded-sink"; }
+            @Override public List<FixtureProduct> createAll() {
                 probe.check();
                 Thread.currentThread().setContextClassLoader(rogue);
                 return sinkProducts;
             }
         };
-        FinalizedStreamSinkFactory sinks = providerFacade(
-                FinalizedStreamSinkFactory.class, ContributionKind.FINALIZED_SINK,
+        FixtureProvider sinks = providerFacade(
+                FixtureProvider.class, TestPluginKinds.FIXTURE,
                 rawSinks, plugin, "sink-bundle", "bounded-sink");
 
         Thread.currentThread().setContextClassLoader(caller);
         try {
-            PluginActivationException executorFailure = assertActivationFailure(
-                    () -> executors.create("chain", Map.of()),
-                    ContributionKind.EFFECT_EXECUTOR, "executor-bundle",
-                    "bounded-executor", rawExecutors);
-            assertThat(executorFailure.getCause())
-                    .isInstanceOf(IllegalStateException.class)
-                    .hasMessage("Plugin factory result must contain at most 256 products");
-            assertThat(executorProducts.hasNextCalls).hasValue(257);
-            assertThat(executorProducts.nextCalls).hasValue(256);
-            assertThat(capturedExecutors).hasSize(256)
-                    .allSatisfy(executor -> assertThat(executor.closeCalls).hasValue(1));
-            assertThat(executorCloseOrder).hasSize(256)
-                    .startsWith("executor-255")
-                    .endsWith("executor-0");
             assertCaller(caller);
 
             PluginActivationException sinkFailure = assertActivationFailure(
-                    () -> sinks.create("chain", Map.of()),
-                    ContributionKind.FINALIZED_SINK, "sink-bundle",
+                    () -> sinks.createAll(),
+                    TestPluginKinds.FIXTURE, "sink-bundle",
                     "bounded-sink", rawSinks);
             assertThat(sinkFailure.getCause())
                     .isInstanceOf(IllegalStateException.class)
@@ -1698,7 +717,7 @@ class PluginTcclBoundaryTest {
                 new CatalogPluginProviderRegistry.Entry(
                         bundleId, ContributionKind.NODE_PLUGIN, bundleId,
                         plugin.getClass().getName(), manifest, () -> plugin);
-        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(
+        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(TestPluginKinds.KINDS,
                 List.of(entry), List.of(bundleId), List.of(), pluginLoader);
 
         Thread.currentThread().setContextClassLoader(caller);
@@ -1772,7 +791,7 @@ class PluginTcclBoundaryTest {
                 new CatalogPluginProviderRegistry.Entry(
                         bundleId, ContributionKind.NODE_PLUGIN, bundleId,
                         plugin.getClass().getName(), manifest, () -> plugin);
-        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(
+        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(TestPluginKinds.KINDS,
                 List.of(entry), List.of(bundleId), List.of(), pluginLoader);
 
         Thread.currentThread().setContextClassLoader(caller);
@@ -1797,70 +816,40 @@ class PluginTcclBoundaryTest {
         ClassLoader plugin = new MarkerClassLoader(original);
         ContextProbe probe = new ContextProbe(plugin);
 
-        List<String> executorCloseOrder = new ArrayList<>();
-        TrackingExecutor ownedExecutor = new TrackingExecutor(
-                "shared-executor", probe, executorCloseOrder, null);
-        TrackingExecutor freshExecutor = new TrackingExecutor(
-                "fresh-executor", probe, executorCloseOrder, null);
-        AppEffectExecutorFactory rawExecutorA = executorFactory(
-                "executor-a", probe, List.of(ownedExecutor));
-        AppEffectExecutorFactory rawExecutorB = executorFactory(
-                "executor-b", probe, List.of(freshExecutor, ownedExecutor));
-
         List<String> sinkCloseOrder = new ArrayList<>();
         TrackingSink ownedSink = new TrackingSink("shared-sink", probe, sinkCloseOrder);
         TrackingSink freshSink = new TrackingSink("fresh-sink", probe, sinkCloseOrder);
-        FinalizedStreamSinkFactory rawSinkA = sinkFactory(
+        FixtureProvider rawSinkA = sinkFactory(
                 "sink-a", probe, List.of(ownedSink));
-        FinalizedStreamSinkFactory rawSinkB = sinkFactory(
+        FixtureProvider rawSinkB = sinkFactory(
                 "sink-b", probe, List.of(freshSink, ownedSink));
 
         List<CatalogPluginProviderRegistry.Entry> entries = List.of(
-                entry("executor-a-bundle", ContributionKind.EFFECT_EXECUTOR,
-                        "executor-a", rawExecutorA, probe),
-                entry("executor-b-bundle", ContributionKind.EFFECT_EXECUTOR,
-                        "executor-b", rawExecutorB, probe),
-                entry("sink-a-bundle", ContributionKind.FINALIZED_SINK,
+                entry("sink-a-bundle", TestPluginKinds.FIXTURE,
                         "sink-a", rawSinkA, probe),
-                entry("sink-b-bundle", ContributionKind.FINALIZED_SINK,
+                entry("sink-b-bundle", TestPluginKinds.FIXTURE,
                         "sink-b", rawSinkB, probe));
-        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(
+        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(TestPluginKinds.KINDS,
                 entries, entries.stream().map(
                         CatalogPluginProviderRegistry.Entry::bundleId).toList(),
                 List.of(), plugin);
 
         Thread.currentThread().setContextClassLoader(caller);
         try {
-            AppEffectExecutorFactory executorA = registry.require(
-                    AppEffectExecutorFactory.class, "executor-a");
-            AppEffectExecutorFactory executorB = registry.require(
-                    AppEffectExecutorFactory.class, "executor-b");
-            AppEffectExecutor firstExecutor = executorA.create(
-                    "chain-a", Map.of()).getFirst();
+            FixtureProvider sinkA = registry.require(
+                    FixtureProvider.class, "sink-a");
+            FixtureProvider sinkB = registry.require(
+                    FixtureProvider.class, "sink-b");
+            FixtureProduct firstSink = sinkA.createAll().getFirst();
             assertReuseFailure(
-                    () -> executorB.create("chain-b", Map.of()),
-                    ContributionKind.EFFECT_EXECUTOR,
-                    "executor-b-bundle", "executor-b", rawExecutorB);
-            assertThat(ownedExecutor.closeCalls).hasValue(0);
-            assertThat(freshExecutor.closeCalls).hasValue(1);
-            assertThat(executorCloseOrder).containsExactly("fresh-executor");
-
-            FinalizedStreamSinkFactory sinkA = registry.require(
-                    FinalizedStreamSinkFactory.class, "sink-a");
-            FinalizedStreamSinkFactory sinkB = registry.require(
-                    FinalizedStreamSinkFactory.class, "sink-b");
-            FinalizedStreamSink firstSink = sinkA.create("chain-a", Map.of()).getFirst();
-            assertReuseFailure(
-                    () -> sinkB.create("chain-b", Map.of()),
-                    ContributionKind.FINALIZED_SINK,
+                    () -> sinkB.createAll(),
+                    TestPluginKinds.FIXTURE,
                     "sink-b-bundle", "sink-b", rawSinkB);
             assertThat(ownedSink.closeCalls).hasValue(0);
             assertThat(freshSink.closeCalls).hasValue(1);
             assertThat(sinkCloseOrder).containsExactly("fresh-sink");
 
-            firstExecutor.close();
             firstSink.close();
-            assertThat(ownedExecutor.closeCalls).hasValue(1);
             assertThat(ownedSink.closeCalls).hasValue(1);
             assertCaller(caller);
         } finally {
@@ -1880,9 +869,8 @@ class PluginTcclBoundaryTest {
         AtomicInteger closeCalls = new AtomicInteger();
 
         TrackingSink owned = new TrackingSink("owned", probe, new ArrayList<>());
-        FinalizedStreamSink fresh = new FinalizedStreamSink() {
+        FixtureProduct fresh = new FixtureProduct() {
             @Override public String id() { probe.check(); return "fresh"; }
-            @Override public boolean deliver(AppBlock block) { probe.check(); return true; }
             @Override public void close() {
                 probe.check();
                 closeCalls.incrementAndGet();
@@ -1898,38 +886,37 @@ class PluginTcclBoundaryTest {
             }
         };
         AtomicInteger firstCreates = new AtomicInteger();
-        FinalizedStreamSinkFactory rawFirst = new FinalizedStreamSinkFactory() {
-            @Override public String scheme() { probe.check(); return "first"; }
-            @Override public List<FinalizedStreamSink> create(
-                    String chainId, Map<String, String> config) {
+        FixtureProvider rawFirst = new FixtureProvider() {
+            @Override public String id() { probe.check(); return "first"; }
+            @Override public List<FixtureProduct> createAll() {
                 probe.check();
                 return firstCreates.incrementAndGet() == 1
                         ? List.of(owned) : List.of(owned, fresh);
             }
         };
-        FinalizedStreamSinkFactory rawSecond = sinkFactory(
+        FixtureProvider rawSecond = sinkFactory(
                 "second", probe, List.of(fresh));
         PluginSpiFacades.ProductReservations reservations =
                 new PluginSpiFacades.ProductReservations();
-        FinalizedStreamSinkFactory first = (FinalizedStreamSinkFactory)
-                PluginSpiFacades.provider(ContributionKind.FINALIZED_SINK, rawFirst,
+        FixtureProvider first = (FixtureProvider)
+                PluginSpiFacades.provider(FIXTURE_BINDING, rawFirst,
                         plugin, "first-bundle", "first", rawFirst.getClass().getName(),
-                        reservations);
-        FinalizedStreamSinkFactory second = (FinalizedStreamSinkFactory)
-                PluginSpiFacades.provider(ContributionKind.FINALIZED_SINK, rawSecond,
+                        reservations, new PluginSpiFacades.CallbackTracker(), false);
+        FixtureProvider second = (FixtureProvider)
+                PluginSpiFacades.provider(FIXTURE_BINDING, rawSecond,
                         plugin, "second-bundle", "second", rawSecond.getClass().getName(),
-                        reservations);
+                        reservations, new PluginSpiFacades.CallbackTracker(), false);
 
         Thread.currentThread().setContextClassLoader(caller);
         var cleanupExecutor = Executors.newSingleThreadExecutor();
         try {
-            FinalizedStreamSink firstOwner = first.create("chain-a", Map.of()).getFirst();
+            FixtureProduct firstOwner = first.createAll().getFirst();
             var rejected = cleanupExecutor.submit(
-                    () -> catchThrowable(() -> first.create("chain-b", Map.of())));
+                    () -> catchThrowable(() -> first.createAll()));
             assertThat(closeStarted.await(5, TimeUnit.SECONDS)).isTrue();
 
-            assertReuseFailure(() -> second.create("chain-c", Map.of()),
-                    ContributionKind.FINALIZED_SINK,
+            assertReuseFailure(() -> second.createAll(),
+                    TestPluginKinds.FIXTURE,
                     "second-bundle", "second", rawSecond);
             assertThat(closeCalls).hasValue(1);
             assertThat(owned.closeCalls).hasValue(0);
@@ -1956,16 +943,13 @@ class PluginTcclBoundaryTest {
         ContextProbe probe = new ContextProbe(plugin);
         List<String> closeOrder = new ArrayList<>();
         AssertionError fatal = new AssertionError("expected fatal cleanup failure");
-        TrackingExecutor owned = new TrackingExecutor("owned", probe, closeOrder, null);
-        TrackingExecutor freshOne = new TrackingExecutor("fresh-1", probe, closeOrder, null);
-        TrackingExecutor freshTwo = new TrackingExecutor("fresh-2", probe, closeOrder, fatal);
+        TrackingSink owned = new TrackingSink("owned", probe, closeOrder, null);
+        TrackingSink freshOne = new TrackingSink("fresh-1", probe, closeOrder, null);
+        TrackingSink freshTwo = new TrackingSink("fresh-2", probe, closeOrder, fatal);
         AtomicInteger creates = new AtomicInteger();
-        AppEffectExecutorFactory rawFactory = new AppEffectExecutorFactory() {
-            @Override public String scheme() { probe.check(); return "executor"; }
-            @Override public List<AppEffectExecutor> create(
-                    String chainId,
-                    Map<String, String> config
-            ) {
+        FixtureProvider rawFactory = new FixtureProvider() {
+            @Override public String id() { probe.check(); return "executor"; }
+            @Override public List<FixtureProduct> createAll() {
                 probe.check();
                 if (creates.incrementAndGet() == 1) {
                     return List.of(owned);
@@ -1973,8 +957,8 @@ class PluginTcclBoundaryTest {
                 return List.of(freshOne, owned, freshTwo);
             }
         };
-        AppEffectExecutorFactory factory = providerFacade(
-                AppEffectExecutorFactory.class, ContributionKind.EFFECT_EXECUTOR,
+        FixtureProvider factory = providerFacade(
+                FixtureProvider.class, TestPluginKinds.FIXTURE,
                 rawFactory, plugin, "executor-bundle", "executor");
 
         List<String> sinkCloseOrder = new ArrayList<>();
@@ -1984,12 +968,9 @@ class PluginTcclBoundaryTest {
         TrackingSink freshSinkTwo = new TrackingSink(
                 "fresh-sink-2", probe, sinkCloseOrder, sinkFatal);
         AtomicInteger sinkCreates = new AtomicInteger();
-        FinalizedStreamSinkFactory rawSinkFactory = new FinalizedStreamSinkFactory() {
-            @Override public String scheme() { probe.check(); return "sink"; }
-            @Override public List<FinalizedStreamSink> create(
-                    String chainId,
-                    Map<String, String> config
-            ) {
+        FixtureProvider rawSinkFactory = new FixtureProvider() {
+            @Override public String id() { probe.check(); return "sink"; }
+            @Override public List<FixtureProduct> createAll() {
                 probe.check();
                 if (sinkCreates.incrementAndGet() == 1) {
                     return List.of(ownedSink);
@@ -1997,14 +978,14 @@ class PluginTcclBoundaryTest {
                 return List.of(freshSinkOne, ownedSink, freshSinkTwo);
             }
         };
-        FinalizedStreamSinkFactory sinkFactory = providerFacade(
-                FinalizedStreamSinkFactory.class, ContributionKind.FINALIZED_SINK,
+        FixtureProvider sinkFactory = providerFacade(
+                FixtureProvider.class, TestPluginKinds.FIXTURE,
                 rawSinkFactory, plugin, "sink-bundle", "sink");
 
         Thread.currentThread().setContextClassLoader(caller);
         try {
-            AppEffectExecutor first = factory.create("chain-a", Map.of()).getFirst();
-            Throwable failure = catchThrowable(() -> factory.create("chain-b", Map.of()));
+            FixtureProduct first = factory.createAll().getFirst();
+            Throwable failure = catchThrowable(() -> factory.createAll());
             assertThat(failure)
                     .isInstanceOf(PluginActivationException.class)
                     .hasMessageNotContaining(fatal.getMessage())
@@ -2015,9 +996,9 @@ class PluginTcclBoundaryTest {
             assertThat(freshTwo.closeCalls).hasValue(1);
             assertErrorReuseCollision(fatal);
 
-            FinalizedStreamSink firstSink = sinkFactory.create("chain-a", Map.of()).getFirst();
+            FixtureProduct firstSink = sinkFactory.createAll().getFirst();
             Throwable sinkFailure = catchThrowable(
-                    () -> sinkFactory.create("chain-b", Map.of()));
+                    () -> sinkFactory.createAll());
             assertThat(sinkFailure)
                     .isInstanceOf(PluginActivationException.class)
                     .hasMessageNotContaining(sinkFatal.getMessage())
@@ -2219,38 +1200,18 @@ class PluginTcclBoundaryTest {
             String bundleId,
             String selector
     ) {
-        return providerType.cast(PluginSpiFacades.provider(
-                kind, delegate, loader, bundleId, selector, delegate.getClass().getName()));
+        return providerType.cast(PluginSpiFacades.provider(TestPluginKinds.KINDS.binding(kind),
+                delegate, loader, bundleId, selector, delegate.getClass().getName()));
     }
 
-    private static AppEffectExecutorFactory executorFactory(
+    private static FixtureProvider sinkFactory(
             String scheme,
             ContextProbe probe,
-            List<AppEffectExecutor> products
+            List<FixtureProduct> products
     ) {
-        return new AppEffectExecutorFactory() {
-            @Override public String scheme() { probe.check(); return scheme; }
-            @Override public List<AppEffectExecutor> create(
-                    String chainId,
-                    Map<String, String> config
-            ) {
-                probe.check();
-                return products;
-            }
-        };
-    }
-
-    private static FinalizedStreamSinkFactory sinkFactory(
-            String scheme,
-            ContextProbe probe,
-            List<FinalizedStreamSink> products
-    ) {
-        return new FinalizedStreamSinkFactory() {
-            @Override public String scheme() { probe.check(); return scheme; }
-            @Override public List<FinalizedStreamSink> create(
-                    String chainId,
-                    Map<String, String> config
-            ) {
+        return new FixtureProvider() {
+            @Override public String id() { probe.check(); return scheme; }
+            @Override public List<FixtureProduct> createAll() {
                 probe.check();
                 return products;
             }
@@ -2319,12 +1280,6 @@ class PluginTcclBoundaryTest {
 
     private static void assertCaller(ClassLoader caller) {
         assertThat(Thread.currentThread().getContextClassLoader()).isSameAs(caller);
-    }
-
-    private static byte[] filledBytes(int length, byte value) {
-        byte[] result = new byte[length];
-        java.util.Arrays.fill(result, value);
-        return result;
     }
 
     private static WeakReference<Object> reserveEphemeralProduct(
@@ -2401,12 +1356,6 @@ class PluginTcclBoundaryTest {
                 }
             };
         }
-    }
-
-    private record ProbeEntry(ContextProbe probe, Object key, Object value) implements Map.Entry<Object, Object> {
-        @Override public Object getKey() { probe.check(); return key; }
-        @Override public Object getValue() { probe.check(); return value; }
-        @Override public Object setValue(Object replacement) { throw new UnsupportedOperationException(); }
     }
 
     private static final class ProbeList<T> extends AbstractList<T> {
@@ -2630,9 +1579,6 @@ class PluginTcclBoundaryTest {
         }
     }
 
-    private record TestEvent() implements Event {
-    }
-
     private static final class CapturingEventBus implements EventBus {
         private Class<? extends Event> type;
         private EventListener<? extends Event> listener;
@@ -2740,595 +1686,7 @@ class PluginTcclBoundaryTest {
         @Override public void close() { probe.check(); }
     }
 
-    private static final class AssertingStateMachineProvider implements AppStateMachineProvider {
-        private final ContextProbe probe;
-
-        private AssertingStateMachineProvider(ContextProbe probe) {
-            this.probe = probe;
-        }
-
-        @Override public String id() { probe.check(); return "machine"; }
-        @Override public AppStateMachine create() {
-            probe.check();
-            return new AssertingStateMachine(probe);
-        }
-        @Override public AppStateMachine create(AppStateMachineContext context) {
-            probe.check();
-            return new AssertingStateMachine(probe);
-        }
-    }
-
-    private static <C, F> void exerciseKernel(TransitionKernel<C, F> kernel) {
-        C command = kernel.codec().decode(new byte[]{1});
-        assertThat(kernel.codec().encode(command)).containsExactly(1);
-        assertThat(kernel.codec().type()).isEqualTo(byte[].class);
-        var context = new TransitionContext(1, 0, 0, new byte[32], "test", new byte[32]);
-        assertThat(kernel.admit(command).isAccepted()).isTrue();
-        C rejected = kernel.codec().decode(new byte[]{0});
-        assertThat(kernel.admit(rejected).reason()).isEqualTo("COMMAND_REJECTED");
-        assertThat(kernel.admit(command, context).isAccepted()).isTrue();
-        F facts = kernel.facts(command, context, null);
-        assertThat(kernel.readParticipants()).isEmpty();
-        assertThat(kernel.workBudgets()).containsExactly(new TransitionWorkBudget("crypto", new byte[]{9}, 5));
-        assertThat(kernel.workReferences()).containsExactly(new TransitionWorkReference("machine", "crypto"));
-        assertThat(kernel.workRequest(command, context)).contains(new TransitionWorkRequest(
-                new TransitionWorkReference("machine", "crypto"), 1));
-        assertThat(kernel.facts(command, context, null, Map.of())).isEqualTo(facts);
-        assertThat(kernel.decide(command, context, facts)).isInstanceOf(TransitionDecision.Approved.class);
-        assertThat(kernel.commands()).hasSize(1);
-        assertThat(kernel.events()).hasSize(1);
-        assertThat(kernel.configuration().settings()).isEmpty();
-        byte[] logical = {4};
-        assertThat(kernel.lookupKey(logical)).containsExactly(5);
-        assertThat(logical).containsExactly(4);
-        assertThat(kernel.ruleFacts()).containsExactly(new RuleFact("verified", RuleFact.Type.BOOLEAN),
-                new RuleFact("roles", RuleFact.Type.TEXT_SET), new RuleFact("digest", RuleFact.Type.BYTES));
-        Map<String, Object> values = kernel.ruleFactValues(command, context, facts);
-        assertThat(values).containsEntry("verified", true).containsEntry("roles", List.of("auditor", "operator"));
-        @SuppressWarnings("unchecked")
-        List<String> copied = (List<String>) values.get("mutable");
-        assertThat(copied).containsExactly("a", "b");
-        assertThatThrownBy(() -> copied.add("c")).isInstanceOf(UnsupportedOperationException.class);
-        byte[] digest = (byte[]) values.get("digest");
-        digest[0] = 99;
-        assertThat((byte[]) kernel.ruleFactValues(command, context, facts).get("digest")).containsExactly(7);
-        assertThatThrownBy(() -> values.put("forged", true)).isInstanceOf(UnsupportedOperationException.class);
-        // Oversized values are truncated one element past their bound, never rejected here: the engine rejects them.
-        C oversized = kernel.codec().decode(new byte[]{2});
-        Map<String, Object> overflow = kernel.ruleFactValues(oversized, context, facts);
-        assertThat(overflow).hasSize(RuleFact.MAX_FACTS);
-        assertThat((List<?>) overflow.get("roles")).hasSize(RuleFact.MAX_SET_ENTRIES + 1);
-        assertThat((byte[]) overflow.get("blob")).hasSize(RuleFact.MAX_VALUE_BYTES + 1);
-        assertThat(kernel.ruleFactValues(kernel.codec().decode(new byte[]{3}), context, facts)).isNull();
-        Map<String, Object> repeated = kernel.ruleFactValues(kernel.codec().decode(new byte[]{4}), context, facts);
-        // Overflowing its bound, the map becomes the marker alone rather than a collapsed, valid-looking entry.
-        assertThat(repeated).containsOnlyKeys("");
-        Map<String, Object> malformed = kernel.ruleFactValues(kernel.codec().decode(new byte[]{5}), context, facts);
-        assertThat(malformed).containsOnlyKeys("", "roles");
-        assertThat(malformed.get("roles")).isNotInstanceOf(java.util.TreeSet.class);
-        exerciseRuleViews(kernel, command, context, facts);
-    }
-
-    /** ADR-031.4 typed views cross the facade under the plugin TCCL, as bounded host-owned copies. */
-    private static <C, F> void exerciseRuleViews(TransitionKernel<C, F> kernel, C command, TransitionContext context,
-                                                 F facts) {
-        var balance = new RuleFact("balance", RuleFact.Type.INTEGER);
-        assertThat(kernel.ruleValueViews()).containsExactly(new RuleValueView("", List.of(balance), List.of()),
-                new RuleValueView("items", List.of(new RuleFact("status", RuleFact.Type.TEXT)),
-                        List.of(new RuleFact("price", RuleFact.Type.INTEGER))));
-        byte[] key = {4};
-        byte[] local = kernel.ruleValueKey("items", key);
-        assertThat(local).containsExactly(5);
-        assertThat(key).containsExactly(4);
-        local[0] = 42;
-        assertThat(kernel.ruleValueKey("items", key)).containsExactly(5);
-        Map<String, Object> decoded = kernel.ruleValueFields("items", key, new byte[]{1});
-        assertThat(decoded).containsEntry("status", "ACTIVE").containsEntry("value.price", 12L);
-        ((byte[]) decoded.get("value.tag"))[0] = 99;
-        assertThat((byte[]) kernel.ruleValueFields("items", key, new byte[]{1}).get("value.tag")).containsExactly(7);
-        assertThatThrownBy(() -> decoded.put("forged", true)).isInstanceOf(UnsupportedOperationException.class);
-        // More than declared fields plus value fields: the marker alone, for the engine to reject.
-        assertThat(kernel.ruleValueFields("items", key, new byte[]{2})).containsOnlyKeys("");
-        assertThat(kernel.ruleValueFields("items", key, new byte[]{3})).isNull();
-
-        assertThat(kernel.ruleWriteFields()).containsExactly(new RuleFact("op", RuleFact.Type.TEXT));
-        assertThat(kernel.ruleWriteCoverageFields()).containsExactly(new RuleFact("actorId", RuleFact.Type.TEXT));
-        List<Map<String, Object>> writes = kernel.ruleWrites(command);
-        assertThat(writes).containsExactly(Map.of("op", "PUT"), Map.of("op", "REVOKE"));
-        assertThatThrownBy(() -> writes.add(Map.of())).isInstanceOf(UnsupportedOperationException.class);
-        assertThatThrownBy(() -> writes.getFirst().put("op", "PUT")).isInstanceOf(UnsupportedOperationException.class);
-        assertThat(kernel.ruleWrites(kernel.codec().decode(new byte[]{2}))).hasSize(RuleValueView.MAX_WRITES + 1);
-        assertThat(kernel.ruleWrites(kernel.codec().decode(new byte[]{3}))).isNull();
-        // A null or foreign element becomes the host's non-conforming marker instead of escaping or throwing.
-        assertThat(kernel.ruleWrites(kernel.codec().decode(new byte[]{5})))
-                .allSatisfy(element -> assertThat(element).containsOnlyKeys(""));
-        assertThat(kernel.ruleWriteCoverage(command, context, facts)).containsExactly(Map.of("actorId", "maker-a"),
-                Map.of());
-    }
-
-    private static final class AssertingStateMachine implements AppStateMachine {
-        private final ContextProbe probe;
-
-        private AssertingStateMachine(ContextProbe probe) { this.probe = probe; }
-
-        @Override public String id() { probe.check(); return "machine"; }
-        @Override public Optional<TransitionKernel<?, ?>> transitionKernel() {
-            probe.check();
-            return Optional.of(new TransitionKernel<byte[], Boolean>() {
-                private final OrderedLogKernel delegate = new OrderedLogKernel();
-                private final byte[] digest = {7};
-                private final List<String> mutableRoles = new ArrayList<>(List.of("a", "b"));
-                @Override public MessageCodec<byte[]> codec() {
-                    probe.check();
-                    return new MessageCodec<>() {
-                        @Override public byte[] encode(byte[] value) { probe.check(); return value.clone(); }
-                        @Override public byte[] decode(byte[] body) { probe.check(); return body.clone(); }
-                        @Override public Class<byte[]> type() { probe.check(); return byte[].class; }
-                    };
-                }
-                @Override public AdmissionResult admit(byte[] command) {
-                    probe.check();
-                    return command[0] == 0 ? AdmissionResult.reject("COMMAND_REJECTED") : AdmissionResult.accept();
-                }
-                @Override public AdmissionResult admit(byte[] command, TransitionContext context) {
-                    probe.check();
-                    return AdmissionResult.accept();
-                }
-                @Override public Boolean facts(byte[] command, TransitionContext context, AppStateReader state) {
-                    probe.check();
-                    return true;
-                }
-                @Override public List<String> readParticipants() { probe.check(); return List.of(); }
-                @Override public byte[] lookupKey(byte[] logicalKey) {
-                    probe.check();
-                    logicalKey[0]++;
-                    return logicalKey;
-                }
-                @Override public List<TransitionWorkBudget> workBudgets() {
-                    probe.check();
-                    return List.of(new TransitionWorkBudget("crypto", new byte[]{9}, 5));
-                }
-                @Override public List<TransitionWorkReference> workReferences() {
-                    probe.check();
-                    return List.of(new TransitionWorkReference("machine", "crypto"));
-                }
-                @Override public Optional<TransitionWorkRequest> workRequest(byte[] command, TransitionContext context) {
-                    probe.check();
-                    return Optional.of(new TransitionWorkRequest(new TransitionWorkReference("machine", "crypto"), 1));
-                }
-                @Override public Boolean facts(byte[] command, TransitionContext context, AppStateReader state,
-                                                Map<String, AppStateReader> participants) {
-                    probe.check();
-                    assertThat(participants).isEmpty();
-                    return true;
-                }
-                @Override public TransitionDecision decide(byte[] command, TransitionContext context, Boolean facts) {
-                    probe.check();
-                    return delegate.decide(command, context, facts);
-                }
-                @Override public List<RuleFact> ruleFacts() {
-                    probe.check();
-                    return List.of(new RuleFact("verified", RuleFact.Type.BOOLEAN),
-                            new RuleFact("roles", RuleFact.Type.TEXT_SET), new RuleFact("digest", RuleFact.Type.BYTES));
-                }
-                @Override public Map<String, Object> ruleFactValues(byte[] command, TransitionContext context,
-                                                                    Boolean facts) {
-                    probe.check();
-                    return switch (command[0]) {
-                        case 3 -> null;
-                        case 2 -> {
-                            List<Map.Entry<?, ?>> oversized = new ArrayList<>();
-                            oversized.add(Map.entry("roles", IntStream.range(0, 100)
-                                    .mapToObj(index -> "role" + index).toList()));
-                            oversized.add(Map.entry("blob", new byte[1_000_000]));
-                            for (int index = 0; index < RuleFact.MAX_FACTS - 2; index++) {
-                                oversized.add(Map.entry("fact" + index, true));
-                            }
-                            yield new ProbeEntries(probe, oversized, false);
-                        }
-                        // A misbehaving iterator that repeats one key forever must still terminate.
-                        case 4 -> new ProbeEntries(probe, List.of(Map.entry("verified", true)), true);
-                        // A raw map: a non-text key, a null entry, and a plugin-owned value object.
-                        case 5 -> new ProbeEntries(probe, Arrays.asList(new AbstractMap.SimpleEntry<>(42L, true),
-                                null, Map.entry("roles", new java.util.TreeSet<>(List.of("a")))), false);
-                        default -> new ProbeEntries(probe, List.of(Map.entry("verified", facts),
-                                Map.entry("roles", new ProbeList<>(probe, "auditor", "operator")),
-                                Map.entry("digest", digest), Map.entry("mutable", mutableRoles)), false);
-                    };
-                }
-                @Override public List<RuleValueView> ruleValueViews() {
-                    probe.check();
-                    return List.of(new RuleValueView("", List.of(new RuleFact("balance", RuleFact.Type.INTEGER)),
-                                    List.of()),
-                            new RuleValueView("items", List.of(new RuleFact("status", RuleFact.Type.TEXT)),
-                                    List.of(new RuleFact("price", RuleFact.Type.INTEGER))));
-                }
-                @Override public byte[] ruleValueKey(String namespace, byte[] key) {
-                    probe.check();
-                    key[0]++;
-                    return key;
-                }
-                @Override public Map<String, Object> ruleValueFields(String namespace, byte[] key, byte[] stored) {
-                    probe.check();
-                    return switch (stored[0]) {
-                        case 3 -> null;
-                        case 2 -> {
-                            List<Map.Entry<?, ?>> oversized = new ArrayList<>();
-                            for (int index = 0; index < 100; index++) oversized.add(Map.entry("f" + index, 1L));
-                            yield new ProbeEntries(probe, oversized, false);
-                        }
-                        default -> new ProbeEntries(probe, List.of(Map.entry("status", "ACTIVE"),
-                                Map.entry("value.price", 12L), Map.entry("value.tag", digest)), false);
-                    };
-                }
-                @Override public List<RuleFact> ruleWriteFields() {
-                    probe.check();
-                    return List.of(new RuleFact("op", RuleFact.Type.TEXT));
-                }
-                @Override public List<RuleFact> ruleWriteCoverageFields() {
-                    probe.check();
-                    return List.of(new RuleFact("actorId", RuleFact.Type.TEXT));
-                }
-                @Override public List<Map<String, Object>> ruleWrites(byte[] command) {
-                    probe.check();
-                    return switch (command[0]) {
-                        case 3 -> null;
-                        case 2 -> IntStream.range(0, 200).mapToObj(index -> Map.<String, Object>of("op", "PUT"))
-                                .toList();
-                        case 5 -> {
-                            List<Object> foreign = Arrays.asList(null, "not a map");
-                            @SuppressWarnings("unchecked")
-                            List<Map<String, Object>> raw = (List<Map<String, Object>>) (List<?>) foreign;
-                            yield raw;
-                        }
-                        default -> new ProbeList<Map<String, Object>>(probe, new ProbeEntries(probe,
-                                List.of(Map.entry("op", "PUT")), false), Map.<String, Object>of("op", "REVOKE"));
-                    };
-                }
-                @Override public List<Map<String, Object>> ruleWriteCoverage(byte[] command, TransitionContext context,
-                                                                            Boolean facts) {
-                    probe.check();
-                    return List.of(Map.of("actorId", "maker-a"), Map.of());
-                }
-                @Override public List<CommandDescriptor> commands() { probe.check(); return delegate.commands(); }
-                @Override public List<EventDescriptor> events() { probe.check(); return delegate.events(); }
-                @Override public ConfigurationDescriptor configuration() {
-                    probe.check();
-                    return delegate.configuration();
-                }
-            });
-        }
-        @Override public void init(AppStateReader state, AppChainInfo info) { probe.check(); }
-        @Override public AdmissionResult validate(AppMessage message) {
-            probe.check();
-            return AdmissionResult.accept();
-        }
-        @Override
-        public AdmissionResult validateForBlock(
-                AppMessage message, long candidateHeight, AppStateReader committedState
-        ) {
-            probe.check();
-            return AdmissionResult.accept();
-        }
-        @Override
-        public AdmissionResult validatePrivilegedSystemSubmission(String topic, byte[] body) {
-            probe.check();
-            return AdmissionResult.accept();
-        }
-        @Override public Map<String, Object> operationalStatus() {
-            probe.check();
-            return new ProbeMap<>(probe, Map.of("profile", "ready"));
-        }
-        @Override
-        public List<AuthenticatedSnapshotSeriesDescriptorV1> authenticatedSnapshotSeries() {
-            probe.check();
-            var profile = StateCommitmentProfiles.MPF;
-            return List.of(new AuthenticatedSnapshotSeriesDescriptorV1(
-                    "history", "history-v1",
-                    AuthenticatedSnapshotSeriesDescriptorV1.Trigger.L1_EPOCH_BOUNDARY,
-                    profile.id(), profile.formatFingerprint(), profile.proofEncodingId(),
-                    AuthenticatedSnapshotSeriesDescriptorV1.VerificationTarget.ON_CHAIN,
-                    AuthenticatedSnapshotSeriesDescriptorV1.Visibility.PUBLIC,
-                    "test", "test-v1", 1, 1024, 32, 1024, 1,
-                    AuthenticatedSnapshotSeriesDescriptorV1.RecoveryCoverage.DATASET));
-        }
-        @Override
-        public List<AuthenticatedSnapshotSourceCommitmentV1>
-                authenticatedSnapshotSourceCommitments() {
-            probe.check();
-            return List.of(new AuthenticatedSnapshotSourceCommitmentV1() {
-                @Override public String seriesId() { probe.check(); return "history"; }
-                @Override public String algorithm() { probe.check(); return "test"; }
-                @Override public String wireVersion() { probe.check(); return "test-v1"; }
-                @Override public byte[] initial(SnapshotDescriptorDraftV1 draft) {
-                    probe.check();
-                    return new byte[]{1};
-                }
-                @Override public byte[] append(
-                        byte[] accumulator, long chunkIndex, List<SnapshotEntry> entries
-                ) {
-                    probe.check();
-                    accumulator[0] = 9;
-                    return new byte[]{2};
-                }
-                @Override public byte[] finish(byte[] accumulator, long chunks, long entries) {
-                    probe.check();
-                    accumulator[0] = 8;
-                    return new byte[]{3};
-                }
-            });
-        }
-        @Override
-        public void apply(AppBlockExecutionContext context, AppStateWriter writer,
-                          AppEffectEmitter effects) {
-            probe.check();
-        }
-        @Override
-        public void onEffectResult(
-                AppBlockExecutionContext context,
-                EffectResult result,
-                AppStateWriter writer,
-                AppEffectEmitter effects
-        ) {
-            probe.check();
-        }
-        @Override public byte[] query(
-                String path, byte[] params, AppQueryContext context
-        ) {
-            probe.check();
-            throw new IllegalStateException("expected query failure");
-        }
-    }
-
-    private static final class AssertingSequencerProvider implements SequencerModeProvider {
-        private final ContextProbe probe;
-        private final SequencerMode mode;
-
-        private AssertingSequencerProvider(ContextProbe probe) {
-            this.probe = probe;
-            this.mode = new AssertingSequencerMode(probe);
-        }
-
-        @Override public String id() { probe.check(); return "sequencer"; }
-        @Override public SequencerMode create(SequencerContext context) {
-            probe.check();
-            return mode;
-        }
-    }
-
-    private static final class AssertingSequencerMode implements SequencerMode {
-        private final ContextProbe probe;
-
-        private AssertingSequencerMode(ContextProbe probe) { this.probe = probe; }
-
-        @Override public String id() { probe.check(); return "sequencer"; }
-        @Override public void init(SequencerContext context) { probe.check(); }
-        @Override public boolean shouldProposeNow(long height) { probe.check(); return true; }
-        @Override public ProposalEligibility checkProposal(byte[] proposerKey, long height) {
-            probe.check();
-            return ProposalEligibility.ACCEPT;
-        }
-        @Override public Map<String, Object> status() {
-            probe.check();
-            return new ProbeMap<>(probe, Map.of("mode", "ready"));
-        }
-    }
-
-    private static final class FailingStartupSequencerMode implements SequencerMode {
-        private final ContextProbe probe;
-
-        private FailingStartupSequencerMode(ContextProbe probe) {
-            this.probe = probe;
-        }
-
-        @Override public String id() {
-            probe.check();
-            throw new IllegalStateException("expected sequencer id failure");
-        }
-        @Override public void init(SequencerContext context) { probe.check(); }
-        @Override public boolean shouldProposeNow(long height) { return false; }
-        @Override public ProposalEligibility checkProposal(byte[] proposerKey, long height) {
-            return ProposalEligibility.REJECT;
-        }
-        @Override public Map<String, Object> status() {
-            probe.check();
-            throw new IllegalStateException("expected sequencer status failure");
-        }
-    }
-
-    private static final class AssertingObserverProvider implements L1ObserverProvider {
-        private final ContextProbe probe;
-        private final L1Observer observer;
-
-        private AssertingObserverProvider(ContextProbe probe) {
-            this.probe = probe;
-            this.observer = new AssertingObserver(probe);
-        }
-
-        @Override public String type() { probe.check(); return "observer"; }
-        @Override public L1Observer create(String observerId, Map<String, String> settings) {
-            probe.check();
-            return observer;
-        }
-    }
-
-    private static final class AssertingObserver implements L1Observer {
-        private final ContextProbe probe;
-
-        private AssertingObserver(ContextProbe probe) { this.probe = probe; }
-
-        @Override public String observerId() { probe.check(); return "instance"; }
-        @Override public List<L1Observation> observe(long slot, byte[] blockHash, Block block) {
-            probe.check();
-            return new ProbeList<>(probe,
-                    L1Observation.transaction("instance", new byte[32], slot,
-                            new byte[32], new byte[0]));
-        }
-        @Override public Map<String, Object> status() {
-            probe.check();
-            return new ProbeMap<>(probe, Map.of("observer", "ready"));
-        }
-    }
-
-    private static final class FailingStartupObserver implements L1Observer {
-        private final ContextProbe probe;
-
-        private FailingStartupObserver(ContextProbe probe) {
-            this.probe = probe;
-        }
-
-        @Override public String observerId() {
-            probe.check();
-            throw new IllegalStateException("expected observer id failure");
-        }
-        @Override public List<L1Observation> observe(long slot, byte[] blockHash, Block block) {
-            return List.of();
-        }
-        @Override public Map<String, Object> status() {
-            probe.check();
-            throw new IllegalStateException("expected observer status failure");
-        }
-    }
-
-    private static final class AssertingSignerFactory implements SignerProviderFactory {
-        private final ContextProbe probe;
-        private final SignerProvider signer;
-
-        private AssertingSignerFactory(ContextProbe probe) {
-            this.probe = probe;
-            this.signer = new AssertingSigner(probe);
-        }
-
-        @Override public String scheme() { probe.check(); return "signer"; }
-        @Override public SignerProvider create(String keyReference) {
-            probe.check();
-            return signer;
-        }
-    }
-
-    private static final class AssertingSigner implements SignerProvider {
-        private final ContextProbe probe;
-
-        private AssertingSigner(ContextProbe probe) { this.probe = probe; }
-
-        @Override public byte[] sign(byte[] message) { probe.check(); return new byte[64]; }
-        @Override public byte[] publicKey() { probe.check(); return new byte[32]; }
-        @Override public String publicKeyHex() { probe.check(); return "00".repeat(32); }
-    }
-
-    private static final class AssertingExecutorFactory implements AppEffectExecutorFactory {
-        private final ContextProbe probe;
-        private final AppEffectExecutor executor;
-
-        private AssertingExecutorFactory(ContextProbe probe) {
-            this.probe = probe;
-            this.executor = new AssertingExecutor(probe);
-        }
-
-        @Override public String scheme() { probe.check(); return "executor"; }
-        @Override public List<AppEffectExecutor> create(
-                String chainId, Map<String, String> config) {
-            probe.check();
-            return new ProbeList<>(probe, executor, executor);
-        }
-    }
-
-    private static final class AssertingExecutor implements AppEffectExecutor {
-        private final ContextProbe probe;
-
-        private AssertingExecutor(ContextProbe probe) { this.probe = probe; }
-
-        @Override public String id() { probe.check(); return "executor"; }
-        @Override public Set<String> effectTypes() { probe.check(); return Set.of("effect"); }
-        @Override public EffectExecutorOperationalSnapshot operationalSnapshot() {
-            probe.check();
-            return new EffectExecutorOperationalSnapshot(
-                    EffectExecutorOperationalSnapshot.Readiness.READY,
-                    1, 1, 0, 0, 0,
-                    EffectExecutorOperationalSnapshot.AgeBucket.LESS_THAN_ONE_MINUTE,
-                    EffectExecutorOperationalSnapshot.AgeBucket.NEVER,
-                    EffectExecutorOperationalSnapshot.FailureCode.NONE);
-        }
-        @Override public boolean supports(String effectType) { probe.check(); return true; }
-        @Override public EffectExecution execute(EffectExecutionContext ctx, PendingEffect effect) {
-            probe.check();
-            return EffectExecution.confirmed(new byte[0]);
-        }
-        @Override public void close() { probe.check(); }
-    }
-
-    private static final class TrackingExecutor implements AppEffectExecutor {
-        private final String id;
-        private final ContextProbe probe;
-        private final List<String> closeOrder;
-        private final Throwable closeFailure;
-        private final AtomicInteger closeCalls = new AtomicInteger();
-
-        private TrackingExecutor(
-                String id,
-                ContextProbe probe,
-                List<String> closeOrder,
-                Throwable closeFailure
-        ) {
-            this.id = id;
-            this.probe = probe;
-            this.closeOrder = closeOrder;
-            this.closeFailure = closeFailure;
-        }
-
-        @Override public String id() { probe.check(); return id; }
-        @Override public boolean supports(String effectType) { return true; }
-        @Override public EffectExecution execute(EffectExecutionContext ctx, PendingEffect effect) {
-            return EffectExecution.confirmed(new byte[0]);
-        }
-        @Override public void close() {
-            probe.check();
-            closeCalls.incrementAndGet();
-            closeOrder.add(id);
-            if (closeFailure instanceof Error error) {
-                throw error;
-            }
-            if (closeFailure instanceof RuntimeException runtime) {
-                throw runtime;
-            }
-        }
-    }
-
-    private static final class AssertingSinkFactory
-            implements FinalizedStreamSinkFactory, AutoCloseable {
-        private final ContextProbe probe;
-        private final FinalizedStreamSink sink;
-        private final AtomicInteger closeCalls = new AtomicInteger();
-
-        private AssertingSinkFactory(ContextProbe probe) {
-            this.probe = probe;
-            this.sink = new AssertingSink(probe);
-        }
-
-        @Override public String scheme() { probe.check(); return "sink"; }
-        @Override public List<FinalizedStreamSink> create(
-                String chainId, Map<String, String> config) {
-            probe.check();
-            return new ProbeList<>(probe, sink, sink);
-        }
-        @Override public void close() { probe.check(); closeCalls.incrementAndGet(); }
-    }
-
-    private static final class AssertingSink implements FinalizedStreamSink {
-        private final ContextProbe probe;
-
-        private AssertingSink(ContextProbe probe) { this.probe = probe; }
-
-        @Override public String id() { probe.check(); return "sink"; }
-        @Override public boolean deliver(AppBlock block) throws Exception {
-            probe.check();
-            throw new IOException("expected delivery failure");
-        }
-        @Override public String legacyCursorKey() { probe.check(); return "old-sink"; }
-        @Override public void close() { probe.check(); }
-    }
-
-    private static final class TrackingSink implements FinalizedStreamSink {
+    private static final class TrackingSink implements FixtureProduct {
         private final String id;
         private final ContextProbe probe;
         private final List<String> closeOrder;
@@ -3352,7 +1710,6 @@ class PluginTcclBoundaryTest {
         }
 
         @Override public String id() { probe.check(); return id; }
-        @Override public boolean deliver(AppBlock block) { return true; }
         @Override public void close() {
             probe.check();
             closeCalls.incrementAndGet();
@@ -3386,5 +1743,15 @@ class PluginTcclBoundaryTest {
         @Override public void start() { probe.check(); startCalls.incrementAndGet(); }
         @Override public void stop() { probe.check(); stopCalls.incrementAndGet(); }
         @Override public void close() { probe.check(); closeCalls.incrementAndGet(); }
+    }
+
+
+    private record ProbeEntry(ContextProbe probe, Object key, Object value) implements Map.Entry<Object, Object> {
+        @Override public Object getKey() { probe.check(); return key; }
+        @Override public Object getValue() { probe.check(); return value; }
+        @Override public Object setValue(Object replacement) { throw new UnsupportedOperationException(); }
+    }
+
+    private record TestEvent() implements Event {
     }
 }

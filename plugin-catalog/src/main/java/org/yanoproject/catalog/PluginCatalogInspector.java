@@ -4,7 +4,6 @@ import org.yanoproject.api.plugin.PluginBundleInfo;
 import org.yanoproject.api.plugin.PluginContributionInfo;
 import org.yanoproject.api.plugin.PluginSelectionStatus;
 import org.yanoproject.api.plugin.PluginSourceCategory;
-import org.yanoproject.api.plugin.PluginTrustTier;
 
 import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
@@ -34,9 +33,13 @@ public final class PluginCatalogInspector {
 
     private final PluginIndexGenerator generator;
 
-    /** Creates an inspector backed by the strict artifact scanner. */
-    public PluginCatalogInspector() {
-        this(new PluginIndexGenerator());
+    /**
+     * Creates an inspector backed by the strict artifact scanner.
+     *
+     * @param kinds the supported contribution kinds and trusted host artifacts
+     */
+    public PluginCatalogInspector(ContributionKindRegistry kinds) {
+        this(new PluginIndexGenerator(kinds));
     }
 
     PluginCatalogInspector(PluginIndexGenerator generator) {
@@ -215,17 +218,7 @@ public final class PluginCatalogInspector {
 
     private static void validateReservedNames(BundleManifest manifest) {
         for (BundleContribution contribution : manifest.contributions()) {
-            boolean reserved = switch (contribution.kind()) {
-                case APP_STATE_MACHINE -> contribution.name().equals("ordered-log");
-                case SEQUENCER_MODE -> contribution.name().equals("fixed")
-                        || contribution.name().equals("rotating");
-                case L1_OBSERVER -> contribution.name().equals("metadata-label")
-                        || contribution.name().equals("address-deposit");
-                case EFFECT_EXECUTOR -> contribution.name().equals("webhook");
-                case UTXO_INDEX_CONTRIBUTOR -> contribution.name().equals("wallet");
-                default -> false;
-            };
-            if (reserved) {
+            if (contribution.kind().reservedSystemNames().contains(contribution.name())) {
                 throw invalid("Plugin bundle '" + manifest.id()
                         + "' declares reserved SYSTEM contribution '"
                         + contribution.kind().manifestKey() + "/"
@@ -246,7 +239,7 @@ public final class PluginCatalogInspector {
                         .thenComparing(BundleContribution::provider))
                 .map(value -> new PluginContributionInfo(
                         value.kind().manifestKey(), value.name(), value.provider(),
-                        trust(value.kind())))
+                        value.kind().trustTier()))
                 .toList();
         // Offline artifacts use DIRECTORY because they represent the same
         // operator-supplied drop-in input category as runtime plugin-dir
@@ -257,19 +250,6 @@ public final class PluginCatalogInspector {
                 PluginSourceCategory.DIRECTORY, indexed.digest(), indexed.digestMode(),
                 manifest.dependencies().stream().map(BundleDependency::id).sorted().toList(),
                 contributions);
-    }
-
-    private static PluginTrustTier trust(ContributionKind kind) {
-        return switch (kind) {
-            case NODE_PLUGIN -> PluginTrustTier.REQUIRED;
-            case APP_STATE_MACHINE, AUTHENTICATED_MAP_VALIDATOR,
-                    SEQUENCER_MODE, L1_OBSERVER, L1_EPOCH_OBSERVER ->
-                    PluginTrustTier.CONSENSUS;
-            case SIGNER_PROVIDER, EFFECT_EXECUTOR, OBSERVATION_PROVIDER,
-                    DOMAIN_API, LOCAL_READ_MODEL, UTXO_INDEX_CONTRIBUTOR ->
-                    PluginTrustTier.PRIVILEGED_LOCAL;
-            case FINALIZED_SINK, HEALTH, METRICS -> PluginTrustTier.AUXILIARY_LOCAL;
-        };
     }
 
     private static String fingerprint(
@@ -317,7 +297,7 @@ public final class PluginCatalogInspector {
                         text(data, contribution.kind().manifestKey());
                         text(data, contribution.name());
                         text(data, contribution.provider());
-                        text(data, trust(contribution.kind()).name());
+                        text(data, contribution.kind().trustTier().name());
                     }
                 }
             }

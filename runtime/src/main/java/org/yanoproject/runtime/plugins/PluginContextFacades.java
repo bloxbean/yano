@@ -94,11 +94,15 @@ final class PluginContextFacades {
      * future is registered before its callbacks are admitted. Sealing is
      * bounded: it cancels cycle resources synchronously, while the future
      * completes only after every callback admitted before the seal returns.
+     * Admitted callbacks (event listeners and filters, storage filters,
+     * scheduled tasks) run with the catalog's owner authority suspended.
      */
     static final class ManagedCallbackResources {
         private final ThreadLocal<Integer> localDepth =
                 ThreadLocal.withInitial(() -> 0);
         private final Consumer<CompletableFuture<Void>> completionRegistrar;
+        /** Catalog owner frames; null for standalone legacy managers. */
+        private final PluginSpiFacades.CallbackTracker ownerFrames;
         private final Map<ManagedResource, ResourceScope> resources =
                 Collections.synchronizedMap(new IdentityHashMap<>());
         private final List<Throwable> cleanupFailures = new ArrayList<>();
@@ -109,10 +113,12 @@ final class PluginContextFacades {
         private boolean cleanupInProgress;
 
         ManagedCallbackResources(
-                Consumer<CompletableFuture<Void>> completionRegistrar
+                Consumer<CompletableFuture<Void>> completionRegistrar,
+                PluginSpiFacades.CallbackTracker ownerFrames
         ) {
             this.completionRegistrar = Objects.requireNonNull(
                     completionRegistrar, "completionRegistrar");
+            this.ownerFrames = ownerFrames;
             completionRegistrar.accept(completion);
         }
 
@@ -171,7 +177,7 @@ final class PluginContextFacades {
             }
             localDepth.set(depth + 1);
             try {
-                return callback.get();
+                return ownerFrames == null ? callback.get() : ownerFrames.callWithoutOwner(callback);
             } finally {
                 int remainingDepth = localDepth.get() - 1;
                 if (remainingDepth == 0) {

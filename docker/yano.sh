@@ -118,8 +118,7 @@ default_data_path() { # <folder> <profile>
 # Export defaults only for data paths the user has not set. Values from the shell or
 # compose/.env are left to Compose, which expands ${VAR} references inside them.
 export_default_data_paths() { # <network>
-  for pair in YANO_CHAINSTATE_PATH:chainstate YANO_RUNTIME_DATA_PATH:runtime-data \
-      YANO_APPCHAIN_STATE_PATH:appchain-chainstate YANO_APPCHAIN_INDEXER_PATH:appchain-indexers; do
+  for pair in YANO_CHAINSTATE_PATH:chainstate YANO_RUNTIME_DATA_PATH:runtime-data; do
     var=${pair%%:*}
     folder=${pair#*:}
     eval "current=\${$var:-}"
@@ -131,8 +130,7 @@ export_default_data_paths() { # <network>
 }
 
 note_legacy_folders() { # <network>
-  for pair in YANO_CHAINSTATE_PATH:chainstate YANO_RUNTIME_DATA_PATH:runtime-data \
-      YANO_APPCHAIN_STATE_PATH:appchain-chainstate YANO_APPCHAIN_INDEXER_PATH:appchain-indexers; do
+  for pair in YANO_CHAINSTATE_PATH:chainstate YANO_RUNTIME_DATA_PATH:runtime-data; do
     var=${pair%%:*}
     folder=${pair#*:}
     eval "path=\${$var:-}"
@@ -162,7 +160,7 @@ ensure_data_dirs() { # <network>
     /^[[:space:]]*source:/ { src = $0; sub(/^[[:space:]]*source:[[:space:]]*/, "", src); gsub(/^"|"$/, "", src) }
     /^[[:space:]]*target:/ {
       t = $0; sub(/^[[:space:]]*target:[[:space:]]*/, "", t)
-      if (t == "/app/data" || t == "/app/data/chainstate" || t == "/app/appchain-chainstate" || t == "/app/appchain-indexers") print src
+      if (t == "/app/data" || t == "/app/data/chainstate") print src
     }' | while IFS= read -r dir; do
     [ -n "$dir" ] && mkdir -p "$dir"
   done

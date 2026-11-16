@@ -111,8 +111,6 @@ Each network keeps its data in one folder beside `compose/`:
 data-preprod/
   chainstate/            L1 database (/app/data/chainstate)
   runtime-data/          snapshots, epoch checkpoints, peer store, projection history (/app/data)
-  appchain-chainstate/   authoritative app-chain state
-  appchain-indexers/     rebuildable app-chain read indexes
 ```
 
 With the default layout, back up or move a network by copying its whole
@@ -120,9 +118,8 @@ With the default layout, back up or move a network by copying its whole
 installation still uses folders from the earlier layout, back up every resolved
 path instead: `./yano.sh config:<network>` lists them as volume `source` entries.
 
-To place one of these folders elsewhere, set `YANO_CHAINSTATE_PATH`,
-`YANO_RUNTIME_DATA_PATH`, `YANO_APPCHAIN_STATE_PATH` or `YANO_APPCHAIN_INDEXER_PATH`
-in `compose/.env`; values there may reference other variables defined in the file,
+To place one of these folders elsewhere, set `YANO_CHAINSTATE_PATH` or
+`YANO_RUNTIME_DATA_PATH` in `compose/.env`; values there may reference other variables defined in the file,
 such as `${DATA_ROOT}/chainstate`. The Compose file sets the container storage and
 history paths, so an older `config/env` does not need changes.
 

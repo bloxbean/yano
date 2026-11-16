@@ -103,14 +103,7 @@ Two bundled profiles add validation on top of a network profile:
 
 ## State directories
 
-The jar and native zip distributions keep L1 and app-chain RocksDB state in
-separate roots. `yano.storage.path` defaults to `./chainstate`, while
-`yano.app-chain.storage.path` defaults to `./appchain-chainstate`.
-
-Rebuildable app-chain indexes use a third root. The default
-The optional EUTxO index bundle defaults its rebuildable storage to
-`./appchain-indexers`. Override it with
-`yano.plugins.bundle."org.yanoproject.x.eutxo.indexer".storage-path`.
+`yano.storage.path` defaults to `./chainstate`.
 
 For a separate chainstate directory, set a property or environment override:
 
@@ -118,14 +111,5 @@ For a separate chainstate directory, set a property or environment override:
 YANO_STORAGE_PATH=./chainstate-mydevnet ./yano.sh start:mydevnet
 ```
 
-For an app-chain node, set a distinct app-chain path as well when the default
-is not suitable:
-
-```bash
-YANO_APP_CHAIN_STORAGE_PATH=./appchain-chainstate-mydevnet \
-  ./yano.sh start:mydevnet,appchain
-```
-
 If genesis values change after L1 chainstate already exists, stop Yano and
-reset only that L1 directory. Do not remove app-chain state unless the app
-ledger is intentionally being retired or restored.
+reset only that L1 directory.

@@ -1,0 +1,536 @@
+quarkus:
+  application:
+    name: yano
+  package:
+    output-name: yano
+    jar:
+      type: uber-jar
+      add-runner-suffix: false
+  http:
+    port: 7070
+    # Off by default. External console deployments must explicitly allow
+    # their exact origin; never use "*" together with API keys.
+    cors:
+      enabled: ${YANO_HTTP_CORS_ENABLED:false}
+    test-port: 0
+    filter:
+      plugin-dashboard-security:
+        matches: /ui/plugins/.*
+        header:
+          "Content-Security-Policy": >-
+            connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none';
+            frame-ancestors 'none'; form-action 'self'
+          "X-Frame-Options": DENY
+          "X-Content-Type-Options": nosniff
+          "Referrer-Policy": no-referrer
+          "Cache-Control": no-store
+      # The node-served console restricts connect-src to the
+      # host plus explicitly configured console origins. Append additional
+      # origins (space-separated) via YANO_CONSOLE_CONNECT_SRC_EXTRA, e.g.
+      # " https://other-node.example" for an explicit external connection.
+      console-security:
+        matches: /ui(?!/plugins/).*
+        header:
+          "Content-Security-Policy": >-
+            connect-src 'self'${YANO_CONSOLE_CONNECT_SRC_EXTRA:}; img-src 'self' data:;
+            object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'
+          "X-Frame-Options": DENY
+          "X-Content-Type-Options": nosniff
+          "Referrer-Policy": no-referrer
+          "Cache-Control": no-store
+  native:
+    resources:
+      includes: META-INF/yano-api-prefix-v1
+  log:
+    level: INFO
+    category:
+      "com.bloxbean.cardano.yaci":
+        level: INFO
+      "com.bloxbean.cardano.yaci.core.network.Session":
+        # Peer dial failures are expected with public/discovered relay sets.
+        # Yano logs the selected peer and root cause in one line at the sync layer.
+        level: "OFF"
+      "com.bloxbean.cardano.yaci.core.protocol.appmsg":
+        # The app-message relay logs every protocol round trip at INFO, about
+        # 2 KB of log per relayed message. WARN keeps rejections and failures.
+        level: WARN
+  smallrye-openapi:
+    info-title: "Yano API"
+    info-version: "${quarkus.application.version:0.1.0}"
+    info-description: "Cardano Yano REST API (all groups)"
+    # ADR-040: named OpenAPI documents, one per API group. Each document
+    # only contains operations whose resource carries the matching
+    # ApiGroup @Extension (SmallRye scan profile). Routes are unchanged;
+    # the unnamed document at /q/openapi still covers everything.
+    core:
+      scan-profiles: core
+      info-title: "Yano Core API"
+      info-version: "${quarkus.application.version:0.1.0}"
+      info-description: "Chain and ledger queries, transaction submission and evaluation"
+    devnet:
+      scan-profiles: devnet
+      info-title: "Yano Devnet API"
+      info-version: "${quarkus.application.version:0.1.0}"
+      info-description: "Devnet-only controls: rollback, snapshots, faucet and time travel"
+    admin:
+      scan-profiles: admin
+      info-title: "Yano Admin API"
+      info-version: "${quarkus.application.version:0.1.0}"
+      info-description: "Node lifecycle, plugin operations and diagnostics"
+    history:
+      scan-profiles: history
+      info-title: "Yano History API"
+      info-version: "${quarkus.application.version:0.1.0}"
+      info-description: "Historical projection archive coverage and maintenance"
+  swagger-ui:
+    always-include: ${YANO_SWAGGER_UI_ENABLED:true}
+    path: /q/swagger-ui
+    # "Select a definition" drop-down; Core API is pre-selected.
+    urls:
+      "Core API": /q/openapi-core
+      "Devnet API": /q/openapi-devnet
+      "Admin API": /q/openapi-admin
+      "History API": /q/openapi-history
+      "All APIs": /q/openapi
+    urls-primary-name: "Core API"
+  banner:
+    enabled: true
+    path: "banner.txt"
+
+yaci:
+  events:
+    enabled: true
+
+yano:
+  # Privileged local mempool eviction; never enabled automatically by the wallet profile.
+  mempool:
+    admin:
+      enabled: false
+      # Set yano.mempool.admin.api-key / YANO_MEMPOOL_ADMIN_API_KEY explicitly.
+  plugins:
+    enabled: true
+    directory: plugins
+    allow-list: []
+    deny-list: []
+    auto-register-annotated: false
+    logging:
+      enabled: false
+  network: preprod
+  auto-sync-start: true
+  client:
+    enabled: true
+  remote:
+    host: preprod-node.world.dev.cardano.org
+    port: 30000
+    protocol-magic: 1
+  upstream:
+    validation:
+      # Header validation: none | structural | header-signature | praos-lite | praos-ledger.
+      # Disabled by default. header-signature checks structure, KES, and opcert signatures.
+      # praos-lite additionally checks the Shelley+ VRF proof when epoch nonce tracking is available.
+      # praos-ledger adds ledger-view checks and uses persisted opcert counters when available.
+      level: none
+      # Body validation presets are scaffolded for future validators. Supported now: none.
+      body-level: none
+      # Op-cert counter state: none | compat | strict.
+      # none disables the op-cert counter stage by default.
+      # compat checks persisted counters when present and skips missing counters for old/checkpointed DBs.
+      # strict applies Haskell-style 0 for registered issuers without stored state.
+      opcert-counter-mode: none
+      # Validation start: immediate | era | checkpoint.
+      # If mode=era and slot/hash are omitted, Yano starts validation when the era boundary is observed locally.
+      # The packaged public-network profiles include verified first-Conway-block anchors where available.
+      start:
+        mode: era
+        era: conway
+        slot: 69638426
+        hash: "ecde79b23e343becca15618fc26281ba1aaea2eb1b66ab8828d7a127f5dbc30f"
+  relay:
+    # Enables relay-style peer-sharing support on the N2N server. Keep disabled
+    # unless the advertised endpoint is intentionally reachable by other nodes.
+    auto-discovery: false
+    # "auto" resolves a local non-loopback interface address. Set an
+    # explicit public DNS/IP for production relay deployments.
+    advertised-host: auto
+    # 0 means use yano.server.port.
+    advertised-port: 0
+    allow-private-addresses: false
+    connection:
+      max-inbound-connections: 100
+      max-connections-per-ip: 5
+      # Bind outbound N2N dials to the local relay port when possible. If the
+      # platform rejects a local bind for one dial, Yano falls back to an
+      # OS-assigned source port for that dial.
+      source-port-reuse: true
+  tx:
+    mempool:
+      max-txs: 10000
+      max-bytes: 134217728
+      max-utxo-index-entries: 100000
+      ttl-seconds: 10800
+    diffusion:
+      # Simple relay MVP switch. true maps to all-hot transaction diffusion.
+      # Legacy yano.tx.diffusion.mode remains accepted for compatibility.
+      enabled: true
+      limits:
+        max-in-flight-txs-per-peer: 100
+        max-in-flight-bytes-per-peer: 1048576
+        peer-cooldown-ms: 60000
+  dns:
+    cache:
+      # Positive DNS cache TTL in seconds. Defaults to 60 when omitted.
+      # Set to 0 to disable positive caching or -1 to cache forever.
+      # ttl: 60
+      # Negative DNS cache TTL in seconds. Defaults to 10 when omitted.
+      # negative:
+      #   ttl: 10
+  server:
+    enabled: true
+    port: 13337
+  storage:
+    rocksdb: true
+    path: "./chainstate"
+  genesis:
+    shelley-genesis-file: config/network/preprod/shelley-genesis.json
+    shelley-genesis-hash: "162d29c4e1cf6b8a84f2d692e67a3ac6bc7851bc3e6e4afe64d15778bed8bd86"
+    byron-genesis-file: config/network/preprod/byron-genesis.json
+    alonzo-genesis-file: config/network/preprod/alonzo-genesis.json
+    conway-genesis-file: config/network/preprod/conway-genesis.json
+    protocol-parameters-file: config/network/preprod/protocol-param.json
+  dev-mode: false
+  account-state:
+    enabled: true
+    # epoch-block-data-retention-lag: 5    # epochs to keep per-block issuer/fee data after consumption (controls rollback depth)
+    # snapshot-retention-epochs: 50        # epochs of delegation snapshots to retain
+  # Optional umbrella rollback retention. When set, Yano fills missing rollback
+  # retention properties for UTXO/account-state from genesis epoch length.
+  # Explicit leaf properties still take precedence.
+  # rollback-retention-epochs: 20
+  account:
+    stake-balance-index-enabled: true
+  epoch-boundary:
+    reward-mode: streaming
+    max-batch-operations: 10000
+    max-batch-bytes: 4194304
+  # History is written by the canonical projection outbox. The replay-worker
+  # archive was removed in Phase 7a, and with it the backfill workers, per-dataset
+  # start modes, hot store and dataset toggles that tuned it. Those keys are now
+  # rejected rather than ignored, so a stale setting fails loudly instead of reading
+  # as configuration that nothing consumes.
+  history:
+    dir: ./history
+    archive:
+      engine: ducklake
+      finality-blocks: auto
+      # Waiting for the single archive writer or bounded DuckDB capacity is
+      # normal flow control. Diagnostics are logged at wait-warn-seconds; only
+      # stuck-operation-seconds fails a mutation, and it never advances a cursor.
+      wait-warn-seconds: 30
+      stuck-operation-seconds: 300
+      ducklake:
+        target-file-size: 4MB
+        row-group-size: 100000
+        snapshot-retention-hours: 168
+        cleanup-grace-hours: 24
+    rollback:
+      retention-blocks: auto
+    duckdb:
+      max-total-memory: 256MB
+      max-concurrent-queries: 2
+      max-temp-directory-size: 2GB
+      steady-state: { memory-limit: 128MB, threads: 1 }
+      bulk-catch-up: { memory-limit: 128MB, threads: 1, max-concurrent-jobs: 1 }
+  epoch-snapshot:
+    amounts-enabled: true
+  adapot:
+    enabled: true
+  rewards:
+    enabled: true
+  epoch-params:
+    tracking-enabled: true
+  governance:
+    enabled: true
+  chain:
+    block-body-prune-depth: 0          # blocks to retain (0 = disabled)
+    block-prune-batch-size: 500000     # entries per prune pass
+    block-prune-interval-seconds: 300
+  # Optional wallet indexes. Complete coverage requires enabling before initial sync.
+  address-first-seen:
+    enabled: false
+  scan:
+    index:
+      enabled: false
+    max-concurrent: 2
+  filters:
+    utxo:
+      enabled: false
+      addresses: []
+      payment-credentials: []
+  metrics:
+    enabled: true
+    sample:
+      rocksdb:
+        seconds: 30
+  validation:
+    # Transaction validation engines (ADR-056 §7, ADR-057).
+    # Admission engine: java-julc (default) | java-scalus | scalus | amaru | amaru-scalus.
+    # Ids name <rules>-<evaluator> (who runs the Plutus scripts); a single name runs both phases.
+    #   java-julc    - the Java Conway rules (ADR-056 Phases 3-5) with Plutus on julc (Phase 7c). The default since
+    #                  ADR-056 Phase 8, and the Java engine wherever one is defaulted.
+    #   java-scalus  - the same Java rules with Plutus on Scalus. Its own engine id, so it can run next to
+    #                  java-julc: shadow-sync-engines: java-julc,java-scalus gives every Conway transaction both
+    #                  verdicts, and metrics, health and report lines name the engine.
+    #   scalus       - the legacy Scalus validator, unchanged; set it to restore the behaviour before Phase 8.
+    #   amaru        - Amaru's rules as WebAssembly, for both phases; needs a build with -PwithAmaru=true, otherwise
+    #                  startup fails.
+    #   amaru-scalus - Amaru phase one with Plutus on Scalus; same build requirement.
+    # The former id "java" is gone: startup fails and names the valid ids.
+    # Any engine other than scalus validates admission against one canonical snapshot ticked to the slot
+    # after the tip (or, right after a producer applied the next boundary, the first slot of that epoch).
+    # Block production then validates the mempool's candidates with the same engine, rule LEDGER, over a
+    # block-local overlay of its own snapshot ticked to the forge slot (ADR-056 Phase 6b).
+    # supplementary-rules-enabled=true applies to the legacy validator only: combined with another engine
+    # startup fails.
+    engine: java-julc
+    # Engines run asynchronously on frozen copies of each admission and never change the verdict. With
+    # engine: scalus admission stays on the legacy validator; the shadows use their own snapshot and are
+    # compared with the legacy verdict (valid/invalid, plus the Haskell constructor where the legacy name
+    # maps to one). Disagreements are counted (yano_validation_disagreements_total{engine,rule}) and logged
+    # once per tx. e.g. shadow-engines: scalus   or, with engine: amaru, shadow-engines: java-julc
+    shadow-engines: ""
+    # When set, a JSON replay bundle (tx CBOR + every ledger-view read both engines made) is written
+    # here for each disagreement.
+    shadow-dump-dir: ""
+    # Shadow sync (ADR-056 Phase 7a), observe only: every transaction of every applied Conway block (PV 9+) is
+    # validated by shadow-sync-engines against the block's pre-block state (after its epoch boundary, before its
+    # own changes) plus a block-local overlay of the earlier transactions, rule LEDGER, origin SYNC. Transactions
+    # in the block's invalid_transactions must come out phase-2 invalid, all others valid; anything else is a
+    # disagreement (a false rejection) or an engine failure (no verdict). Results: the INFO summary, the
+    # yano_validation_shadow_sync_* metrics and the JSONL report. It never changes what the node applies; when
+    # validation falls behind, block application waits (sync slows to validation speed).
+    shadow-sync: false
+    shadow-sync-engines: java-julc  # java-julc and/or java-scalus (java-julc,java-scalus runs both phase-2
+                                    # evaluators) and/or amaru, amaru-scalus (-PwithAmaru)
+    shadow-sync-report: ""          # JSONL file: one line per disagreement, engine failure or block finding
+    shadow-sync-dump-dir: ""        # replay bundle (tx + every view read) per finding
+    shadow-sync-max-dumps: 1000
+    # Blocks validated in parallel, each on a virtual thread holding one ledger snapshot. 0 = half the cores.
+    # Raise it for faster catch-up on a dedicated machine; keep it below the core count: validation is CPU-bound
+    # and shares the virtual-thread carriers with the node's own sync (at or above the core count logs a WARN).
+    shadow-sync-max-in-flight: 0
+    shadow-sync-max-wait-ms: 30000  # apply-thread wait for a free slot (holding the canonical write lock) before a
+                                    # block is skipped (and reported)
+    shadow-sync-summary-seconds: 60
+    # A shadow task older than this (from the admission snapshot's capture) is cancelled and releases
+    # its snapshot; it is not counted as a disagreement.
+    snapshot-max-age-ms: 30000
+    # Soft cap on live canonical snapshots; when reached, new shadow tasks are dropped (never admission).
+    max-live-snapshots: 4
+    amaru:                      # settings of the amaru and amaru-scalus engines
+      pool-size: 0              # Amaru instances; 0 = validation threads + 2 (mempool rebuild, block selection);
+                                # for shadow sync, 0 = shadow-sync-max-in-flight
+      timeout-ms: 2000          # a call that takes longer is rejected and its instance replaced
+      max-abandoned: 2          # stuck calls tolerated before the engine turns unhealthy (fails closed)
+      max-memory-pages: 2048    # 128 MiB linear memory per instance
+    # Deprecated (ADR-056 §7; removed in Phase 8, a WARN is logged when set). Defaults unchanged:
+    #   default-validator-enabled: true   - register the built-in admission validator listener
+    #   supplementary-rules-enabled: false - CCL GOVCERT/governance/delegatee rules on top of the legacy
+    #                                        Scalus validator (they ignore intra-block state changes)
+  utxo:
+    # One-shot migration for a pre-ADR-041 full-history DB. Requires all canonical
+    # block bodies through Byron; leave false after the first successful rebuild.
+    rebuild-unmarked-from-genesis: false
+    prune:
+      schedule:
+        seconds: 5
+    metrics:
+      lag:
+        logSeconds: 10
+    lag:
+      failIfAbove: -1
+  block-producer:
+    enabled: false
+    block-time-millis: 0
+    lazy: false
+    genesis-timestamp: 0
+    slot-length-millis: 0 # Legacy compatibility only; Shelley genesis slotLength is authoritative.
+    start-epoch: 0
+    past-time-travel-mode: false
+    past-time-travel-slot-leader-mode: false
+    tx-evaluation: true
+
+"%native":
+  quarkus:
+    package:
+      jar:
+        enabled: false
+    native:
+      enabled: true
+
+"%devnet":
+  yano:
+    network: devnet
+    auto-sync-start: true
+    dev-mode: true
+    client:
+      enabled: false
+    remote:
+      protocol-magic: 42
+    genesis:
+      shelley-genesis-file: config/network/devnet/shelley-genesis.json
+      shelley-genesis-hash: ""
+      byron-genesis-file: config/network/devnet/byron-genesis.json
+      alonzo-genesis-file: config/network/devnet/alonzo-genesis.json
+      conway-genesis-file: config/network/devnet/conway-genesis.json
+      protocol-parameters-file: config/network/devnet/protocol-param.json
+    account-state:
+      enabled: true
+    epoch-snapshot:
+      amounts-enabled: true           # UTXO balance aggregation in snapshots
+    adapot:
+      enabled: true                   # Treasury/reserves tracking
+    rewards:
+      enabled: true                   # Epoch reward calculation
+    epoch-params:
+      tracking-enabled: true          # Protocol param tracking from blocks
+    governance:
+      enabled: true                   # Governance state tracking
+    utxo:
+      enabled: true                   # Required by devnet faucet, queries, and transaction validation
+    block-producer:
+      enabled: true
+      block-time-millis: 0
+      lazy: false
+      genesis-timestamp: 0
+      slot-length-millis: 0 # Legacy compatibility only; Shelley genesis slotLength is authoritative.
+      vrf-skey-file: config/network/devnet/vrf.skey
+      kes-skey-file: config/network/devnet/kes.skey
+      opcert-file: config/network/devnet/opcert.cert
+      past-time-travel-slot-leader-mode: false
+
+"%devnet-slotleader":
+  yano:
+    network: devnet
+    auto-sync-start: true
+    dev-mode: true
+    client:
+      enabled: false
+    remote:
+      protocol-magic: 42
+    genesis:
+      shelley-genesis-file: config/network/devnet/shelley-genesis.json
+      shelley-genesis-hash: ""
+      byron-genesis-file: config/network/devnet/byron-genesis.json
+      alonzo-genesis-file: config/network/devnet/alonzo-genesis.json
+      conway-genesis-file: config/network/devnet/conway-genesis.json
+      protocol-parameters-file: config/network/devnet/protocol-param.json
+    account-state:
+      enabled: true
+    epoch-snapshot:
+      amounts-enabled: true           # UTXO balance aggregation in snapshots
+    adapot:
+      enabled: true                   # Treasury/reserves tracking
+    rewards:
+      enabled: true                   # Epoch reward calculation
+    epoch-params:
+      tracking-enabled: true          # Protocol param tracking from blocks
+    governance:
+      enabled: true                   # Governance state tracking
+    utxo:
+      enabled: true                   # Required by devnet faucet, queries, and transaction validation
+    block-producer:
+      enabled: true
+      slot-leader-mode: true
+      lazy: false
+      genesis-timestamp: 0
+      slot-length-millis: 0 # Legacy compatibility only; Shelley genesis slotLength is authoritative.
+      start-epoch: 0
+      vrf-skey-file: config/network/devnet/vrf.skey
+      kes-skey-file: config/network/devnet/kes.skey
+      opcert-file: config/network/devnet/opcert.cert
+      past-time-travel-slot-leader-mode: false
+
+"%mainnet":
+  yano:
+    network: mainnet
+    upstream:
+      validation:
+        start:
+          mode: era
+          era: conway
+          slot: 133660855
+          hash: "9aa420cf998dbcceec1abaf83ab26294d278d25527e779050ab334c1fadab16c"
+    remote:
+      host: backbone.cardano.iog.io
+      port: 3001
+      protocol-magic: 764824073
+    genesis:
+      shelley-genesis-file: config/network/mainnet/shelley-genesis.json
+      shelley-genesis-hash: "1a3be38bcbb7911969283716ad7aa550250226b76a61fc51cc9a9a35d9276d81"
+      byron-genesis-file: config/network/mainnet/byron-genesis.json
+      alonzo-genesis-file: config/network/mainnet/alonzo-genesis.json
+      conway-genesis-file: config/network/mainnet/conway-genesis.json
+      protocol-parameters-file: config/network/mainnet/protocol-param.json
+
+"%preview":
+  yano:
+    network: preview
+    upstream:
+      validation:
+        start:
+          mode: era
+          era: conway
+          slot: 34905604
+          hash: "cbc88c5f633ace6671f6cbb54a0913e4d7c57697869e951bc032e093f6db5f46"
+    remote:
+      host: preview-node.play.dev.cardano.org
+      port: 3001
+      protocol-magic: 2
+    genesis:
+      shelley-genesis-file: config/network/preview/shelley-genesis.json
+      shelley-genesis-hash: "363498d1024f84bb39d3fa9593ce391483cb40d479b87233f868d6e57c3a400d"
+      byron-genesis-file: config/network/preview/byron-genesis.json
+      alonzo-genesis-file: config/network/preview/alonzo-genesis.json
+      conway-genesis-file: config/network/preview/conway-genesis.json
+      protocol-parameters-file: config/network/preview/protocol-param.json
+
+"%sanchonet":
+  yano:
+    network: sanchonet
+    upstream:
+      validation:
+        start:
+          mode: era
+          era: conway
+    remote:
+      host: sanchonet-node.play.dev.cardano.org
+      port: 3001
+      protocol-magic: 4
+    genesis:
+      shelley-genesis-file: config/network/sanchonet/shelley-genesis.json
+      shelley-genesis-hash: "f94457ec45a0c6773057a529533cf7ccf746cb44dabd56ae970e1dbfb55bfdb2"
+      byron-genesis-file: config/network/sanchonet/byron-genesis.json
+      alonzo-genesis-file: config/network/sanchonet/alonzo-genesis.json
+      conway-genesis-file: config/network/sanchonet/conway-genesis.json
+      protocol-parameters-file: config/network/sanchonet/protocol-param.json
+
+"%test":
+  yaci:
+    events:
+      enabled: true
+  yano:
+    plugins:
+      enabled: false
+      logging:
+        enabled: false
+    auto-sync-start: false
+    client:
+      enabled: false
+    server:
+      enabled: true
+    storage:
+      rocksdb: false
+      path: "./chainstate-test"
+    # In-memory storage has no UTxO store, so there is nothing to validate transactions against.
+    block-producer:
+      tx-evaluation: false

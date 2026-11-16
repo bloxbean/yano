@@ -1,25 +1,11 @@
 package org.yanoproject.runtime.plugins;
 
-import org.yanoproject.x.framework.api.appchain.AppBlock;
-import org.yanoproject.x.framework.api.appchain.AppBlockExecutionContext;
-import org.yanoproject.x.framework.api.appchain.effects.AppEffectEmitter;
-import org.yanoproject.x.framework.api.appchain.AppQueryContext;
-import org.yanoproject.x.framework.api.appchain.AppStateMachine;
-import org.yanoproject.x.framework.api.appchain.AppStateMachineProvider;
-import org.yanoproject.x.framework.api.appchain.AppStateWriter;
-import org.yanoproject.x.framework.api.appchain.effects.AppEffectExecutor;
-import org.yanoproject.x.framework.cardano.api.effects.AppEffectExecutorFactory;
-import org.yanoproject.x.framework.api.appchain.effects.EffectExecution;
-import org.yanoproject.x.framework.api.appchain.effects.EffectExecutionContext;
-import org.yanoproject.x.framework.api.appchain.effects.PendingEffect;
-import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSink;
-import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSinkFactory;
-import org.yanoproject.catalog.ContributionKind;
+import org.yanoproject.runtime.plugins.fixture.FixtureProduct;
+import org.yanoproject.runtime.plugins.fixture.FixtureProvider;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 import java.util.List;
-import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
@@ -37,7 +23,7 @@ class PluginContributionCleanupBarrierTest {
     @Test
     void cleanupAwaitRejectsUnsealedAdmissionWithoutFreezingRegistration() {
         CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(
-                List.of(), List.of(), List.of());
+                TestPluginKinds.KINDS, List.of(), List.of(), List.of());
         CompletableFuture<Void> first = CompletableFuture.completedFuture(null);
         CompletableFuture<Void> second = CompletableFuture.completedFuture(null);
         registry.registerContributionCleanup(first);
@@ -54,60 +40,33 @@ class PluginContributionCleanupBarrierTest {
     }
 
     @Test
-    void blockedEffectCanTerminallyCloseAfterNormalSealBeforeProviderClose()
+    void blockedProductCanTerminallyCloseAfterNormalSealBeforeProviderClose()
             throws Exception {
         List<String> closeOrder = new CopyOnWriteArrayList<>();
-        BlockingEffectExecutor raw = new BlockingEffectExecutor(closeOrder);
-        CloseableEffectFactory provider = new CloseableEffectFactory(
-                new AtomicInteger(), List.of(raw), closeOrder);
-        CatalogPluginProviderRegistry registry = registry(
-                ContributionKind.EFFECT_EXECUTOR, "example", provider);
-        AppEffectExecutor exposed = registry.require(
-                AppEffectExecutorFactory.class, "example")
-                .create("chain", Map.of()).getFirst();
+        BlockingProduct raw = new BlockingProduct(closeOrder);
+        CloseableProvider provider = new CloseableProvider(
+                "blocked", new AtomicInteger(), raw, closeOrder);
+        CatalogPluginProviderRegistry registry = registry("blocked", provider);
+        FixtureProduct exposed = registry.require(FixtureProvider.class, "blocked")
+                .createAll().getFirst();
         // A terminal close may legitimately call another typed facade. The
         // nested call inherits the admitted cleanup root instead of being
         // rejected by the already-sealed ordinary gate.
-        raw.onClose = () -> assertThat(exposed.supports("nested-cleanup")).isTrue();
+        raw.onClose = () -> assertThat(callUnchecked(exposed, "nested-cleanup"))
+                .isEqualTo("nested-cleanup");
 
         verifyDeferredTerminalClose(registry, raw.entered, raw.release,
-                () -> exposed.execute(null, null), exposed::id, exposed::close,
-                closeOrder);
-    }
-
-    @Test
-    void blockedSinkCanTerminallyCloseAfterNormalSealBeforeProviderClose()
-            throws Exception {
-        List<String> closeOrder = new CopyOnWriteArrayList<>();
-        BlockingSink raw = new BlockingSink(closeOrder);
-        CloseableSinkFactory provider = new CloseableSinkFactory(raw, closeOrder);
-        CatalogPluginProviderRegistry registry = registry(
-                ContributionKind.FINALIZED_SINK, "blocked-sink", provider);
-        FinalizedStreamSink exposed = registry.require(
-                FinalizedStreamSinkFactory.class, "blocked-sink")
-                .create("chain", Map.of()).getFirst();
-
-        verifyDeferredTerminalClose(registry, raw.entered, raw.release,
-                () -> exposed.deliver(null), exposed::id, exposed::close,
+                () -> exposed.call("block"), exposed::id, exposed::close,
                 closeOrder);
     }
 
     @Test
     void registryCloseWaitsForReturnedProductCleanupBeforeProviderClose() throws Exception {
         AtomicInteger providerCloses = new AtomicInteger();
-        CloseableEffectFactory provider = new CloseableEffectFactory(providerCloses);
-        CatalogPluginProviderRegistry.Entry entry =
-                new CatalogPluginProviderRegistry.Entry(
-                        "com.example.effects",
-                        ContributionKind.EFFECT_EXECUTOR,
-                        "example",
-                        provider.getClass().getName(),
-                        null,
-                        () -> provider);
-        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(
-                List.of(entry), List.of("com.example.effects"), List.of(),
-                Thread.currentThread().getContextClassLoader());
-        registry.find(AppEffectExecutorFactory.class, "example").orElseThrow();
+        CloseableProvider provider = new CloseableProvider(
+                "example", providerCloses, null, List.of());
+        CatalogPluginProviderRegistry registry = registry("example", provider);
+        registry.find(FixtureProvider.class, "example").orElseThrow();
 
         SignallingFuture productCleanup = new SignallingFuture();
         registry.registerContributionCleanup(productCleanup);
@@ -136,46 +95,23 @@ class PluginContributionCleanupBarrierTest {
     }
 
     @Test
-    void registryCloseSealsLateCallbacksAndWaitsForAdmittedStateMachineCallback()
+    void registryCloseSealsLateCallbacksAndWaitsForAdmittedProductCallback()
             throws Exception {
         CountDownLatch callbackStarted = new CountDownLatch(1);
         CountDownLatch releaseCallback = new CountDownLatch(1);
         AtomicInteger providerCloses = new AtomicInteger();
-        AppStateMachine machine = new AppStateMachine() {
-            @Override
-            public String id() {
-                return "blocked";
-            }
-
-            @Override
-            public AdmissionResult validate(
-                    com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage message
-            ) {
+        FixtureProduct product = new FixtureProduct() {
+            @Override public String call(String input) {
                 callbackStarted.countDown();
-                try {
-                    if (!releaseCallback.await(5, TimeUnit.SECONDS)) {
-                        throw new IllegalStateException("callback release timed out");
-                    }
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    throw new IllegalStateException("callback interrupted", e);
-                }
-                return AdmissionResult.accept();
-            }
-
-            @Override
-            public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) {
-            AppBlock block = context.block();
+                await(releaseCallback);
+                return input;
             }
         };
-        CloseableStateMachineProvider provider =
-                new CloseableStateMachineProvider(machine, providerCloses);
-        CatalogPluginProviderRegistry registry = registry(
-                ContributionKind.APP_STATE_MACHINE, "blocked", provider);
-        AppStateMachine exposed = registry.require(
-                AppStateMachineProvider.class, "blocked").create();
+        CatalogPluginProviderRegistry registry = registry("blocked",
+                new CloseableProvider("blocked", providerCloses, product, List.of()));
+        FixtureProduct exposed = registry.require(FixtureProvider.class, "blocked").create();
 
-        Thread callbackThread = new Thread(() -> exposed.validate(null),
+        Thread callbackThread = new Thread(() -> callUnchecked(exposed, "blocked"),
                 "blocked-plugin-callback");
         callbackThread.start();
         assertThat(callbackStarted.await(1, TimeUnit.SECONDS)).isTrue();
@@ -197,73 +133,23 @@ class PluginContributionCleanupBarrierTest {
     }
 
     @Test
-    void registryCloseWaitsForAdmittedCommittedQueryCallback() throws Exception {
-        CountDownLatch callbackStarted = new CountDownLatch(1);
-        CountDownLatch releaseCallback = new CountDownLatch(1);
-        AtomicInteger providerCloses = new AtomicInteger();
-        AppStateMachine machine = new AppStateMachine() {
-            @Override public String id() { return "blocked-query"; }
-            @Override public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) { }
-            @Override public byte[] query(
-                    String path, byte[] params, AppQueryContext context
-            ) {
-                callbackStarted.countDown();
-                await(releaseCallback);
-                return new byte[]{1};
-            }
-        };
-        CloseableStateMachineProvider provider =
-                new CloseableStateMachineProvider(machine, providerCloses);
-        CatalogPluginProviderRegistry registry = registry(
-                ContributionKind.APP_STATE_MACHINE, "blocked-query", provider);
-        AppStateMachine exposed = registry.require(
-                AppStateMachineProvider.class, "blocked-query").create();
-
-        Thread callbackThread = new Thread(
-                () -> exposed.query("blocked", new byte[0], null),
-                "blocked-plugin-query-callback");
-        callbackThread.start();
-        assertThat(callbackStarted.await(1, TimeUnit.SECONDS)).isTrue();
-
-        Thread closeThread = new Thread(registry::close,
-                "blocked-query-registry-close");
-        closeThread.start();
-        assertEventuallySealed(exposed);
-        closeThread.join(100);
-        assertThat(closeThread.isAlive()).isTrue();
-        assertThat(providerCloses).hasValue(0);
-
-        releaseCallback.countDown();
-        callbackThread.join(2_000);
-        closeThread.join(2_000);
-        assertThat(callbackThread.isAlive()).isFalse();
-        assertThat(closeThread.isAlive()).isFalse();
-        assertThat(providerCloses).hasValue(1);
-    }
-
-    @Test
     void contributionCallbackCannotInitiateItsOwnTeardown() {
         AtomicReference<CatalogPluginProviderRegistry> registryRef = new AtomicReference<>();
         AtomicReference<Throwable> rejection = new AtomicReference<>();
-        AppStateMachine machine = new AppStateMachine() {
-            @Override public String id() { return "teardown-preflight"; }
-            @Override public AdmissionResult validate(
-                    com.bloxbean.cardano.yaci.core.protocol.appmsg.model.AppMessage message) {
+        FixtureProduct product = new FixtureProduct() {
+            @Override public String call(String input) {
                 rejection.set(org.assertj.core.api.Assertions.catchThrowable(() ->
                         registryRef.get().requireContributionTeardownAllowed(
                                 "stop the runtime")));
-                return AdmissionResult.accept();
+                return input;
             }
-            @Override public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) { }
         };
-        CatalogPluginProviderRegistry registry = registry(
-                ContributionKind.APP_STATE_MACHINE, "teardown-preflight",
-                new CloseableStateMachineProvider(machine, new AtomicInteger()));
+        CatalogPluginProviderRegistry registry = registry("teardown-preflight",
+                new CloseableProvider("teardown-preflight", new AtomicInteger(), product, List.of()));
         registryRef.set(registry);
-        AppStateMachine exposed = registry.require(
-                AppStateMachineProvider.class, "teardown-preflight").create();
+        FixtureProduct exposed = registry.require(FixtureProvider.class, "teardown-preflight").create();
 
-        exposed.validate(null);
+        callUnchecked(exposed, "preflight");
 
         assertThat(rejection.get())
                 .isInstanceOf(IllegalStateException.class)
@@ -274,16 +160,12 @@ class PluginContributionCleanupBarrierTest {
     @Test
     void retainedProductsWorkAfterResumeAndCompletedCleanupSignalsArePruned() {
         AtomicInteger providerCloses = new AtomicInteger();
-        AppStateMachine machine = new AppStateMachine() {
+        FixtureProduct product = new FixtureProduct() {
             @Override public String id() { return "retained"; }
-            @Override public void apply(AppBlockExecutionContext context, AppStateWriter writer, AppEffectEmitter effects) { }
         };
-        CloseableStateMachineProvider provider =
-                new CloseableStateMachineProvider(machine, providerCloses);
-        CatalogPluginProviderRegistry registry = registry(
-                ContributionKind.APP_STATE_MACHINE, "retained", provider);
-        AppStateMachine exposed = registry.require(
-                AppStateMachineProvider.class, "retained").create();
+        CatalogPluginProviderRegistry registry = registry("retained",
+                new CloseableProvider("retained", providerCloses, product, List.of()));
+        FixtureProduct exposed = registry.require(FixtureProvider.class, "retained").create();
 
         for (int cycle = 0; cycle < 100; cycle++) {
             registry.registerContributionCleanup(CompletableFuture.completedFuture(null));
@@ -307,20 +189,16 @@ class PluginContributionCleanupBarrierTest {
         assertThat(providerCloses).hasValue(1);
     }
 
-    private static CatalogPluginProviderRegistry registry(
-            ContributionKind kind,
-            String selector,
-            Object provider
-    ) {
+    private static CatalogPluginProviderRegistry registry(String selector, Object provider) {
         CatalogPluginProviderRegistry.Entry entry =
                 new CatalogPluginProviderRegistry.Entry(
                         "com.example." + selector,
-                        kind,
+                        TestPluginKinds.FIXTURE,
                         selector,
                         provider.getClass().getName(),
                         null,
                         () -> provider);
-        return new CatalogPluginProviderRegistry(
+        return new CatalogPluginProviderRegistry(TestPluginKinds.KINDS,
                 List.of(entry), List.of("com.example." + selector), List.of(),
                 Thread.currentThread().getContextClassLoader());
     }
@@ -421,7 +299,15 @@ class PluginContributionCleanupBarrierTest {
         void run() throws Exception;
     }
 
-    private static void assertEventuallySealed(AppStateMachine machine)
+    private static String callUnchecked(FixtureProduct product, String input) {
+        try {
+            return product.call(input);
+        } catch (Exception e) {
+            throw new AssertionError(e);
+        }
+    }
+
+    private static void assertEventuallySealed(FixtureProduct machine)
             throws InterruptedException {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
         while (System.nanoTime() < deadline) {
@@ -450,56 +336,28 @@ class PluginContributionCleanupBarrierTest {
         }
     }
 
-    private static final class CloseableStateMachineProvider
-            implements AppStateMachineProvider, AutoCloseable {
-        private final AppStateMachine machine;
+    private static final class CloseableProvider implements FixtureProvider, AutoCloseable {
+        private final String id;
         private final AtomicInteger closes;
-
-        private CloseableStateMachineProvider(
-                AppStateMachine machine,
-                AtomicInteger closes
-        ) {
-            this.machine = machine;
-            this.closes = closes;
-        }
-
-        @Override public String id() { return machine.id(); }
-        @Override public AppStateMachine create() { return machine; }
-        @Override public void close() { closes.incrementAndGet(); }
-    }
-
-    private static final class CloseableEffectFactory
-            implements AppEffectExecutorFactory, AutoCloseable {
-        private final AtomicInteger closes;
-        private final List<AppEffectExecutor> products;
+        private final FixtureProduct product;
         private final List<String> closeOrder;
 
-        private CloseableEffectFactory(AtomicInteger closes) {
-            this(closes, List.of(), List.of());
-        }
-
-        private CloseableEffectFactory(
+        private CloseableProvider(
+                String id,
                 AtomicInteger closes,
-                List<AppEffectExecutor> products,
+                FixtureProduct product,
                 List<String> closeOrder
         ) {
+            this.id = id;
             this.closes = closes;
-            this.products = products;
+            this.product = product;
             this.closeOrder = closeOrder;
         }
 
-        @Override
-        public String scheme() {
-            return "example";
-        }
-
-        @Override
-        public List<AppEffectExecutor> create(String chainId, Map<String, String> config) {
-            return products;
-        }
-
-        @Override
-        public void close() {
+        @Override public String id() { return id; }
+        @Override public FixtureProduct create() { return product; }
+        @Override public List<FixtureProduct> createAll() { return List.of(product); }
+        @Override public void close() {
             closes.incrementAndGet();
             if (!closeOrder.isEmpty()) {
                 closeOrder.add("provider");
@@ -507,65 +365,27 @@ class PluginContributionCleanupBarrierTest {
         }
     }
 
-    private static final class BlockingEffectExecutor implements AppEffectExecutor {
+    private static final class BlockingProduct implements FixtureProduct {
         private final CountDownLatch entered = new CountDownLatch(1);
         private final CountDownLatch release = new CountDownLatch(1);
         private final List<String> closeOrder;
         private Runnable onClose = () -> { };
 
-        private BlockingEffectExecutor(List<String> closeOrder) {
+        private BlockingProduct(List<String> closeOrder) {
             this.closeOrder = closeOrder;
         }
 
-        @Override public String id() { return "blocked-effect"; }
-        @Override public boolean supports(String effectType) { return true; }
-        @Override public EffectExecution execute(
-                EffectExecutionContext context,
-                PendingEffect effect
-        ) {
-            entered.countDown();
-            await(release);
-            return EffectExecution.confirmed(new byte[0]);
+        @Override public String id() { return "blocked-product"; }
+        @Override public String call(String input) {
+            if ("block".equals(input)) {
+                entered.countDown();
+                await(release);
+            }
+            return input;
         }
         @Override public void close() {
             onClose.run();
             closeOrder.add("product");
         }
-    }
-
-    private static final class CloseableSinkFactory
-            implements FinalizedStreamSinkFactory, AutoCloseable {
-        private final FinalizedStreamSink sink;
-        private final List<String> closeOrder;
-
-        private CloseableSinkFactory(FinalizedStreamSink sink, List<String> closeOrder) {
-            this.sink = sink;
-            this.closeOrder = closeOrder;
-        }
-
-        @Override public String scheme() { return "blocked-sink"; }
-        @Override public List<FinalizedStreamSink> create(
-                String chainId,
-                Map<String, String> config
-        ) { return List.of(sink); }
-        @Override public void close() { closeOrder.add("provider"); }
-    }
-
-    private static final class BlockingSink implements FinalizedStreamSink {
-        private final CountDownLatch entered = new CountDownLatch(1);
-        private final CountDownLatch release = new CountDownLatch(1);
-        private final List<String> closeOrder;
-
-        private BlockingSink(List<String> closeOrder) {
-            this.closeOrder = closeOrder;
-        }
-
-        @Override public String id() { return "blocked-sink"; }
-        @Override public boolean deliver(AppBlock block) {
-            entered.countDown();
-            await(release);
-            return true;
-        }
-        @Override public void close() { closeOrder.add("product"); }
     }
 }

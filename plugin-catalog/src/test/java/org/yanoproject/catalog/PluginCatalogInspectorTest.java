@@ -18,7 +18,7 @@ class PluginCatalogInspectorTest {
     private static final String DIGEST_A = "sha256:" + "a".repeat(64);
     private static final String DIGEST_B = "sha256:" + "b".repeat(64);
 
-    private final PluginCatalogInspector inspector = new PluginCatalogInspector();
+    private final PluginCatalogInspector inspector = new PluginCatalogInspector(TestKinds.REGISTRY);
 
     @Test
     void validatesAndPublishesDeterministicDependencyFirstInventory() {
@@ -177,25 +177,49 @@ class PluginCatalogInspectorTest {
 
         IndexedBundle first = indexed(
                 BASE, "1.0.0", new YanoApiRange(3, 3, 4), List.of(),
-                List.of(new BundleContribution(ContributionKind.FINALIZED_SINK,
+                List.of(new BundleContribution(TestKinds.SINK,
                         "shared", "com.example.FirstSink")), DIGEST_A);
         IndexedBundle second = indexed(
                 FEATURE, "1.0.0", new YanoApiRange(3, 3, 4), List.of(),
-                List.of(new BundleContribution(ContributionKind.FINALIZED_SINK,
+                List.of(new BundleContribution(TestKinds.SINK,
                         "shared", "com.example.SecondSink")), DIGEST_B);
         assertThatThrownBy(() -> inspector.inspect(
                 new PluginIndex(1, List.of(first, second), List.of()),
                 PluginCatalogInspectionPolicy.current()))
                 .isInstanceOf(PluginCatalogException.class)
                 .hasMessageContaining("Duplicate selected contribution")
-                .hasMessageContaining("finalized-sink/shared");
+                .hasMessageContaining("fixture-sink/shared");
+    }
+
+    @Test
+    void derivesTrustAndReservedSystemNamesFromTheContributionKind() {
+        IndexedBundle sink = indexed(
+                BASE, "1.0.0", new YanoApiRange(3, 3, 4), List.of(),
+                List.of(new BundleContribution(TestKinds.SINK, "sink", "com.example.Sink")), DIGEST_A);
+        assertThat(inspector.inspect(new PluginIndex(1, List.of(sink), List.of()),
+                PluginCatalogInspectionPolicy.current()).bundles().getFirst()
+                .contributions().getFirst().trustTier())
+                .isEqualTo(PluginTrustTier.CONSENSUS);
+
+        for (BundleContribution reserved : List.of(
+                new BundleContribution(TestKinds.SINK, "system", "com.example.Sink"),
+                new BundleContribution(ContributionKind.UTXO_INDEX_CONTRIBUTOR, "wallet",
+                        "com.example.Wallet"))) {
+            IndexedBundle bundle = indexed(BASE, "1.0.0", new YanoApiRange(3, 3, 4), List.of(),
+                    List.of(reserved), DIGEST_A);
+            assertThatThrownBy(() -> inspector.inspect(new PluginIndex(1, List.of(bundle), List.of()),
+                    PluginCatalogInspectionPolicy.current()))
+                    .isInstanceOf(PluginCatalogException.class)
+                    .hasMessageContaining("reserved SYSTEM contribution '"
+                            + reserved.kind().manifestKey() + "/" + reserved.name() + "'");
+        }
     }
 
     @Test
     void rejectsLegacyProvidersBecauseOfflineInspectionNeverLoadsCode() {
         PluginIndex legacy = new PluginIndex(1, List.of(), List.of(
                 new IndexedLegacyProvider(
-                        ContributionKind.FINALIZED_SINK,
+                        TestKinds.SINK,
                         "com.example.LegacySink",
                         DIGEST_A,
                         PluginDigestMode.ARTIFACT_TREE)));

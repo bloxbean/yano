@@ -326,7 +326,7 @@ exit /b 0
 
 :prepare_chainstate
 call :resolve_data_paths "%~1"
-for %%V in (YANO_CHAINSTATE_PATH YANO_RUNTIME_DATA_PATH YANO_APPCHAIN_STATE_PATH YANO_APPCHAIN_INDEXER_PATH) do (
+for %%V in (YANO_CHAINSTATE_PATH YANO_RUNTIME_DATA_PATH) do (
   call :ensure_data_dir %%V
   if errorlevel 1 exit /b 1
 )
@@ -335,8 +335,6 @@ exit /b 0
 :resolve_data_paths
 call :resolve_data_path YANO_CHAINSTATE_PATH chainstate "%~1"
 call :resolve_data_path YANO_RUNTIME_DATA_PATH runtime-data "%~1"
-call :resolve_data_path YANO_APPCHAIN_STATE_PATH appchain-chainstate "%~1"
-call :resolve_data_path YANO_APPCHAIN_INDEXER_PATH appchain-indexers "%~1"
 exit /b 0
 
 :resolve_data_path

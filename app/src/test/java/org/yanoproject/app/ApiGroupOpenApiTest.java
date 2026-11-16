@@ -20,7 +20,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * ADR-040: the REST surface is published as one OpenAPI document per API
- * group (core / app-chain / devnet / admin / history) selected by SmallRye scan
+ * group (core / devnet / admin / history) selected by SmallRye scan
  * profiles, plus the unchanged "all" document at {@code /q/openapi}.
  * Swagger UI exposes the groups in a "Select a definition" drop-down with
  * Core API pre-selected.
@@ -39,7 +39,7 @@ class ApiGroupOpenApiTest {
     }
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
-    private static final List<String> GROUPS = List.of("core", "app-chain", "devnet", "admin", "history");
+    private static final List<String> GROUPS = List.of("core", "devnet", "admin", "history");
     private static String prefix;
 
     @Test
@@ -65,27 +65,7 @@ class ApiGroupOpenApiTest {
         assertNoOperation(core, "/node/tx/submit");
         assertNoOperation(core, "/api/debug/adapot/{epoch}");
         assertNoOperation(core, "/plugin-operations");
-        assertNoOperation(core, "/app-chain/chains");
         assertNoOperation(core, "/history/coverage");
-    }
-
-    @Test
-    void appChainDocument_containsChainScopedAndPluginRoutesOnly() {
-        Map<String, Set<String>> appChain = operations("/q/openapi-app-chain");
-
-        assertOperation(appChain, "GET", "/app-chain/chains");
-        // Sub-resource operations must inherit the group from ChainScopedResource.
-        assertOperation(appChain, "GET", "/app-chain/chains/{chainId}/status");
-        assertOperation(appChain, "POST", "/app-chain/chains/{chainId}/messages");
-        assertOperation(appChain, "GET", "/app-chain/chains/{chainId}/state/proof/{keyHex}");
-        assertOperation(appChain, "GET", "/plugins/{bundleId}/{path}");
-
-        assertNoOperation(appChain, "/blocks/latest");
-        assertNoOperation(appChain, "/devnet/rollback");
-        assertNoOperation(appChain, "/node/start");
-        assertNoOperation(appChain, "/plugin-operations");
-        // Chain-less aliases stay hidden everywhere (AppChainOpenApiTest).
-        assertNoOperation(appChain, "/app-chain/status");
     }
 
     @Test
@@ -119,7 +99,6 @@ class ApiGroupOpenApiTest {
         assertNoOperation(admin, "/blocks/latest");
         assertNoOperation(admin, "/tx/submit");
         assertNoOperation(admin, "/devnet/rollback");
-        assertNoOperation(admin, "/app-chain/chains");
     }
 
     @Test
@@ -141,10 +120,11 @@ class ApiGroupOpenApiTest {
         Map<String, Set<String>> all = operations("/q/openapi");
 
         assertOperation(all, "GET", "/blocks/latest");
-        assertOperation(all, "GET", "/app-chain/chains/{chainId}/status");
         assertOperation(all, "POST", "/devnet/rollback");
         assertOperation(all, "POST", "/node/start");
         assertOperation(all, "GET", "/api/debug/adapot/{epoch}");
+        assertThat(all.keySet()).noneMatch(path -> path.startsWith(prefix() + "/app-chain")
+                || path.startsWith(prefix() + "/plugins/"));
     }
 
     /**
@@ -186,7 +166,6 @@ class ApiGroupOpenApiTest {
                 .extract().asString();
 
         assertThat(index).contains("url: \"/q/openapi-core\", name: \"Core API\"");
-        assertThat(index).contains("url: \"/q/openapi-app-chain\", name: \"App Chain API\"");
         assertThat(index).contains("url: \"/q/openapi-devnet\", name: \"Devnet API\"");
         assertThat(index).contains("url: \"/q/openapi-admin\", name: \"Admin API\"");
         assertThat(index).contains("url: \"/q/openapi-history\", name: \"History API\"");
@@ -197,7 +176,6 @@ class ApiGroupOpenApiTest {
     @Test
     void groupDocuments_carryTheirOwnTitles() {
         assertThat(info("/q/openapi-core")).isEqualTo("Yano Core API");
-        assertThat(info("/q/openapi-app-chain")).isEqualTo("Yano App Chain API");
         assertThat(info("/q/openapi-devnet")).isEqualTo("Yano Devnet API");
         assertThat(info("/q/openapi-admin")).isEqualTo("Yano Admin API");
         assertThat(info("/q/openapi-history")).isEqualTo("Yano History API");

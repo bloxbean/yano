@@ -6,7 +6,6 @@ import org.yanoproject.api.config.RuntimeMode;
 import org.yanoproject.api.config.YanoConfig;
 import org.yanoproject.api.config.YanoPropertyKeys;
 import org.yanoproject.runtime.internal.RuntimeNode;
-import org.yanoproject.x.framework.host.AppLedgerHostPlugin;
 import org.yanoproject.runtime.plugins.PluginLoaderHandle;
 import org.yanoproject.runtime.plugins.PluginRuntimeEnvironment;
 import org.yanoproject.runtime.config.InMemoryDevnetGenesis;
@@ -29,7 +28,6 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 import java.util.function.Consumer;
 
 /**
@@ -223,9 +221,7 @@ public final class YanoAssembly {
                                 ? pluginLoader
                                 : PluginLoaderHandle.classpath(
                                         Thread.currentThread().getContextClassLoader()),
-                        Boolean.parseBoolean(String.valueOf(runtimeOptions.globals()
-                                .get(YanoPropertyKeys.AppChain.ENABLED)))
-                                ? Set.of(AppLedgerHostPlugin.BUNDLE_ID) : Set.of());
+                        PluginRuntimeEnvironment.requiredBundles(runtimeOptions.globals()));
                 runtimeNode = new RuntimeNode(config, runtimeOptions, inMemoryGenesis,
                         producerStartupPlan(), schedulers, bodyValidator, pluginEnvironment);
                 applyPreStartConfiguration(runtimeNode);

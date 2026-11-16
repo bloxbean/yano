@@ -1,9 +1,9 @@
 package org.yanoproject.ledgerstate.governance;
 
 import com.bloxbean.cardano.yaci.core.model.governance.GovActionId;
-import org.yanoproject.x.framework.api.appchain.l1view.GovernanceActionType;
-import org.yanoproject.x.framework.api.appchain.l1view.GovernanceProposalStatus;
-import org.yanoproject.x.framework.api.appchain.l1view.GovernanceProposalStatusReason;
+import com.bloxbean.cardano.yaci.core.model.governance.GovActionType;
+import org.yanoproject.api.governance.GovernanceProposalStatus;
+import org.yanoproject.api.governance.GovernanceProposalStatusReason;
 import org.yanoproject.ledgerstate.DefaultAccountStateStore;
 import org.yanoproject.ledgerstate.governance.model.ProposalLifecycleRecord;
 import org.yanoproject.ledgerstate.test.TestRocksDBHelper;
@@ -33,7 +33,7 @@ class GovernanceHistoryRollbackTest {
             long slot = 10_000;
             GovActionId proposalId = new GovActionId("11".repeat(32), 2);
             ProposalLifecycleRecord proposal = new ProposalLifecycleRecord(
-                    GovernanceActionType.PARAMETER_CHANGE, GovernanceProposalStatus.RATIFIED,
+                    GovActionType.PARAMETER_CHANGE_ACTION, GovernanceProposalStatus.RATIFIED,
                     GovernanceProposalStatusReason.RATIFIED, 168, 174);
 
             apply(rocks.db(), governance, account, epoch, slot, proposalId, proposal);

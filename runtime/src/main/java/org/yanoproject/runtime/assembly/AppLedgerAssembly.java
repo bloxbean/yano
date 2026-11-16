@@ -1,6 +1,5 @@
 package org.yanoproject.runtime.assembly;
 
-import com.bloxbean.cardano.yaci.core.common.NetworkType;
 import org.yanoproject.api.ChainQuery;
 import org.yanoproject.api.host.HostApi;
 import org.yanoproject.runtime.host.DefaultHostApi;
@@ -12,21 +11,13 @@ import org.yanoproject.api.NodeLifecycle;
 import org.yanoproject.api.ProducerControl;
 import org.yanoproject.api.TxEvaluationGateway;
 import org.yanoproject.api.TxGateway;
-import org.yanoproject.x.framework.api.appchain.AppChainGateway;
-import org.yanoproject.x.framework.api.appchain.AppChainGateways;
-import org.yanoproject.x.framework.api.appchain.AppChainConfig;
-import org.yanoproject.x.framework.config.AppChainConfigParser;
 import org.yanoproject.api.config.NodeConfig;
 import org.yanoproject.api.config.RuntimeOptions;
 import org.yanoproject.api.config.YanoConfig;
 import org.yanoproject.api.listener.NodeEventListener;
 import org.yanoproject.api.model.NodeStatus;
 import org.yanoproject.api.plugin.PluginCatalogView;
-import org.yanoproject.x.framework.api.plugin.domain.DomainApiGateway;
 import org.yanoproject.api.plugin.operations.PluginOperationsView;
-import org.yanoproject.x.framework.runtime.appchain.AppLedgerManager;
-import org.yanoproject.x.framework.host.AppLedgerHostPlugin;
-import org.yanoproject.api.config.PluginConfigValues;
 import org.yanoproject.runtime.events.PropagatingEventBus;
 import org.yanoproject.runtime.kernel.KernelState;
 import org.yanoproject.runtime.maintenance.RuntimeMaintenanceGate;
@@ -35,9 +26,6 @@ import org.yanoproject.runtime.kernel.Schedulers;
 import org.yanoproject.runtime.kernel.ServiceRegistry;
 import org.yanoproject.runtime.kernel.Subsystem;
 import org.yanoproject.runtime.kernel.SubsystemContext;
-import org.yanoproject.runtime.plugins.DomainApiRegistry;
-import org.yanoproject.runtime.plugins.LocalReadModelRegistry;
-import org.yanoproject.runtime.plugins.LocalReadModelContributionRegistry;
 import org.yanoproject.runtime.plugins.PluginLoaderHandle;
 import org.yanoproject.runtime.plugins.PluginManager;
 import org.yanoproject.runtime.plugins.PluginOperationsRegistry;
@@ -48,23 +36,17 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.lang.reflect.Proxy;
-import java.nio.file.Path;
-import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
-/** App-only composition of the existing kernel, catalog, transport and app-chain manager. */
+/**
+ * Generic host without Cardano chainstate ({@code yano.mode=app-ledger}): the existing kernel, plugin
+ * catalog, Host API, app-only N2N server and REST. A required plugin supplies the app-only network.
+ */
 final class AppLedgerAssembly implements Yano, NodeLifecycle {
     private static final Logger log = LoggerFactory.getLogger(AppLedgerAssembly.class);
-    // Public Cardano networks plus the existing Yano devnet magic (YanoConfig.devnetDefault).
-    private static final Set<Long> CARDANO_NETWORK_MAGICS = Stream.concat(
-            Stream.of(NetworkType.values()).map(NetworkType::getProtocolMagic),
-            Stream.of(42L)).collect(Collectors.toUnmodifiableSet());
     private final ChainQuery unavailableChain = unavailable(ChainQuery.class);
     private final LedgerQuery unavailableLedger = unavailable(LedgerQuery.class);
     private final TxGateway unavailableTransactions = unavailable(TxGateway.class);
@@ -72,16 +54,16 @@ final class AppLedgerAssembly implements Yano, NodeLifecycle {
     private final RuntimeMaintenanceGate maintenance = new RuntimeMaintenanceGate();
     private final YanoConfig config;
     private final NodeKernel kernel;
-    private final AppLedgerManager chains;
     private final ServeSubsystem server;
     private final PluginRuntimeEnvironment plugins;
     private final PluginOperationsRegistry operations;
-    private final DomainApiRegistry domainApis;
+    private final PluginManager manager;
+    private final DefaultHostLifecycleRegistry hostLifecycle;
 
     AppLedgerAssembly(YanoConfig source, RuntimeOptions options, PluginLoaderHandle loader) {
         config = source.toBuilder().build();
+        validateHost(config);
         Map<String, Object> globals = options.globals();
-        long magic = validateHost(config, globals);
         Schedulers schedulers = new Schedulers();
         PropagatingEventBus events = new PropagatingEventBus();
         List<AutoCloseable> owned = new ArrayList<>();
@@ -90,36 +72,24 @@ final class AppLedgerAssembly implements Yano, NodeLifecycle {
         try {
             plugins = PluginRuntimeEnvironment.open(options.plugins(), loader != null ? loader
                     : PluginLoaderHandle.classpath(Thread.currentThread().getContextClassLoader()),
-                    Set.of(AppLedgerHostPlugin.BUNDLE_ID));
+                    PluginRuntimeEnvironment.requiredBundles(globals));
             owned.add(plugins);
             operations = new PluginOperationsRegistry(plugins, log);
             owned.add(operations);
             DefaultN2NExtensionRegistry n2n = new DefaultN2NExtensionRegistry(false);
-            PluginManager manager = plugins.createNodePluginManager(events, schedulers.scheduled(), operations);
+            manager = plugins.createNodePluginManager(events, schedulers.scheduled(), operations);
             owned.add(manager);
-            DefaultHostLifecycleRegistry hostLifecycle = new DefaultHostLifecycleRegistry();
+            hostLifecycle = new DefaultHostLifecycleRegistry(DefaultHostLifecycleRegistry.Callers.of(plugins),
+                    operations.recorder());
             owned.add(hostLifecycle);
-            manager.registerHostService(HostApi.SERVICE_KEY,
-                    new DefaultHostApi(n2n, plugins.providers(), hostLifecycle));
-            manager.registerHostService(AppLedgerHostPlugin.NODE_CONFIG_SERVICE, config.toBuilder().build());
-            manager.registerHostService(AppLedgerHostPlugin.RUNTIME_OPTIONS_SERVICE,
-                    new RuntimeOptions(options.events(), options.plugins(), PluginConfigValues.immutableCopy(globals)));
+            manager.registerHostService(HostApi.SERVICE_KEY, new DefaultHostApi(n2n, plugins.providers(),
+                    hostLifecycle, config, options, () -> networkName(n2n), plugins::bundleConfig));
             manager.discoverAndInit(hostLifecycle::close);
-            chains = manager.getService(AppLedgerHostPlugin.ASSEMBLY_SERVICE, AppLedgerHostPlugin.class)
-                    .orElseThrow(() -> new IllegalStateException(
-                            "Required application-ledger framework did not initialize"))
-                    .assemble();
-            server = ServeSubsystem.appOnly(config.getServerPort(), magic, log);
+            hostLifecycle.runAssemblies(plugins.classLoader());
+            server = ServeSubsystem.appOnly(config.getServerPort(), appOnlyNetwork(n2n), log);
             owned.add(server);
             n2n.seal();
             server.enableAppLayer(n2n.inboundFactories());
-            LocalReadModelRegistry readModels = new LocalReadModelRegistry();
-            owned.add(readModels);
-            LocalReadModelContributionRegistry contributions = new LocalReadModelContributionRegistry(
-                    plugins, "app-" + magic, chains, readModels);
-            owned.add(contributions);
-            domainApis = new DomainApiRegistry(plugins, chains, log, readModels, operations);
-            owned.add(domainApis);
             List<AutoCloseable> resources = List.copyOf(owned);
             List<Subsystem> stages = new ArrayList<>();
             stages.add(new Subsystem() {
@@ -135,16 +105,10 @@ final class AppLedgerAssembly implements Yano, NodeLifecycle {
             });
             hostLifecycle.seal();
             stages.addAll(hostLifecycle.subsystems());
-            stages.add(new Subsystem() {
-                public String name() { return "local-read-models"; }
-                public void start() { contributions.resume(); }
-                public void stop() { contributions.sealAndAwait(); }
-            });
-            stages.add(new Subsystem() {
-                public String name() { return "app-operations"; }
-                public void start() { domainApis.resume(); operations.activateTelemetry(); operations.startSampling(); }
-                public void stop() { operations.sealAndAwait(); domainApis.sealAndAwait(); }
-            });
+            stages.add(new OperationsStage(hostLifecycle::resumePluginProducts, () -> {
+                operations.activateTelemetry();
+                operations.startSampling();
+            }, operations::sealAndAwait, hostLifecycle::sealPluginProducts));
             if (config.isEnableServer()) stages.add(server);
             kernel = new NodeKernel(stages,
                     new SubsystemContext(events, schedulers, globals, new ServiceRegistry()));
@@ -154,50 +118,52 @@ final class AppLedgerAssembly implements Yano, NodeLifecycle {
         }
     }
 
-    private static long validateHost(YanoConfig config, Map<String, Object> globals) {
-        if (!Boolean.parseBoolean(String.valueOf(globals.get("yano.app-chain.enabled")))) {
-            throw new IllegalArgumentException("yano.mode=app-ledger requires yano.app-chain.enabled=true");
-        }
-        Object magicValue = globals.get("yano.app-chain.network-magic");
-        long magic;
-        try {
-            magic = Long.parseLong(String.valueOf(magicValue).trim());
-        } catch (NumberFormatException invalid) {
-            throw new IllegalArgumentException("Standalone requires yano.app-chain.network-magic (unsigned 32-bit)");
-        }
-        if (magic <= 0 || magic > 0xffff_ffffL || CARDANO_NETWORK_MAGICS.contains(magic)) {
-            throw new IllegalArgumentException("yano.app-chain.network-magic must be a distinct app network identity");
-        }
+    private static void validateHost(YanoConfig config) {
         if (config.isEnableBlockProducer() || config.isEnableBootstrap() || config.isDevMode()) {
             throw new IllegalArgumentException(
                     "Cardano producer/bootstrap/dev mode is unavailable in yano.mode=app-ledger");
         }
-        String path = config.getAppChainStoragePath();
-        if (path == null || path.isBlank()) {
-            throw new IllegalArgumentException("yano.app-chain.storage.path is required");
-        }
-        Path appPath = Path.of(path).toAbsolutePath().normalize();
-        Path l1Path = Path.of(config.getRocksDBPath() == null ? "chainstate" : config.getRocksDBPath())
-                .toAbsolutePath().normalize();
-        if (appPath.equals(l1Path)) {
-            throw new IllegalArgumentException("App storage must differ from yano.storage.path");
-        }
-        // Parse through the framework's existing configuration boundary, but reject
-        // unavailable host transport before discovering or initializing any plugin.
-        for (AppChainConfig chain : AppChainConfigParser.parseChains(globals, true)) {
-            Object configuredTransport = chain.pluginSettings().get("transport.mode");
-            String transport = configuredTransport == null ? "" : String.valueOf(configuredTransport).trim();
-            if (transport.isEmpty()) {
-                Object global = globals.get("yano.app-chain.transport.mode");
-                transport = global == null ? "" : String.valueOf(global).trim();
+    }
+
+    private static long appOnlyNetwork(DefaultN2NExtensionRegistry n2n) {
+        return n2n.appOnlyNetwork().orElseThrow(() -> new IllegalStateException(
+                "app-ledger mode requires a plugin that provides an app-only network"));
+    }
+
+    private static String networkName(DefaultN2NExtensionRegistry n2n) {
+        return "app-" + n2n.appOnlyNetwork().orElseThrow(() -> new IllegalStateException(
+                "The app-only network is not known before a plugin calls requireAppOnlyNetwork"));
+    }
+
+    /**
+     * The {@code app-operations} stage: resumes plugin products, then activates operations telemetry; stop seals
+     * telemetry, then products. Both seals are always attempted and their failures aggregated, and a failed start
+     * seals locally because the kernel never stops a stage whose start failed.
+     */
+    record OperationsStage(Runnable resumeProducts, Runnable activateTelemetry, Runnable sealTelemetry,
+                           Runnable sealProducts) implements Subsystem {
+        @Override public String name() { return "app-operations"; }
+
+        @Override
+        public void start() {
+            try {
+                resumeProducts.run();
+                activateTelemetry.run();
+            } catch (Throwable failure) {
+                seal(failure);
             }
-            if (!"dedicated".equalsIgnoreCase(transport)) {
-                throw new IllegalArgumentException("Standalone app chain '" + chain.chainId()
-                        + "' requires transport.mode=dedicated (effective: "
-                        + (transport.isEmpty() ? "shared" : transport) + ")");
-            }
         }
-        return magic;
+
+        @Override public void stop() { seal(null); }
+
+        private void seal(Throwable failure) {
+            Throwable outcome = failure;
+            try { sealTelemetry.run(); }
+            catch (Throwable next) { outcome = LifecycleFailures.merge(outcome, next); }
+            try { sealProducts.run(); }
+            catch (Throwable next) { outcome = LifecycleFailures.merge(outcome, next); }
+            rethrow(outcome);
+        }
     }
 
     private static void closeAll(List<AutoCloseable> resources, Throwable failure) {
@@ -208,6 +174,10 @@ final class AppLedgerAssembly implements Yano, NodeLifecycle {
                 outcome = LifecycleFailures.merge(outcome, cleanup);
             }
         }
+        rethrow(outcome);
+    }
+
+    private static void rethrow(Throwable outcome) {
         if (outcome instanceof Error error) throw error;
         if (outcome instanceof RuntimeException exception) throw exception;
         if (outcome != null) throw new IllegalStateException("App-ledger lifecycle failed", outcome);
@@ -238,15 +208,11 @@ final class AppLedgerAssembly implements Yano, NodeLifecycle {
     public Optional<ProducerControl> producerControl() { return Optional.empty(); }
     public Optional<DevnetControl> devnetControl() { return Optional.empty(); }
     public Optional<NodeKernel> kernel() { return Optional.of(kernel); }
-    public AppChainGateways appChains() { return chains; }
-    public Optional<AppChainGateway> appChain() {
-        return chains.all().size() == 1 ? Optional.of(chains.all().iterator().next()) : Optional.empty();
-    }
-    public DomainApiGateway domainApis() { return domainApis; }
+    @Override public <T> Optional<T> service(String key, Class<T> type) { return manager.pluginService(key, type); }
     public Optional<PluginCatalogView> pluginCatalog() { return Optional.of(plugins.catalog()); }
     public Optional<PluginOperationsView> pluginOperations() { return Optional.of(operations); }
     public void start() {
-        kernel.start(() -> chains.awaitStopped(Duration.ofSeconds(3)));
+        kernel.start(hostLifecycle::restartReady);
     }
     public void stop() { kernel.stop(); }
     public void close() { kernel.close(); }

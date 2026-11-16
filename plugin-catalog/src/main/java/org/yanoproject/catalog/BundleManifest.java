@@ -1,8 +1,10 @@
 package org.yanoproject.catalog;
 
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
@@ -85,34 +87,17 @@ public record BundleManifest(
         }
         Set<ContributionKey> keys = new HashSet<>();
         Set<ProviderKey> providers = new HashSet<>();
-        int nodePlugins = 0;
-        int domainApis = 0;
-        int healthProviders = 0;
-        int metricsProviders = 0;
+        Map<ContributionKind, Integer> counts = new HashMap<>();
         for (BundleContribution contribution : contributions) {
             Objects.requireNonNull(contribution, "contributions must not contain null entries");
-            if (contribution.kind() == ContributionKind.NODE_PLUGIN && ++nodePlugins > 1) {
-                throw new IllegalArgumentException("contributions must declare at most one node-plugin");
+            ContributionKind kind = contribution.kind();
+            if (counts.merge(kind, 1, Integer::sum) > kind.maxPerBundle()) {
+                throw new IllegalArgumentException("contributions must declare at most "
+                        + kind.maxPerBundle() + " " + kind.manifestKey() + " contributions");
             }
-            if (contribution.kind() == ContributionKind.DOMAIN_API) {
-                if (++domainApis > 1) {
-                    throw new IllegalArgumentException("contributions must declare at most one domain-api");
-                }
-                requireBundleOwnedName(bundleId, contribution, "domain-api");
-            }
-            if (contribution.kind() == ContributionKind.HEALTH) {
-                if (++healthProviders > 1) {
-                    throw new IllegalArgumentException(
-                            "contributions must declare at most one health provider");
-                }
-                requireBundleOwnedName(bundleId, contribution, "health");
-            }
-            if (contribution.kind() == ContributionKind.METRICS) {
-                if (++metricsProviders > 1) {
-                    throw new IllegalArgumentException(
-                            "contributions must declare at most one metrics provider");
-                }
-                requireBundleOwnedName(bundleId, contribution, "metrics");
+            if (kind.nameIsBundleId() && !bundleId.equals(contribution.name())) {
+                throw new IllegalArgumentException(kind.manifestKey()
+                        + " contribution name must equal the containing bundle id");
             }
             if (!keys.add(new ContributionKey(contribution.kind(), contribution.name()))) {
                 throw new IllegalArgumentException("contributions must not contain duplicate kind/name pairs");
@@ -120,17 +105,6 @@ public record BundleManifest(
             if (!providers.add(new ProviderKey(contribution.kind(), contribution.provider()))) {
                 throw new IllegalArgumentException("contributions must not contain duplicate kind/provider pairs");
             }
-        }
-    }
-
-    private static void requireBundleOwnedName(
-            String bundleId,
-            BundleContribution contribution,
-            String kind
-    ) {
-        if (!bundleId.equals(contribution.name())) {
-            throw new IllegalArgumentException(kind
-                    + " contribution name must equal the containing bundle id");
         }
     }
 

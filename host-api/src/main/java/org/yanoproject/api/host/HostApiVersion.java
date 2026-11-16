@@ -2,7 +2,7 @@ package org.yanoproject.api.host;
 
 /** Independent host contract identity, unrelated to the Yano or extension release number. */
 public record HostApiVersion(int major, int level) {
-    public static final HostApiVersion CURRENT = new HostApiVersion(1, 1);
+    public static final HostApiVersion CURRENT = new HostApiVersion(1, 2);
 
     public HostApiVersion {
         if (major < 1 || level < 1) throw new IllegalArgumentException("Host API major and level must be positive");
