@@ -21,6 +21,10 @@ def jacksonAnnotationsVersion = jacksonPatchVersion.replaceFirst(/\.\d+$/, '')
 def isJacksonModule = { String group ->
     group == 'com.fasterxml.jackson' || group?.startsWith('com.fasterxml.jackson.')
 }
+def cardanoClientLibVersion = libs.versions.cardano.client.lib.get()
+def isCardanoClientLibModule = { String group, String name ->
+    group == 'com.bloxbean.cardano' && name.startsWith('cardano-client-')
+}
 
 // Quarkus owns the application logging provider. The standalone runtime's
 // reload4j backend must not compete with Quarkus' JBoss provider in either the
@@ -46,6 +50,12 @@ configurations.configureEach {
             details.useVersion(details.requested.name == 'jackson-annotations'
                     ? jacksonAnnotationsVersion : jacksonPatchVersion)
             details.because('ADR-013 release image requires the fixed Jackson 2.21.4 family')
+        }
+        // Scalus' cardano-client-lib bridge still requests the 0.7.2 family; one executable
+        // carries one family, the catalog's (checked by verifyCardanoClientLibAlignment).
+        if (isCardanoClientLibModule(details.requested.group, details.requested.name)) {
+            details.useVersion(cardanoClientLibVersion)
+            details.because('the executable aligns the cardano-client-lib family to the catalog version')
         }
     }
 }

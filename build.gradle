@@ -222,6 +222,31 @@ tasks.named('check') {
     dependsOn tasks.named('verifyAdr013Slf4jAlignment')
 }
 
+tasks.register('verifyCardanoClientLibAlignment') {
+    group = 'verification'
+    description = 'Rejects mixed cardano-client-lib family versions in the executable runtime closure'
+
+    doLast {
+        def expectedVersion = libs.versions.cardano.client.lib.get()
+        def failures = project(':app').configurations.getByName('runtimeClasspath')
+                .incoming.resolutionResult.allComponents
+                .collect { it.id }
+                .findAll { id ->
+                    id instanceof org.gradle.api.artifacts.component.ModuleComponentIdentifier
+                            && id.group == 'com.bloxbean.cardano' && id.module.startsWith('cardano-client-')
+                            && id.version != expectedVersion
+                }.collect { "app resolves ${it.displayName}; expected ${expectedVersion}" }
+        if (!failures.isEmpty()) {
+            throw new GradleException('cardano-client-lib alignment failed:\n - ' + failures.sort().join('\n - '))
+        }
+        logger.lifecycle('cardano-client-lib family aligned to {} in the app runtime closure', expectedVersion)
+    }
+}
+
+tasks.named('check') {
+    dependsOn tasks.named('verifyCardanoClientLibAlignment')
+}
+
 tasks.register('verifyLegacyAccountHistoryRemoved') {
     group = 'verification'
     description = 'Prevents the removed synchronous account-history implementation from returning.'
