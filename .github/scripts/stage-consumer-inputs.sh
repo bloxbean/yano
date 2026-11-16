@@ -27,6 +27,7 @@ host_api_version="${ORG_GRADLE_PROJECT_hostApiVersion:-$host_api_contract.0-${co
 [[ "$host_api_version" =~ ^[0-9A-Za-z.-]+$ && "$host_api_version" != *-SNAPSHOT ]]
 mkdir -p "$staged_directory/maven"
 ./gradlew publishAllPublicationsToStagingRepository :app:yanoDistZip :app:packagedJvmPluginCatalogSmoke \
+  :app:packagedJvmAppLedgerSmoke \
   "-PstagingRepository=$staged_directory/maven" "-Pversion=$staged_version" \
   "-PhostApiVersion=$host_api_version" -PskipSigning=true --no-parallel
 cp "app/build/distributions/yano-$staged_version.zip" "$staged_directory/"

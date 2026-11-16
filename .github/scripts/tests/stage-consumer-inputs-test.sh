@@ -47,7 +47,8 @@ staged="$root/work/build/consumer-inputs/$commit"
 jq -e '.scope == null and .distribution == "yano-0.1.0-next-333333333.zip"
   and .hostApiVersion == "1.2.0-333333333"' "$staged/yano-inputs.json" >/dev/null
 (cd "$staged" && sha256sum --check --strict SHA256SUMS >/dev/null)
-for task in publishAllPublicationsToStagingRepository :app:yanoDistZip :app:packagedJvmPluginCatalogSmoke; do
+for task in publishAllPublicationsToStagingRepository :app:yanoDistZip :app:packagedJvmPluginCatalogSmoke \
+  :app:packagedJvmAppLedgerSmoke; do
   grep -Fx "$task" "$root/work/arguments.txt" >/dev/null
 done
 for artifact in yano-plugin-catalog yano-app-core; do

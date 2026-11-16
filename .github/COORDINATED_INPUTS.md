@@ -9,7 +9,7 @@ Maven Local stays disabled.
 Dispatch `stage-consumer-inputs.yml` on a pushed Yano commit. It publishes
 every Yano publication (the contracts, `yano-plugin-catalog`, `yano-runtime`,
 `yano-app-core` and the rest), builds the JVM ZIP and runs the packaged
-plugin-catalog smoke.
+plugin-catalog and app-ledger smokes.
 
 The run uploads `yano-inputs-<commit>` as an Actions artifact retained for 90
 days. It contains a file Maven repository (`maven/`), the JVM ZIP,

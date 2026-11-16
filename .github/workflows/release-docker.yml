@@ -200,8 +200,8 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Smoke test packaged JVM plugin catalog
-        run: ./gradlew :app:packagedJvmPluginCatalogSmoke -PskipSigning=true
+      - name: Smoke test packaged JVM plugin catalog and app-ledger mode
+        run: ./gradlew :app:packagedJvmPluginCatalogSmoke :app:packagedJvmAppLedgerSmoke -PskipSigning=true
 
       - name: Prepare JVM Docker context
         run: ./gradlew :app:prepareYanoDockerJvmContext verifyNoYanoXDependency -PskipSigning=true

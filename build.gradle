@@ -716,7 +716,8 @@ tasks.register('distributionCheck') {
     group = 'verification'
     description = 'Validates the core JVM distribution and directory-plugin contract.'
     dependsOn ':app:verifyCoreJvmDistribution',
-            ':app:packagedJvmPluginCatalogSmoke'
+            ':app:packagedJvmPluginCatalogSmoke',
+            ':app:packagedJvmAppLedgerSmoke'
 }
 
 tasks.register('extendedTest') {
