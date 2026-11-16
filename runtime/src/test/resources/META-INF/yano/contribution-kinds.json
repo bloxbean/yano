@@ -1,5 +1,6 @@
 {
   "schemaVersion": 1,
+  "owner": "org.yanoproject.runtime.fixture",
   "kinds": [
     {
       "key": "fixture-product",

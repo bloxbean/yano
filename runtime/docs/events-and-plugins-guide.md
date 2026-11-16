@@ -2,9 +2,6 @@
 
 This guide explains how to use the Yano event system and plugin SPI, both for developers embedding Yano in their apps and for contributors writing default plugins or internal listeners.
 
-For committed state-machine queries and manifested domain HTTP APIs, continue
-with the [query and domain API plugin guide](../../docs/APP_CHAIN_PLUGIN_QUERY_AND_DOMAIN_API.md).
-
 ## Overview
 
 - Module overview
@@ -170,7 +167,7 @@ reported by the plugin operations surface.
 
 Yano defines four contribution kinds: `node-plugin`, `utxo-index-contributor`,
 `health` and `metrics`. A framework on the host class path adds kinds with a
-descriptor `META-INF/yano/contribution-kinds/<owner>.json` (key, service
+descriptor `META-INF/yano/contribution-kinds.json` (owner, key, service
 interface, trust tier and manifest rules) plus one
 `org.yanoproject.api.plugin.spi.ContributionKindBinding` per kind, registered
 with `ServiceLoader`. The binding builds the facade through the host's

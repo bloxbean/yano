@@ -52,10 +52,10 @@ final class PluginKinds {
         List<Path> hostArtifacts = new ArrayList<>();
         List<ContributionKindBinding<?>> descriptorBindings = new ArrayList<>();
         try {
-            Enumeration<URL> roots = hostLoader.getResources(ContributionKindRegistry.RESOURCE_DIRECTORY);
-            while (roots.hasMoreElements()) {
+            Enumeration<URL> descriptors = hostLoader.getResources(ContributionKindRegistry.RESOURCE);
+            while (descriptors.hasMoreElements()) {
                 hostArtifacts.add(PluginRuntimeEnvironment.manifestArtifact(
-                        roots.nextElement(), ContributionKindRegistry.RESOURCE_DIRECTORY));
+                        descriptors.nextElement(), ContributionKindRegistry.RESOURCE));
             }
             ServiceLoader.load(ContributionKindBinding.class, hostLoader)
                     .forEach(descriptorBindings::add);

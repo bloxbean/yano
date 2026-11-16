@@ -299,7 +299,7 @@ class RequiredEmbeddedPluginCatalogTest {
         return new URLClassLoader(urls, getClass().getClassLoader()) {
             @Override public Enumeration<URL> getResources(String name) throws IOException {
                 if (name.startsWith("META-INF/services/") || name.startsWith("META-INF/yano/plugins/")
-                        || name.startsWith(ContributionKindRegistry.RESOURCE_DIRECTORY)
+                        || name.equals(ContributionKindRegistry.RESOURCE)
                         || name.equals(PluginIndex.RESOURCE_PATH)) {
                     return findResources(name);
                 }

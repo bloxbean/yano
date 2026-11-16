@@ -184,8 +184,10 @@ Its fields:
 A `ContributionKindRegistry` is built once per catalog build or inspection from two origins:
 
 1. the four built-in Yano kinds: `node-plugin`, `utxo-index-contributor`, `health`, `metrics`;
-2. descriptor resources `META-INF/yano/contribution-kinds/<owner>.json` from **trusted origins only**
-   (A5, X8).
+2. descriptor resources from **trusted origins only** (A5, X8): one fixed resource
+   `META-INF/yano/contribution-kinds.json` per artifact, with the owner declared inside the JSON, found
+   by resource name at runtime and by entry name at index or CLI time, so discovery does not depend on
+   JAR directory entries.
 
 Trust is decided by **origin**, not by artifact content (A5 P3). The uber-jar and `framework/cardano`
 legitimately mix host code with a bundle manifest. The trusted origins are:

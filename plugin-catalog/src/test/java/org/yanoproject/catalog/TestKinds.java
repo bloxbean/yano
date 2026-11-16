@@ -8,8 +8,7 @@ import java.util.List;
 
 /** The test descriptor kinds, trusted from the test-resources host artifact. */
 final class TestKinds {
-    static final String DESCRIPTOR =
-            ContributionKindRegistry.RESOURCE_DIRECTORY + "org.yanoproject.catalog.fixture.json";
+    static final String DESCRIPTOR = ContributionKindRegistry.RESOURCE;
     static final Path HOST_ARTIFACT = hostArtifact();
     static final ContributionKindRegistry REGISTRY = registry();
     /** Legacy-capable CONSENSUS kind; names must not contain '.' or ':'; reserves "system". */
@@ -23,7 +22,7 @@ final class TestKinds {
     private static Path hostArtifact() {
         URL descriptor = TestKinds.class.getClassLoader().getResource(DESCRIPTOR);
         try {
-            return Path.of(descriptor.toURI()).getParent().getParent().getParent().getParent();
+            return Path.of(descriptor.toURI()).getParent().getParent().getParent();
         } catch (URISyntaxException e) {
             throw new IllegalStateException(e);
         }

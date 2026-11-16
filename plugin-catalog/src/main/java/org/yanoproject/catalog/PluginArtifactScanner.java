@@ -221,8 +221,7 @@ public final class PluginArtifactScanner {
                 if (isQualifiedManifestPath(name)) {
                     manifestPaths.add(name);
                 }
-                if (ContributionKindRegistry.isDescriptorPath(name)
-                        && (descriptorPath == null || name.compareTo(descriptorPath) < 0)) {
+                if (ContributionKindRegistry.isDescriptorPath(name)) {
                     descriptorPath = name;
                 }
                 ContributionKind kind = serviceKind(name);
@@ -313,8 +312,7 @@ public final class PluginArtifactScanner {
             if (isQualifiedManifestPath(name)) {
                 manifestPaths.add(name);
             }
-            if (ContributionKindRegistry.isDescriptorPath(name)
-                    && (descriptorPath == null || name.compareTo(descriptorPath) < 0)) {
+            if (ContributionKindRegistry.isDescriptorPath(name)) {
                 descriptorPath = name;
             }
             ContributionKind kind = serviceKind(name);

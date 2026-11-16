@@ -1,5 +1,6 @@
 {
   "schemaVersion": 1,
+  "owner": "org.yanoproject.catalog.fixture",
   "apiPackages": ["org.yanoproject.catalog.fixture"],
   "kinds": [
     {

@@ -65,6 +65,16 @@ class ContributionKindRegistryTest {
     }
 
     @Test
+    void findsTheDescriptorByEntryNameWithAndWithoutJarDirectoryEntries() throws Exception {
+        Path bare = jar("bare.jar", "com.example.bare", descriptor(kind("bare-kind", "com.example.Bare", "")));
+        Path withDirectories = jar("dirs.jar", "com.example.dirs",
+                descriptor(kind("dirs-kind", "com.example.Dirs", "")), true);
+
+        assertThat(ContributionKindRegistry.fromHostArtifacts(List.of(bare, withDirectories)).kinds())
+                .extracting(ContributionKind::manifestKey).endsWith("bare-kind", "dirs-kind");
+    }
+
+    @Test
     void rejectsDuplicateKeysRedefinedBuiltInsAndSharedInterfaces() throws Exception {
         assertRejected(List.of(
                         directory("one", "com.example.one", descriptor(kind("same", "com.example.A", ""))),
@@ -82,7 +92,7 @@ class ContributionKindRegistryTest {
         assertRejected(List.of(
                         directory("owner-a", "com.example.owner", descriptor(kind("a", "com.example.A", ""))),
                         directory("owner-b", "com.example.owner", descriptor(kind("b", "com.example.B", "")))),
-                "owner is declared by more than one host artifact");
+                "owner 'com.example.owner' is declared by more than one host artifact");
     }
 
     @Test
@@ -108,7 +118,9 @@ class ContributionKindRegistryTest {
                         "{\"schemaVersion\": 2, \"kinds\": []}")),
                 "schemaVersion must equal 1");
         assertRejected(List.of(directory("owner", "Not An Owner", descriptor())),
-                "filename must be a reverse-DNS owner id");
+                "owner must be a 3-160 character lowercase reverse-DNS identifier");
+        assertRejected(List.of(directory("no-owner", null, descriptor())),
+                "owner must be a 3-160 character lowercase reverse-DNS identifier");
     }
 
     private void assertRejected(List<Path> artifacts, String message) {
@@ -126,18 +138,31 @@ class ContributionKindRegistryTest {
         return KIND.formatted(key, serviceInterface, extra);
     }
 
+    /** Adds the owner field; a null owner leaves it out. */
+    private static String owned(String owner, String descriptor) {
+        return owner == null ? descriptor : descriptor.replaceFirst("\\{", "{\"owner\": \"" + owner + "\", ");
+    }
+
     private Path directory(String name, String owner, String descriptor) throws IOException {
-        Path file = temporary.resolve(name).resolve(ContributionKindRegistry.RESOURCE_DIRECTORY + owner + ".json");
+        Path file = temporary.resolve(name).resolve(ContributionKindRegistry.RESOURCE);
         Files.createDirectories(file.getParent());
-        Files.writeString(file, descriptor, StandardCharsets.UTF_8);
+        Files.writeString(file, owned(owner, descriptor), StandardCharsets.UTF_8);
         return temporary.resolve(name);
     }
 
     private Path jar(String name, String owner, String descriptor) throws IOException {
+        return jar(name, owner, descriptor, false);
+    }
+
+    private Path jar(String name, String owner, String descriptor, boolean directoryEntries) throws IOException {
         Path jar = temporary.resolve(name);
         try (OutputStream file = Files.newOutputStream(jar); JarOutputStream output = new JarOutputStream(file)) {
-            output.putNextEntry(new JarEntry(ContributionKindRegistry.RESOURCE_DIRECTORY + owner + ".json"));
-            output.write(descriptor.getBytes(StandardCharsets.UTF_8));
+            if (directoryEntries) {
+                output.putNextEntry(new JarEntry("META-INF/"));
+                output.putNextEntry(new JarEntry("META-INF/yano/"));
+            }
+            output.putNextEntry(new JarEntry(ContributionKindRegistry.RESOURCE));
+            output.write(owned(owner, descriptor).getBytes(StandardCharsets.UTF_8));
             output.closeEntry();
         }
         return jar;
