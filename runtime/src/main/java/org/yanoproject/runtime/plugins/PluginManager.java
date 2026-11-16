@@ -87,6 +87,7 @@ public final class PluginManager implements AutoCloseable {
     private final PluginSpiFacades.CallbackTracker catalogCallbacks;
     private final NodePluginLifecycleObserver lifecycleObserver;
 
+    private final ThreadLocal<String> initializingPlugin = new ThreadLocal<>();
     /** Successfully initialized plugins, always in dependency order. */
     private final List<NodePlugin> plugins = new ArrayList<>();
     /** Plugins whose most recent start callback completed successfully. */
@@ -297,6 +298,25 @@ public final class PluginManager implements AutoCloseable {
         return services.get(key, type);
     }
 
+    /**
+     * A service registered by the currently initialized plugin generation, resolved on every call;
+     * empty before initialization completes and after close. Host services are excluded.
+     */
+    public <T> Optional<T> pluginService(String key, Class<T> type) {
+        synchronized (this) {
+            if (state != State.INITIALIZED && state != State.STARTING && state != State.STARTED
+                    && state != State.STOPPING && state != State.STOPPED) {
+                return Optional.empty();
+            }
+        }
+        return services.getPluginService(key, type);
+    }
+
+    /** The bundle whose {@code NodePlugin.init} runs on the current thread, if any. */
+    public Optional<String> initializingPlugin() {
+        return Optional.ofNullable(initializingPlugin.get());
+    }
+
     /** Discover, validate and initialize the selected plugin set exactly once. */
     public void discoverAndInit() {
         discoverAndInit(() -> { });
@@ -361,7 +381,12 @@ public final class PluginManager implements AutoCloseable {
                     storageFilters, services, managedCallbacks);
             pluginContexts.put(descriptor.plugin(), context);
             try {
-                runPluginCallback(() -> descriptor.plugin().init(context));
+                initializingPlugin.set(descriptor.id());
+                try {
+                    runPluginCallback(() -> descriptor.plugin().init(context));
+                } finally {
+                    initializingPlugin.remove();
+                }
                 context.completeInitialization();
                 plugins.add(descriptor.plugin());
             } catch (Throwable failure) {

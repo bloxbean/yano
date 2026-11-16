@@ -17,8 +17,6 @@ import java.util.Objects;
 @Builder(toBuilder = true)
 public class YanoConfig implements NodeConfig {
 
-    public static final String DEFAULT_APP_CHAIN_STORAGE_PATH = "appchain-chainstate";
-
     @Builder.Default
     private RuntimeMode mode = RuntimeMode.CARDANO;
 
@@ -36,8 +34,6 @@ public class YanoConfig implements NodeConfig {
     // Storage configuration
     private boolean useRocksDB;
     private String rocksDBPath;
-    @Builder.Default
-    private String appChainStoragePath = DEFAULT_APP_CHAIN_STORAGE_PATH;
 
     // Sync configuration
     private long fullSyncThreshold; // If behind by more than this many slots, do full sync

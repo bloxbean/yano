@@ -1,9 +1,5 @@
 package org.yanoproject.runtime.assembly;
 
-import org.yanoproject.x.framework.api.appchain.AppChainGateway;
-import org.yanoproject.x.framework.api.appchain.AppChainGateways;
-import org.yanoproject.x.framework.api.plugin.domain.DomainApiGateway;
-import org.yanoproject.x.framework.api.plugin.domain.LocalReadModelHost;
 
 
 import org.yanoproject.api.ChainQuery;
@@ -290,35 +286,9 @@ final class RuntimeYano implements Yano, DevnetRuntimeProvider {
     }
 
     @Override
-    public Optional<AppChainGateway> appChain() {
-        if (nodeLifecycle instanceof org.yanoproject.runtime.internal.RuntimeNode runtimeNode) {
-            return Optional.ofNullable(runtimeNode.appChainGateway());
-        }
-        return Optional.empty();
-    }
-
-    @Override
-    public AppChainGateways appChains() {
-        if (nodeLifecycle instanceof org.yanoproject.runtime.internal.RuntimeNode runtimeNode) {
-            return runtimeNode.appChainGateways();
-        }
-        return AppChainGateways.empty();
-    }
-
-    @Override
-    public DomainApiGateway domainApis() {
-        if (nodeLifecycle instanceof org.yanoproject.runtime.internal.RuntimeNode runtimeNode) {
-            return runtimeNode.domainApis();
-        }
-        return DomainApiGateway.empty();
-    }
-
-    @Override
-    public Optional<LocalReadModelHost>
-            localReadModels() {
+    public <T> Optional<T> service(String key, Class<T> type) {
         return nodeLifecycle instanceof RuntimeNode runtimeNode
-                ? Optional.of(runtimeNode.localReadModels())
-                : Optional.empty();
+                ? runtimeNode.pluginService(key, type) : Optional.empty();
     }
 
     @Override

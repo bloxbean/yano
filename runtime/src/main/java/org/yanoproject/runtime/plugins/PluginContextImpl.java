@@ -172,10 +172,11 @@ final class PluginContextImpl implements PluginContext {
 
     /** One registry is shared deliberately by every context owned by a manager. */
     static final class SharedServiceRegistry {
+        private static final String HOST_OWNER = "<host>";
         private final Map<String, RegisteredService> services = new ConcurrentHashMap<>();
 
         void registerHost(String key, Object service) {
-            register("<host>", key, service, RegistrationScope.INITIALIZATION);
+            register(HOST_OWNER, key, service, RegistrationScope.INITIALIZATION);
         }
 
         void register(String owner, String key, Object service, RegistrationScope scope) {
@@ -199,6 +200,13 @@ final class PluginContextImpl implements PluginContext {
                 return Optional.empty();
             }
             return Optional.of(type.cast(registered.service()));
+        }
+
+        /** A plugin-registered service; host services are not plugin services. */
+        <T> Optional<T> getPluginService(String key, Class<T> type) {
+            RegisteredService registered = services.get(key);
+            return registered == null || HOST_OWNER.equals(registered.owner())
+                    ? Optional.empty() : get(key, type);
         }
 
         void clear() {

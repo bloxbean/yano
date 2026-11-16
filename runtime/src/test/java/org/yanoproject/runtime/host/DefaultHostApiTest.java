@@ -1,0 +1,78 @@
+package org.yanoproject.runtime.host;
+
+import com.bloxbean.cardano.yaci.events.api.config.EventsOptions;
+import org.junit.jupiter.api.Test;
+import org.yanoproject.api.config.PluginsOptions;
+import org.yanoproject.api.config.RuntimeOptions;
+import org.yanoproject.api.config.YanoConfig;
+import org.yanoproject.api.host.HostApiVersion;
+import org.yanoproject.runtime.plugins.PluginProviderRegistry;
+
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+class DefaultHostApiTest {
+    @Test
+    void nodeConfigAndRuntimeOptionsAreIsolatedSnapshots() {
+        List<Object> chains = new ArrayList<>(List.of(new LinkedHashMap<>(Map.of("chain-id", "a"))));
+        Map<String, Object> globals = new LinkedHashMap<>();
+        globals.put("example.chains", chains);
+        globals.put("example.flag", "on");
+        YanoConfig config = YanoConfig.serverOnly(0);
+        var host = new DefaultHostApi(new DefaultN2NExtensionRegistry(), PluginProviderRegistry.empty(),
+                DefaultHostLifecycleRegistryTest.newRegistry(), config,
+                new RuntimeOptions(EventsOptions.defaults(), PluginsOptions.defaults(), globals),
+                () -> "devnet", id -> Map.of("secret", id));
+
+        globals.put("example.flag", "off");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> firstChain = (Map<String, Object>) chains.getFirst();
+        firstChain.put("chain-id", "mutated");
+        chains.add(Map.of());
+        config.setServerPort(1);
+
+        RuntimeOptions first = host.runtimeOptions();
+        RuntimeOptions second = host.runtimeOptions();
+        assertThat(first).isNotSameAs(second);
+        assertThat(first.globals()).containsEntry("example.flag", "on");
+        assertThat((List<?>) first.globals().get("example.chains")).hasSize(1)
+                .first().isEqualTo(Map.of("chain-id", "a"));
+        assertThatThrownBy(() -> first.globals().put("example.flag", "x"))
+                .isInstanceOf(UnsupportedOperationException.class);
+
+        YanoConfig copy = host.nodeConfig();
+        assertThat(copy).isNotSameAs(host.nodeConfig());
+        assertThat(copy.getServerPort()).isZero();
+        copy.setServerPort(2);
+        assertThat(host.nodeConfig().getServerPort()).isZero();
+
+        assertThat(host.version()).isEqualTo(new HostApiVersion(1, 2));
+        assertThat(host.networkName()).isEqualTo("devnet");
+        assertThat(host.bundleConfig("com.example.bundle")).containsEntry("secret", "com.example.bundle");
+    }
+
+    @Test
+    void appOnlyNetworkRejectsConflictsSharedHostsAndLateCalls() {
+        var shared = new DefaultN2NExtensionRegistry();
+        assertThatThrownBy(() -> shared.requireAppOnlyNetwork(77))
+                .isInstanceOf(UnsupportedOperationException.class);
+
+        var appOnly = new DefaultN2NExtensionRegistry(false);
+        assertThat(appOnly.appOnlyNetwork()).isEmpty();
+        appOnly.requireAppOnlyNetwork(77);
+        appOnly.requireAppOnlyNetwork(77);
+        assertThatThrownBy(() -> appOnly.requireAppOnlyNetwork(78))
+                .hasMessageContaining("conflicting app-only network magics 77 and 78");
+        assertThatThrownBy(() -> appOnly.requireAppOnlyNetwork(0x1_0000_0000L))
+                .hasMessageContaining("unsigned 32-bit");
+        appOnly.seal();
+        assertThatThrownBy(() -> appOnly.requireAppOnlyNetwork(77))
+                .hasMessageContaining("before sessions start");
+        assertThat(appOnly.appOnlyNetwork()).hasValue(77);
+    }
+}
