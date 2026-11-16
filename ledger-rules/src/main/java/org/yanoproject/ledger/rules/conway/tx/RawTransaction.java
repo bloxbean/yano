@@ -3,6 +3,7 @@ package org.yanoproject.ledger.rules.conway.tx;
 import com.bloxbean.cardano.client.common.cbor.CborSpan;
 import com.bloxbean.cardano.client.exception.CborRuntimeException;
 import com.bloxbean.cardano.client.spec.Era;
+import com.bloxbean.cardano.client.transaction.raw.HaskellPolicy;
 import com.bloxbean.cardano.client.transaction.raw.RawExUnits;
 import com.bloxbean.cardano.client.transaction.raw.RawInput;
 import com.bloxbean.cardano.client.transaction.raw.RawTx;
@@ -148,9 +149,29 @@ public final class RawTransaction {
      */
     public static RawTransaction parse(byte[] txCbor, Transaction decoded) {
         Objects.requireNonNull(txCbor, "txCbor");
+        RawTx accepted;
+        try {
+            accepted = HaskellPolicy.forEra(Builder.ERA).transaction(txCbor);
+        } catch (CborRuntimeException e) {
+            throw new TxDecodingException(e.getMessage(), e);
+        }
+        return of(accepted, txCbor, decoded);
+    }
+
+    /**
+     * Maps a transaction that CCL's {@link HaskellPolicy} has accepted ({@code HaskellPolicy.transaction}) into the
+     * rules' records. Once the strict read accepts, the mapping rejects nothing (ADR 0005 J5); the translation below
+     * only keeps the engine's outcome a decoding failure should a reader change break that.
+     *
+     * @param accepted the strict read's view of {@code txCbor}
+     * @param txCbor   the transaction exactly as received (copied)
+     * @param decoded  the CCL decoding of the same bytes, kept for structure
+     */
+    public static RawTransaction of(RawTx accepted, byte[] txCbor, Transaction decoded) {
+        Objects.requireNonNull(accepted, "accepted");
         Builder b = new Builder(txCbor.clone(), decoded);
         try {
-            b.read();
+            b.read(accepted);
         } catch (CborRuntimeException e) {
             throw new TxDecodingException(e.getMessage(), e);
         }
@@ -432,13 +453,9 @@ public final class RawTransaction {
             this.decoded = decoded;
         }
 
-        /** {@code [body, witness_set, is_valid, auxiliary_data / null]}, read with CCL's view. */
-        void read() {
-            if (txCbor.length == 0) {
-                throw new TxDecodingException("empty transaction bytes");
-            }
-            tx = RawTx.of(txCbor);
-            HaskellPolicy.forEra(ERA).walk(tx);
+        /** {@code [body, witness_set, is_valid, auxiliary_data / null]}, as CCL's strict read accepted it. */
+        void read(RawTx accepted) {
+            tx = accepted;
             readBody();
             readWitnessSet();
             tx.auxData(ERA).ifPresent(auxData -> auxData.scripts()

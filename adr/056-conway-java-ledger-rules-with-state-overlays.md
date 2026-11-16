@@ -1209,6 +1209,9 @@ commits of the one PR. Status (2026-09-30):
 #### Phase 3a results: engine skeleton, UTXO and UTXOS (2026-09-29)
 
 - **Raw transaction model** (`org.yanoproject.ledger.rules.conway.tx`).
+  (Note, 2026-11-16: since CCL ADR 0005 the Haskell-strict decoding policy is
+  CCL's `ledger-cbor` `HaskellPolicy`; `RawTransaction` maps the view its
+  strict read accepted, and the engine runs that read before CCL's model.)
   `RawTransaction` reads the original bytes: the body, witness-set and
   auxiliary-data slices, the transaction id (blake2b-256 of the body slice),
   Haskell's size (`toCBORForSizeComputation`: `1 + body + witnesses + (aux |

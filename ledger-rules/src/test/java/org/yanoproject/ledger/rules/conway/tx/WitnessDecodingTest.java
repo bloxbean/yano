@@ -1,6 +1,8 @@
 package org.yanoproject.ledger.rules.conway.tx;
 
+import com.bloxbean.cardano.client.common.cbor.CborSpan;
 import com.bloxbean.cardano.client.transaction.raw.FieldType;
+import com.bloxbean.cardano.client.transaction.raw.HaskellPolicy;
 import com.bloxbean.cardano.client.util.HexUtil;
 
 import org.junit.jupiter.api.Test;
@@ -22,7 +24,7 @@ class WitnessDecodingTest {
     private static final String KEY = "11".repeat(28);
 
     private static RawScript script(String hex) {
-        return RawScript.of(RawScript.NATIVE, StrictCbor.span(HexUtil.decodeHexString(hex)));
+        return RawScript.of(RawScript.NATIVE, CborSpan.of(HexUtil.decodeHexString(hex)));
     }
 
     private static boolean holds(String hex, Set<String> signed, BigInteger start, BigInteger expire) {
@@ -113,7 +115,7 @@ class WitnessDecodingTest {
     }
 
     private static void validate(String hex) {
-        HaskellPolicy.CONWAY.walk(FieldType.OPTIONAL_AUXILIARY_DATA, StrictCbor.span(HexUtil.decodeHexString(hex)));
+        StrictReads.walk(FieldType.OPTIONAL_AUXILIARY_DATA, RawScript.span(HexUtil.decodeHexString(hex)));
     }
 
     private static void assertDecodingFailure(String hex, String message) {
@@ -129,8 +131,8 @@ class WitnessDecodingTest {
         // Conway's policy refuses it alone and nested in all, any and at-least, at any depth
         for (String script : List.of(guard, "820181" + guard, "820281" + guard, "83030181" + guard,
                 "820181" + "820181" + "820281" + guard)) {
-            assertThatThrownBy(() -> HaskellPolicy.CONWAY.walk(FieldType.NATIVE_SCRIPT,
-                    StrictCbor.span(HexUtil.decodeHexString(script)))).as(script)
+            assertThatThrownBy(() -> StrictReads.walk(FieldType.NATIVE_SCRIPT,
+                    CborSpan.of(HexUtil.decodeHexString(script)))).as(script)
                     .isInstanceOf(TxDecodingException.class).hasMessageContaining("type 6");
         }
         // in a transaction's witness set, its auxiliary data (both forms), and an output's reference script
@@ -148,8 +150,8 @@ class WitnessDecodingTest {
         assertThatCode(() -> script(guard)).doesNotThrowAnyException();
         assertThat(RawScript.fromScriptRef(HexUtil.decodeHexString(scriptRef)).hash()).hasSize(28);
         // types 0 to 5 are unchanged
-        assertThatCode(() -> HaskellPolicy.CONWAY.walk(FieldType.NATIVE_SCRIPT,
-                StrictCbor.span(HexUtil.decodeHexString("820181" + "8200581c" + KEY)))).doesNotThrowAnyException();
+        assertThatCode(() -> StrictReads.walk(FieldType.NATIVE_SCRIPT,
+                CborSpan.of(HexUtil.decodeHexString("820181" + "8200581c" + KEY)))).doesNotThrowAnyException();
         assertThatCode(() -> RawTransaction.parse(HexUtil.decodeHexString("84" + body + "a1" + "0181" + "8200581c"
                 + KEY + "f5f6"), null)).doesNotThrowAnyException();
     }
@@ -157,7 +159,7 @@ class WitnessDecodingTest {
     @Test
     void scriptsHashWithTheirLanguageTag() {
         // MutationWorld.ALWAYS_SUCCEEDS: PlutusV3 binary 450101002499, hash 186e32fa…
-        RawScript v3 = RawScript.of(RawScript.PLUTUS_V3, StrictCbor.span(HexUtil.decodeHexString("46450101002499")));
+        RawScript v3 = RawScript.of(RawScript.PLUTUS_V3, CborSpan.of(HexUtil.decodeHexString("46450101002499")));
         assertThat(v3.hashHex()).isEqualTo("186e32faa80a26810392fda6d559c7ed4721a65ce1c9d4ef3e1c87b4");
         // Amaru's corpus PlutusV2 script from a reference script [2, h'46010000222499']
         RawScript v2 = RawScript.fromScriptRef(HexUtil.decodeHexString("d8184a82024746010000222499"));

@@ -2,6 +2,7 @@ package org.yanoproject.ledger.rules.conway.tx;
 
 import com.bloxbean.cardano.client.common.cbor.CborSpan;
 import com.bloxbean.cardano.client.transaction.raw.CertKind;
+import com.bloxbean.cardano.client.transaction.raw.HaskellPolicy;
 import com.bloxbean.cardano.client.util.HexUtil;
 import org.junit.jupiter.api.Test;
 
@@ -26,8 +27,8 @@ class CertificateDecodingTest {
     }
 
     private static RawCertificate read(String certificate) {
-        CborSpan item = StrictCbor.span(HexUtil.decodeHexString(certificate));
-        HaskellPolicy.CONWAY.walk(CertKind.RECORD, item);
+        CborSpan item = CborSpan.of(HexUtil.decodeHexString(certificate));
+        StrictReads.walk(CertKind.RECORD, item);
         return RawCertificate.accepted(com.bloxbean.cardano.client.transaction.raw.RawCertificate.of(item), 0);
     }
 

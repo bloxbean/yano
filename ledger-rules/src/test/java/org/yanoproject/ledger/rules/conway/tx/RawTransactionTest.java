@@ -217,9 +217,10 @@ class RawTransactionTest {
 
     @Test
     void nestedIndefiniteByteStringChunksAreRejected() {
-        assertThatThrownBy(() -> StrictCbor.bytes(StrictCbor.span(HexUtil.decodeHexString("5f5f4100ffff"))))
+        // a script reference's bytes are read whole: a chunk that is itself indefinite is not well formed
+        assertThatThrownBy(() -> RawScript.span(HexUtil.decodeHexString("5f5f4100ffff")))
                 .isInstanceOf(TxDecodingException.class).hasMessageContaining("chunk");
-        assertThat(StrictCbor.bytes(StrictCbor.span(HexUtil.decodeHexString("5f41014102ff")))).containsExactly(1, 2);
+        assertThat(RawScript.span(HexUtil.decodeHexString("5f41014102ff")).byteString()).containsExactly(1, 2);
     }
 
     /**

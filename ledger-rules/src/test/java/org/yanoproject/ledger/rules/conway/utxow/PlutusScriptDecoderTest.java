@@ -298,6 +298,11 @@ class PlutusScriptDecoderTest {
         assertThat(ok(3, cbor(constant(8).bytes(HexUtil.decodeHexString("5f5840" + "00".repeat(64) + "4100ff"))
                 .finish()), 10)).as("chunks of at most 64 bytes").isTrue();
         assertThat(ok(3, cbor(constant(8).bytes(HexUtil.decodeHexString("d87a80")).finish()), 10)).isTrue();
+        // ADR 0005 D7: a truncated constant is malformed, as before the policy moved to CCL, never an engine failure
+        assertThat(ok(3, cbor(constant(8).bytes(HexUtil.decodeHexString("d8799f01")).finish()), 10))
+                .as("a truncated constant").isFalse();
+        assertThat(ok(3, cbor(constant(8).bytes(HexUtil.decodeHexString("5a0000ffff00")).finish()), 10))
+                .as("a byte string longer than the constant").isFalse();
         assertThat(ok(3, cbor(constant(8).bytes(HexUtil.decodeHexString("d88080")).finish()), 10))
                 .as("tag 128").isFalse();
         // FlatViaSerialise decodes with serialise's deserialiseOrFail (Codec/Serialise.hs:134-143), which stops after

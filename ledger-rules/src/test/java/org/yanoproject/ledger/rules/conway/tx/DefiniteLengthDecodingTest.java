@@ -320,7 +320,7 @@ class DefiniteLengthDecodingTest {
         BuiltTx built = ConwayTxBuilder.build(spec, MutationWorld.view());
         byte[] address = Base58.decode(byron);
         // address = [24(bytes payload), crc]: chunk the payload and re-encode the address byte string.
-        List<CborSpan> parts = StrictCbor.span(address).items();
+        List<CborSpan> parts = CborSpan.of(address).items();
         byte[] payload = parts.get(0).untag().byteString();
         byte[] crc = Arrays.copyOfRange(address, parts.get(1).offset(), address.length);
         byte[] chunkedAddress = concat(new byte[]{(byte) 0x82, (byte) 0xd8, 0x18, 0x5f}, head(2, payload.length), payload,
