@@ -1,0 +1,172 @@
+plugins {
+    id 'org.kordamp.gradle.jandex' version '2.3.0'
+}
+
+// ADR-064 D8: the Yano REST application as a publishable library. The `app`
+// project packages it as Yano's executable; downstream Quarkus applications
+// compose it the same way and inherit its configuration and API prefix.
+description = 'Yano Quarkus application core: REST resources, producers and console assets'
+
+// The console is built by the unpublished console-ui project. Its assets are
+// copied into this jar, so the publication carries no dependency on it.
+configurations.create('consoleUi') {
+    canBeConsumed = false
+    transitive = false
+    attributes {
+        attribute(Usage.USAGE_ATTRIBUTE, objects.named(Usage, Usage.JAVA_RUNTIME))
+    }
+}
+
+dependencies {
+    // Downstream applications write JAX-RS resources and CDI beans against the same
+    // Quarkus line, and org.yanoproject.app.spi exposes JAX-RS and CDI types.
+    api platform("${quarkusPlatformGroupId}:${quarkusPlatformArtifactId}:${quarkusPlatformVersion}")
+    api 'io.quarkus:quarkus-resteasy'
+    api 'io.quarkus:quarkus-resteasy-jackson'
+    api 'io.quarkus:quarkus-arc'
+    api 'io.quarkus:quarkus-smallrye-health'
+    api 'io.quarkus:quarkus-smallrye-openapi'
+    // Prometheus endpoint at /q/metrics
+    api 'io.quarkus:quarkus-micrometer-registry-prometheus'
+    implementation 'io.quarkus:quarkus-config-yaml'
+    implementation libs.rocksdb
+
+    api(project(':cardano-api')) {
+        exclude group: 'io.netty', module: 'netty-all'
+    }
+    api(project(':runtime')) {
+        exclude group: 'io.netty', module: 'netty-all'
+    }
+    implementation(project(':devnet-toolkit')) {
+        exclude group: 'io.netty', module: 'netty-all'
+    }
+    implementation(project(':bootstrap-providers')) {
+        exclude group: 'io.netty', module: 'netty-all'
+    }
+    implementation(project(':tx-services')) {
+        exclude group: 'io.netty', module: 'netty-all'
+    }
+    implementation project(':archive-modules:archive-api')
+    implementation project(':archive-modules:archive-core')
+    runtimeOnly project(':archive-modules:archive-store-ducklake')
+
+    annotationProcessor libs.yaci.events.processor
+
+    consoleUi project(':console-ui')
+}
+
+// RESTEasy fixes its application path during Quarkus augmentation. Generate a
+// tiny immutable marker and the config source that drives that build-time path
+// from the same canonical value. A packaged process may still receive
+// yano.api-prefix at launch, but the application guard rejects any value that
+// differs from this artifact contract before node/plugin startup.
+def generatedApiPrefixDir = layout.buildDirectory.dir('generated/api-prefix-resources')
+def bakedApiPrefixMarkerPath = 'META-INF/yano-api-prefix-v1'
+def bakedApiPrefixConfigPath = 'application.properties'
+def bakedApiPrefixDashboardPath = 'META-INF/resources/ui/plugins/api-prefix.json'
+def bakedApiPrefixConsolePath = 'META-INF/resources/ui/api-prefix.json'
+def maxBakedApiPrefixLength = 256
+def forbiddenApiPrefixBuildInputs = [
+        providers.systemProperty('yano.api-prefix').isPresent(),
+        providers.environmentVariable('YANO_API_PREFIX').isPresent(),
+        providers.systemProperty('quarkus.resteasy.path').isPresent(),
+        providers.environmentVariable('QUARKUS_RESTEASY_PATH').isPresent(),
+        providers.systemProperty('quarkus.http.root-path').isPresent(),
+        providers.environmentVariable('QUARKUS_HTTP_ROOT_PATH').isPresent()
+]
+if (forbiddenApiPrefixBuildInputs.any { it }) {
+    throw new GradleException(
+            'Runtime API-prefix configuration must not influence artifact augmentation; '
+                    + 'unset yano.api-prefix/YANO_API_PREFIX and '
+                    + 'Quarkus REST/root-path overrides, then use '
+                    + '-PyanoApiPrefix=<path>')
+}
+def requestedBuildApiPrefix = providers.gradleProperty('yanoApiPrefix')
+        .orElse('/api/v1')
+def canonicalApiPrefix = { Object value ->
+    String prefix = value.toString()
+    if (prefix.length() > maxBakedApiPrefixLength
+            || prefix.trim() != prefix
+            || !prefix.startsWith('/')
+            || (prefix.length() > 1 && prefix.endsWith('/'))
+            || !(prefix ==~ /\/(?:[A-Za-z0-9._~-]+(?:\/[A-Za-z0-9._~-]+)*)?/)
+            || prefix.split('/', -1).any { it == '.' || it == '..' }) {
+        throw new GradleException(
+                'yanoApiPrefix must be at most 256 characters and a '
+                        + 'canonical absolute path '
+                        + 'made of unescaped URI path segments')
+    }
+    prefix
+}
+def bakedApiPrefix = providers.provider {
+    canonicalApiPrefix(requestedBuildApiPrefix.get())
+}
+sourceSets.main.resources.srcDir(generatedApiPrefixDir)
+
+// The app project's packaged smokes check the artifact against these values.
+ext.bakedApiPrefix = bakedApiPrefix
+ext.bakedApiPrefixMarkerPath = bakedApiPrefixMarkerPath
+ext.bakedApiPrefixDashboardPath = bakedApiPrefixDashboardPath
+
+def generateBakedApiPrefixContract = tasks.register('generateBakedApiPrefixContract') {
+    inputs.property('apiPrefix', bakedApiPrefix)
+    outputs.file(generatedApiPrefixDir.map { it.file(bakedApiPrefixMarkerPath) })
+    outputs.file(generatedApiPrefixDir.map { it.file(bakedApiPrefixConfigPath) })
+    outputs.file(generatedApiPrefixDir.map { it.file(bakedApiPrefixDashboardPath) })
+    outputs.file(generatedApiPrefixDir.map { it.file(bakedApiPrefixConsolePath) })
+
+    doLast {
+        String prefix = bakedApiPrefix.get()
+
+        def outputRoot = generatedApiPrefixDir.get()
+        def marker = outputRoot.file(bakedApiPrefixMarkerPath).asFile
+        marker.parentFile.mkdirs()
+        marker.setText(prefix + System.lineSeparator(), 'UTF-8')
+
+        def config = outputRoot.file(bakedApiPrefixConfigPath).asFile
+        config.parentFile.mkdirs()
+        config.setText('quarkus.http.root-path=/' + System.lineSeparator()
+                + 'quarkus.resteasy.path=' + prefix + System.lineSeparator()
+                + 'yano.api-prefix=' + prefix + System.lineSeparator()
+                + 'quarkus.config.build-time-mismatch-at-runtime=fail'
+                + System.lineSeparator(), 'UTF-8')
+
+        def dashboard = outputRoot.file(bakedApiPrefixDashboardPath).asFile
+        dashboard.parentFile.mkdirs()
+        dashboard.setText(groovy.json.JsonOutput.toJson([apiPrefix: prefix])
+                + System.lineSeparator(), 'UTF-8')
+
+        def console = outputRoot.file(bakedApiPrefixConsolePath).asFile
+        console.parentFile.mkdirs()
+        console.setText(groovy.json.JsonOutput.toJson([apiPrefix: prefix])
+                + System.lineSeparator(), 'UTF-8')
+    }
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano Application Core'
+                description = 'Yano Quarkus REST resources, CDI producers, configuration defaults and console assets'
+            }
+        }
+    }
+}
+
+tasks.named('processResources', ProcessResources) {
+    dependsOn generateBakedApiPrefixContract
+    // The closure below resolves only file paths; depend on the configuration so
+    // Gradle builds the console jar first.
+    dependsOn configurations.consoleUi
+    from({ configurations.consoleUi.collect { zipTree(it) } }) {
+        include 'META-INF/resources/ui/**'
+        // The generated prefix documents above are authoritative.
+        exclude bakedApiPrefixDashboardPath, bakedApiPrefixConsolePath
+    }
+}
+
+// The Jandex plugin writes into the main resources output, which javadoc reads.
+tasks.named('javadoc') {
+    dependsOn tasks.named('jandex')
+}

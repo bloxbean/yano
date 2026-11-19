@@ -200,11 +200,11 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Smoke test packaged JVM plugin catalog
-        run: ./gradlew :app:packagedJvmPluginCatalogSmoke -PskipSigning=true
+      - name: Smoke test packaged JVM plugin catalog and app-ledger mode
+        run: ./gradlew :app:packagedJvmPluginCatalogSmoke :app:packagedJvmAppLedgerSmoke -PskipSigning=true
 
       - name: Prepare JVM Docker context
-        run: ./gradlew :app:prepareYanoDockerJvmContext -PskipSigning=true
+        run: ./gradlew :app:prepareYanoDockerJvmContext verifyNoYanoXDependency -PskipSigning=true
 
       - name: Build local JVM smoke image
         run: docker build --build-arg JVM_BASE_IMAGE="${JVM_BASE_IMAGE}" -t yano:jvm-smoke app/build/docker/jvm/context
@@ -290,7 +290,7 @@ jobs:
         run: chmod +x gradlew
 
       - name: Prepare native Docker context
-        run: ./gradlew :app:prepareYanoDockerNativeContext -Dquarkus.native.enabled=true -Dquarkus.package.jar.enabled=false -PskipSigning=true
+        run: ./gradlew :app:prepareYanoDockerNativeContext verifyNoYanoXDependency -Dquarkus.native.enabled=true -Dquarkus.package.jar.enabled=false -PskipSigning=true
 
       - name: Verify native image uses G1
         run: grep -F '"garbage_collector":"G1 GC"' app/build/yano-native-image-source-jar/yano-build-output-stats.json

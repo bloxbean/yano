@@ -1,14 +1,5 @@
 package org.yanoproject.runtime.plugins;
 
-import org.yanoproject.x.framework.api.appchain.AppStateMachineProvider;
-import org.yanoproject.x.framework.api.appchain.authmap.AuthenticatedMapValueValidatorFactory;
-import org.yanoproject.x.framework.cardano.api.effects.AppEffectExecutorFactory;
-import org.yanoproject.x.framework.api.appchain.l1view.L1EpochObserverProvider;
-import org.yanoproject.x.framework.api.appchain.l1view.L1ObserverProvider;
-import org.yanoproject.x.framework.api.appchain.observation.ObservationProviderFactory;
-import org.yanoproject.x.framework.api.appchain.sequencer.SequencerModeProvider;
-import org.yanoproject.x.framework.api.appchain.signer.SignerProviderFactory;
-import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSinkFactory;
 import org.yanoproject.api.config.PluginsOptions;
 import org.yanoproject.api.plugin.NodePlugin;
 import org.yanoproject.api.plugin.PluginApiVersion;
@@ -18,12 +9,6 @@ import org.yanoproject.api.plugin.PluginContributionInfo;
 import org.yanoproject.api.plugin.PluginDigestMode;
 import org.yanoproject.api.plugin.PluginSourceCategory;
 import org.yanoproject.api.plugin.PluginSelectionStatus;
-import org.yanoproject.api.plugin.PluginTrustTier;
-import org.yanoproject.x.framework.api.plugin.domain.DomainApiProvider;
-import org.yanoproject.x.framework.api.plugin.domain.LocalReadModelProvider;
-import org.yanoproject.api.utxo.index.UtxoIndexContributorProvider;
-import org.yanoproject.api.plugin.operations.PluginHealthProvider;
-import org.yanoproject.api.plugin.operations.PluginMetricsProvider;
 import org.yanoproject.catalog.BundleContribution;
 import org.yanoproject.catalog.BundleDependency;
 import org.yanoproject.catalog.BundleManifest;
@@ -57,7 +42,6 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Deque;
-import java.util.EnumMap;
 import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.Iterator;
@@ -94,6 +78,12 @@ final class PluginCatalogBuilder {
     /** Bound the combined ServiceLoader traversal across every contribution kind. */
     static final int MAX_DISCOVERED_PROVIDERS = PluginIndex.MAX_PROVIDERS;
     private static final Logger log = LoggerFactory.getLogger(PluginCatalogBuilder.class);
+
+    private final PluginKinds kinds;
+
+    PluginCatalogBuilder(PluginKinds kinds) {
+        this.kinds = Objects.requireNonNull(kinds, "kinds");
+    }
 
     BuildResult build(PluginsOptions options,
                       ClassLoader loader,
@@ -134,13 +124,13 @@ final class PluginCatalogBuilder {
                                              boolean allowUnindexedLegacyProviders,
                                              Set<String> requiredEmbeddedBundles) {
         if (!options.enabled() && requiredEmbeddedBundles.isEmpty()) {
-            return emptyResult(loader);
+            return emptyResult(kinds, loader);
         }
 
         validateProviderBudget(inputs, MAX_DISCOVERED_PROVIDERS);
         validateManifestCompatibility(inputs);
         Map<ProviderKey, ServiceLoader.Provider<?>> handles = options.enabled()
-                ? discoverProviderHandles(loader) : requiredProviderHandles(loader, inputs);
+                ? discoverProviderHandles(kinds, loader) : requiredProviderHandles(kinds, loader, inputs);
         // Manifest declaration uniqueness is a catalog property, independent
         // of whether policy makes the provider executable on the terminal
         // loader. Keep it distinct from claimed, which tracks executable
@@ -254,7 +244,7 @@ final class PluginCatalogBuilder {
                 Object instance = instantiateLegacy(
                         discovered.getKey(), discovered.getValue(), loader);
                 eagerLegacyInstances.add(instance);
-                Candidate legacy = legacyCandidate(discovered.getKey(), instance,
+                Candidate legacy = legacyCandidate(kinds, discovered.getKey(), instance,
                         indexed != null ? indexed.provider().digest()
                                 : legacyClassDigest(discovered.getValue().type()),
                         indexed != null ? indexed.provider().digestMode()
@@ -312,7 +302,7 @@ final class PluginCatalogBuilder {
 
             List<String> order = ordered.stream().map(Candidate::id).toList();
             CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(
-                    registryEntries, order, eagerLegacyInstances, loader);
+                    kinds, registryEntries, order, eagerLegacyInstances, loader);
             String fingerprint = fingerprint(ordered);
             List<PluginBundleInfo> inventory = discovered.values().stream()
                     .sorted(Comparator.comparing(Candidate::id))
@@ -337,9 +327,9 @@ final class PluginCatalogBuilder {
         }
     }
 
-    private static BuildResult emptyResult(ClassLoader loader) {
+    private static BuildResult emptyResult(PluginKinds kinds, ClassLoader loader) {
         CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(
-                List.of(), List.of(), List.of(), loader);
+                kinds, List.of(), List.of(), List.of(), loader);
         return new BuildResult(new PluginCatalogSnapshot(
                 PLUGIN_API_MAJOR, PLUGIN_API_LEVEL,
                 fingerprint(List.of()), List.of(), List.of()),
@@ -400,8 +390,8 @@ final class PluginCatalogBuilder {
     }
 
     private static Map<ProviderKey, ServiceLoader.Provider<?>> discoverProviderHandles(
-            ClassLoader loader) {
-        return discoverProviderHandles(loader, PluginCatalogBuilder::providerIterator,
+            PluginKinds kinds, ClassLoader loader) {
+        return discoverProviderHandles(kinds, loader, PluginCatalogBuilder::providerIterator,
                 MAX_DISCOVERED_PROVIDERS);
     }
 
@@ -412,8 +402,9 @@ final class PluginCatalogBuilder {
      * existing SPI descriptors, then create lazy handles on the same loader.
      */
     private static Map<ProviderKey, ServiceLoader.Provider<?>> requiredProviderHandles(
-            ClassLoader loader, List<CatalogInput> inputs) {
-        Map<ContributionKind, Set<String>> required = new EnumMap<>(ContributionKind.class);
+            PluginKinds kinds, ClassLoader loader, List<CatalogInput> inputs) {
+        Map<ContributionKind, Set<String>> required = new TreeMap<>(
+                Comparator.comparingInt(kinds.registry().kinds()::indexOf));
         for (CatalogInput input : inputs) {
             for (IndexedBundle bundle : input.index().bundles()) {
                 for (BundleContribution contribution : bundle.manifest().contributions()) {
@@ -427,7 +418,7 @@ final class PluginCatalogBuilder {
         for (var kind : required.entrySet()) {
             Set<String> registered = new HashSet<>();
             try {
-                var resources = loader.getResources("META-INF/services/" + kind.getKey().serviceType().getName());
+                var resources = loader.getResources("META-INF/services/" + kind.getKey().serviceInterface());
                 while (resources.hasMoreElements()) {
                     if (++descriptors > MAX_DISCOVERED_PROVIDERS) {
                         throw new ServiceConfigurationError("Required provider descriptor limit exceeded");
@@ -453,7 +444,7 @@ final class PluginCatalogBuilder {
                             + "' has no matching ServiceLoader entry");
                 }
                 handles.put(new ProviderKey(kind.getKey(), provider),
-                        requiredProvider(kind.getKey().serviceType(), provider, loader));
+                        requiredProvider(kinds.binding(kind.getKey()).serviceType(), provider, loader));
             }
         }
         return handles;
@@ -535,6 +526,7 @@ final class PluginCatalogBuilder {
     }
 
     private static Map<ProviderKey, ServiceLoader.Provider<?>> discoverProviderHandles(
+            PluginKinds kinds,
             ClassLoader loader,
             ProviderSource providerSource,
             int maximumProviders) {
@@ -546,11 +538,12 @@ final class PluginCatalogBuilder {
                 Comparator.comparing((ProviderKey key) -> key.kind().manifestKey())
                         .thenComparing(ProviderKey::providerClass));
         int discovered = 0;
-        for (ContributionKind kind : ContributionKind.values()) {
+        for (ContributionKind kind : kinds.registry().kinds()) {
+            Class<?> serviceType = kinds.binding(kind).serviceType();
             try {
                 Iterator<? extends ServiceLoader.Provider<?>> providers =
                         PluginThreadContext.call(loader,
-                                () -> providerSource.providers(kind.serviceType(), loader));
+                                () -> providerSource.providers(serviceType, loader));
                 while (PluginThreadContext.call(loader, providers::hasNext)) {
                     if (discovered == maximumProviders) {
                         throw new IllegalStateException(
@@ -574,7 +567,7 @@ final class PluginCatalogBuilder {
             } catch (Throwable failure) {
                 LifecycleFailures.rethrowIfProcessFatalReachable(failure);
                 throw new IllegalStateException("ServiceLoader discovery failed for "
-                            + kind.serviceType().getName(), failure);
+                            + kind.serviceInterface(), failure);
             }
         }
         return handles;
@@ -589,10 +582,11 @@ final class PluginCatalogBuilder {
     }
 
     /** Package-private seam proving that the provider bound spans all service kinds. */
-    static void discoverProviderHandlesForTesting(ClassLoader loader,
+    static void discoverProviderHandlesForTesting(PluginKinds kinds,
+                                                  ClassLoader loader,
                                                   ProviderSource providerSource,
                                                   int maximumProviders) {
-        discoverProviderHandles(loader, providerSource, maximumProviders);
+        discoverProviderHandles(kinds, loader, providerSource, maximumProviders);
     }
 
     @FunctionalInterface
@@ -767,13 +761,14 @@ final class PluginCatalogBuilder {
         }
     }
 
-    private static Candidate legacyCandidate(ProviderKey key,
+    private static Candidate legacyCandidate(PluginKinds kinds,
+                                             ProviderKey key,
                                              Object instance,
                                              String digest,
                                              PluginDigestMode digestMode,
                                              PluginSourceCategory source,
                                              ClassLoader loader) {
-        String selector = selector(key, instance, loader);
+        String selector = selector(kinds, key, instance, loader);
         String id;
         String version;
         SemVersion semanticVersion = null;
@@ -1070,17 +1065,7 @@ final class PluginCatalogBuilder {
 
     private static void validateReservedNames(BundleManifest manifest) {
         for (BundleContribution contribution : manifest.contributions()) {
-            boolean reserved = switch (contribution.kind()) {
-                case APP_STATE_MACHINE -> contribution.name().equals("ordered-log");
-                case SEQUENCER_MODE -> contribution.name().equals("fixed")
-                        || contribution.name().equals("rotating");
-                case L1_OBSERVER -> contribution.name().equals("metadata-label")
-                        || contribution.name().equals("address-deposit");
-                case EFFECT_EXECUTOR -> contribution.name().equals("webhook");
-                case UTXO_INDEX_CONTRIBUTOR -> contribution.name().equals("wallet");
-                default -> false;
-            };
-            if (reserved) {
+            if (contribution.kind().reservedSystemNames().contains(contribution.name())) {
                 throw new IllegalStateException("Plugin bundle '" + manifest.id()
                         + "' declares reserved SYSTEM contribution '"
                         + contribution.kind().manifestKey() + "/" + contribution.name() + "'");
@@ -1093,7 +1078,7 @@ final class PluginCatalogBuilder {
                 .sorted(Comparator.comparing((CandidateContribution value) -> value.kind().manifestKey())
                         .thenComparing(CandidateContribution::name))
                 .map(value -> new PluginContributionInfo(value.kind().manifestKey(), value.name(),
-                        value.providerClass(), trust(value.kind())))
+                        value.providerClass(), value.kind().trustTier()))
                 .toList();
         return new PluginBundleInfo(candidate.id(), candidate.version(), candidate.selected(),
                 candidate.selectionStatus(),
@@ -1110,19 +1095,6 @@ final class PluginCatalogBuilder {
                         "Discovered unmanifested legacy plugin bundle '{}' (selection={}); "
                                 + "add an ADR-011.2 bundle manifest",
                         candidate.id(), candidate.selectionStatus()));
-    }
-
-    private static PluginTrustTier trust(ContributionKind kind) {
-        return switch (kind) {
-            case NODE_PLUGIN -> PluginTrustTier.REQUIRED;
-            case APP_STATE_MACHINE, AUTHENTICATED_MAP_VALIDATOR,
-                    SEQUENCER_MODE, L1_OBSERVER, L1_EPOCH_OBSERVER ->
-                    PluginTrustTier.CONSENSUS;
-            case SIGNER_PROVIDER, EFFECT_EXECUTOR, OBSERVATION_PROVIDER,
-                    DOMAIN_API, LOCAL_READ_MODEL, UTXO_INDEX_CONTRIBUTOR ->
-                    PluginTrustTier.PRIVILEGED_LOCAL;
-            case FINALIZED_SINK, HEALTH, METRICS -> PluginTrustTier.AUXILIARY_LOCAL;
-        };
     }
 
     private static String fingerprint(List<Candidate> ordered) {
@@ -1171,7 +1143,7 @@ final class PluginCatalogBuilder {
                         text(data, contribution.kind().manifestKey());
                         text(data, contribution.name());
                         text(data, contribution.providerClass());
-                        text(data, trust(contribution.kind()).name());
+                        text(data, contribution.kind().trustTier().name());
                     }
                 }
             }
@@ -1366,30 +1338,13 @@ final class PluginCatalogBuilder {
 
     private record BundleConfigKey(String owner, String property) { }
 
-    private static String selector(ProviderKey key,
+    private static String selector(PluginKinds kinds,
+                                   ProviderKey key,
                                    Object provider,
                                    ClassLoader loader) {
         String result = legacyMetadataCallback(
-                key, "provider selector", loader, () -> switch (key.kind()) {
-                    case NODE_PLUGIN -> ((NodePlugin) provider).id();
-                    case APP_STATE_MACHINE -> ((AppStateMachineProvider) provider).id();
-                    case AUTHENTICATED_MAP_VALIDATOR ->
-                            ((AuthenticatedMapValueValidatorFactory) provider).id();
-                    case SEQUENCER_MODE -> ((SequencerModeProvider) provider).id();
-                    case L1_OBSERVER -> ((L1ObserverProvider) provider).type();
-                    case L1_EPOCH_OBSERVER -> ((L1EpochObserverProvider) provider).type();
-                    case OBSERVATION_PROVIDER ->
-                            ((ObservationProviderFactory) provider).type();
-                    case SIGNER_PROVIDER -> ((SignerProviderFactory) provider).scheme();
-                    case EFFECT_EXECUTOR -> ((AppEffectExecutorFactory) provider).scheme();
-                    case FINALIZED_SINK -> ((FinalizedStreamSinkFactory) provider).scheme();
-                    case DOMAIN_API -> ((DomainApiProvider) provider).id();
-                    case LOCAL_READ_MODEL -> ((LocalReadModelProvider) provider).id();
-                    case UTXO_INDEX_CONTRIBUTOR -> ((UtxoIndexContributorProvider) provider).id();
-                    case HEALTH -> ((PluginHealthProvider) provider).id();
-                    case METRICS -> ((PluginMetricsProvider) provider).id();
-                });
-        int maximumLength = key.kind() == ContributionKind.NODE_PLUGIN
+                key, "provider selector", loader, () -> kinds.selector(key.kind(), provider));
+        int maximumLength = ContributionKind.NODE_PLUGIN.equals(key.kind())
                 ? MAX_LEGACY_ID_LENGTH : MAX_LEGACY_SELECTOR_LENGTH;
         return requireMetadata("legacy provider selector", result, maximumLength);
     }

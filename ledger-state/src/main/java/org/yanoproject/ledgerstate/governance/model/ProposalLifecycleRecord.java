@@ -1,8 +1,8 @@
 package org.yanoproject.ledgerstate.governance.model;
 
-import org.yanoproject.x.framework.api.appchain.l1view.GovernanceActionType;
-import org.yanoproject.x.framework.api.appchain.l1view.GovernanceProposalStatus;
-import org.yanoproject.x.framework.api.appchain.l1view.GovernanceProposalStatusReason;
+import com.bloxbean.cardano.yaci.core.model.governance.GovActionType;
+import org.yanoproject.api.governance.GovernanceProposalStatus;
+import org.yanoproject.api.governance.GovernanceProposalStatusReason;
 
 import java.util.Objects;
 
@@ -12,7 +12,7 @@ import java.util.Objects;
  * depend on the mutable active-proposal set.
  */
 public record ProposalLifecycleRecord(
-        GovernanceActionType actionType,
+        GovActionType actionType,
         GovernanceProposalStatus status,
         GovernanceProposalStatusReason reason,
         int proposedEpoch,

@@ -201,11 +201,9 @@ For another network, use the matching command:
 ./yano.sh config:devnet | grep 'image:'
 ```
 
-Each network keeps its data in `data-<network>/`: `chainstate/`, `runtime-data/`,
-`appchain-chainstate/`, and `appchain-indexers/`. The launcher creates them on `start`
-or `restart`. Set `YANO_CHAINSTATE_PATH`, `YANO_RUNTIME_DATA_PATH`,
-`YANO_APPCHAIN_STATE_PATH`, and `YANO_APPCHAIN_INDEXER_PATH` in `compose/.env` for
-custom host paths.
+Each network keeps its data in `data-<network>/`: `chainstate/` and `runtime-data/`.
+The launcher creates them on `start` or `restart`. Set `YANO_CHAINSTATE_PATH` and
+`YANO_RUNTIME_DATA_PATH` in `compose/.env` for custom host paths.
 
 Switch to the native image by editing `compose/.env`:
 

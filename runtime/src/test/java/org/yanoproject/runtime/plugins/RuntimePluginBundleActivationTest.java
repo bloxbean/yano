@@ -1,18 +1,6 @@
 package org.yanoproject.runtime.plugins;
 
-import org.yanoproject.x.framework.api.appchain.AppStateMachineProvider;
-import org.yanoproject.x.framework.api.appchain.authmap.AuthenticatedMapValueValidatorFactory;
-import org.yanoproject.x.framework.cardano.api.effects.AppEffectExecutorFactory;
-import org.yanoproject.x.framework.api.appchain.l1view.L1EpochObserverProvider;
-import org.yanoproject.x.framework.api.appchain.l1view.L1ObserverProvider;
-import org.yanoproject.x.framework.api.appchain.sequencer.SequencerModeProvider;
-import org.yanoproject.x.framework.api.appchain.signer.SignerProviderFactory;
-import org.yanoproject.x.framework.api.appchain.sink.FinalizedStreamSinkFactory;
 import org.yanoproject.api.config.PluginsOptions;
-import org.yanoproject.x.framework.api.plugin.domain.DomainApiProvider;
-import org.yanoproject.x.framework.api.plugin.domain.LocalReadModelProvider;
-import org.yanoproject.api.plugin.operations.PluginHealthProvider;
-import org.yanoproject.api.plugin.operations.PluginMetricsProvider;
 import org.junit.jupiter.api.Test;
 
 import java.nio.file.Files;
@@ -26,20 +14,6 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /** Isolated JVM provider-activation check used by the generated bundle matrix. */
 class RuntimePluginBundleActivationTest {
-    private static final List<Class<?>> PROVIDER_TYPES = List.of(
-            AppStateMachineProvider.class,
-            AuthenticatedMapValueValidatorFactory.class,
-            SequencerModeProvider.class,
-            L1EpochObserverProvider.class,
-            L1ObserverProvider.class,
-            SignerProviderFactory.class,
-            AppEffectExecutorFactory.class,
-            FinalizedStreamSinkFactory.class,
-            DomainApiProvider.class,
-            LocalReadModelProvider.class,
-            PluginHealthProvider.class,
-            PluginMetricsProvider.class);
-
     @Test
     void activatesEveryManifestedProviderFromOneIsolatedBundle() throws Exception {
         assumeTrue(System.getProperty("yano.bundle.paths") != null,
@@ -73,8 +47,8 @@ class RuntimePluginBundleActivationTest {
                         .extracting(bundleDescriptor -> bundleDescriptor.id())
                         .contains(bundleId);
                 int activated = 0;
-                for (Class<?> providerType : PROVIDER_TYPES) {
-                    activated += activate(environment, providerType);
+                for (var kind : TestPluginKinds.KINDS.registry().kinds()) {
+                    activated += activate(environment, TestPluginKinds.KINDS.binding(kind).serviceType());
                 }
                 assertThat(activated).as("manifested provider count").isPositive();
             }

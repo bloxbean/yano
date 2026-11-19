@@ -1,19 +1,20 @@
 package org.yanoproject.app;
 
 import org.yanoproject.api.config.UpstreamPreset;
-import org.yanoproject.x.framework.config.AppChainConfigParser;
 import org.yanoproject.api.config.YanoConfig;
 import org.yanoproject.api.config.YanoPropertyKeys;
 import org.yanoproject.api.db.IncompatibleChainStateException;
 import org.yanoproject.api.plugin.PluginActivationException;
 import org.yanoproject.app.archive.HistoryArchiveService;
 import org.yanoproject.app.archive.ProjectionHistoryService;
+import org.yanoproject.app.spi.RuntimeGlobalsContributor;
 import org.yanoproject.runtime.assembly.Yano;
 import org.yanoproject.runtime.config.RollbackRetentionGenesisValues;
 import org.yanoproject.runtime.config.RollbackRetentionPlanner;
 import org.yanoproject.runtime.plugins.HostPluginActivationException;
 import org.yanoproject.runtime.plugins.PluginCatalogActivationException;
 import org.yanoproject.runtime.plugins.PluginManager;
+import org.yanoproject.runtime.plugins.PluginRuntimeEnvironment;
 import io.smallrye.config.EnvConfigSource;
 import io.smallrye.config.SmallRyeConfigBuilder;
 import io.smallrye.config.source.yaml.YamlConfigSource;
@@ -162,6 +163,92 @@ class YanoProducerTest {
         assertTrue(YanoProducer.isPluginStartupFailure(suppressedOnly));
         assertFalse(YanoProducer.isPluginStartupFailure(
                 new RuntimeException("unrelated")));
+    }
+
+    /** I8-N2: a failed assembly step of a required embedded bundle is a terminal plugin startup failure. */
+    @Test
+    void requiredBundleAssemblyFailureIsASanitisedTerminalPluginStartupFailure() {
+        var producer = failingAssemblyProducer();
+
+        PluginStartupException thrown = assertThrows(PluginStartupException.class, () -> producer.onStart(null));
+
+        assertEquals(PluginActivationException.class.getName(), thrown.sourceFailureType());
+        assertNull(thrown.getCause());
+        assertFalse(renderStackTrace(thrown).contains(FailingAssemblyFixture.SECRET));
+        PluginStartupException retry = assertThrows(PluginStartupException.class, producer::ensureYano);
+        assertEquals(PluginActivationException.class.getName(), retry.sourceFailureType());
+        assertNull(retry.getCause());
+    }
+
+    /** XX-1: an earlier caller that met the failure first cannot turn the startup observer's view recoverable. */
+    @Test
+    void pluginFailureMetBeforeStartupStillStopsStartup() {
+        var producer = failingAssemblyProducer();
+        int inits = FailingAssemblyFixture.INITS.get();
+        assertTrue(YanoProducer.isPluginStartupFailure(assertThrows(RuntimeException.class, producer::ensureYano)));
+
+        PluginStartupException thrown = assertThrows(PluginStartupException.class, () -> producer.onStart(null));
+
+        assertEquals(PluginActivationException.class.getName(), thrown.sourceFailureType());
+        assertNull(thrown.getCause());
+        assertFalse(renderStackTrace(thrown).contains(FailingAssemblyFixture.SECRET));
+        assertEquals(inits + 1, FailingAssemblyFixture.INITS.get(), "Yano is assembled once");
+    }
+
+    @Test
+    void concurrentFirstCallersAssembleOnceAndBothSeeAPluginStartupFailure() throws Exception {
+        var producer = failingAssemblyProducer();
+        int inits = FailingAssemblyFixture.INITS.get();
+        var ready = new java.util.concurrent.CyclicBarrier(2);
+        try (var workers = java.util.concurrent.Executors.newFixedThreadPool(2)) {
+            List<java.util.concurrent.Future<Throwable>> results = new java.util.ArrayList<>();
+            for (int caller = 0; caller < 2; caller++) {
+                results.add(workers.submit(() -> {
+                    ready.await();
+                    try {
+                        producer.ensureYano();
+                        return null;
+                    } catch (Throwable failure) {
+                        return failure;
+                    }
+                }));
+            }
+            for (var result : results) {
+                assertTrue(YanoProducer.isPluginStartupFailure(result.get(30, java.util.concurrent.TimeUnit.SECONDS)));
+            }
+        }
+        assertEquals(inits + 1, FailingAssemblyFixture.INITS.get(), "Yano is assembled once");
+    }
+
+    /** An ordinary initialisation failure is not cached: the real ensureYano assembles again on the next call. */
+    @Test
+    void ordinaryRuntimeInitializationFailureStaysRetryableThroughTheRealCache() {
+        var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
+        producer.appConfig = new PresentConfig(Map.of(
+                YanoPropertyKeys.MODE, "app-ledger",
+                YanoPropertyKeys.Plugins.ENABLED, "false"));
+        String noNetwork = "app-ledger mode requires a plugin that provides an app-only network";
+
+        RuntimeException first = assertThrows(RuntimeException.class, producer::ensureYano);
+        assertFalse(YanoProducer.isPluginStartupFailure(first));
+        assertTrue(renderStackTrace(first).contains(noNetwork));
+        // The next caller assembles again rather than meeting a remembered failure.
+        RuntimeException second = assertThrows(RuntimeException.class, producer::ensureYano);
+        assertFalse(second instanceof PluginStartupException);
+        assertFalse(YanoProducer.isPluginStartupFailure(second));
+        assertTrue(renderStackTrace(second).contains("YanoAssembly$Builder.build"));
+        producer.bootstrapEnabled = false;
+        producer.onStart(null);
+    }
+
+    private static YanoProducer failingAssemblyProducer() {
+        var producer = new YanoProducer(FailingAssemblyFixture.loader(
+                Thread.currentThread().getContextClassLoader()));
+        producer.appConfig = new PresentConfig(Map.of(
+                YanoPropertyKeys.MODE, "app-ledger",
+                YanoPropertyKeys.Plugins.ENABLED, "false",
+                YanoPropertyKeys.Plugins.REQUIRED, FailingAssemblyFixture.ID));
+        return producer;
     }
 
     @Test
@@ -317,78 +404,49 @@ class YanoProducerTest {
     }
 
     @Test
-    void certifiedObservationAndConsensusSettingsReachTheRuntimeParserForBothConfigShapes() {
-        Map<String, String> settings = Map.of(
-                "observations.profile-cbor-hex", "a100",
-                "observations.providers.shipment.endpoint", "https://example.invalid/proof",
-                "observations.reporters.ada-usd", "01".repeat(32),
-                "observations.policy.ada-usd", "a100",
-                "consensus.max-byzantine-members", "1",
-                "consensus.round-timeout-ms", "5000");
-        Map<String, String> properties = new LinkedHashMap<>();
-        settings.forEach((key, value) -> {
-            properties.put("yano.app-chain." + key, value);
-            properties.put("yano.app-chain.chains[0]." + key, value);
-        });
-        properties.put("yano.app-chain.chains[0].chain-id", "observations");
-        var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
-        producer.appConfig = new PresentConfig(properties);
+    void contributedGlobalsAreMergedAndCollisionsFailStartup() {
+        RuntimeGlobalsContributor first = () -> Map.of("yano.fixture.a", "1");
+        RuntimeGlobalsContributor second = () -> Map.of("yano.fixture.b", 2);
+        Map<String, Object> globals = new HashMap<>(Map.of(YanoPropertyKeys.Utxo.ENABLED, true));
 
-        Map<String, Object> globals = new LinkedHashMap<>();
-        producer.forwardAppChainDynamicKeys(globals);
-        Map<String, Object> flat = new LinkedHashMap<>();
-        flat.put("chain-id", "observations");
-        globals.forEach((key, value) -> flat.put(key.substring("yano.app-chain.".length()), value));
-        var flatConfig = AppChainConfigParser.parse(flat);
-        var indexedConfig = AppChainConfigParser.parse(producer.parseAppChainChains().getFirst());
-        settings.forEach((key, value) -> {
-            assertEquals(value, flatConfig.pluginSettings().get(key), "flat: " + key);
-            assertEquals(value, indexedConfig.pluginSettings().get(key), "indexed: " + key);
-        });
+        YanoProducer.putContributedGlobals(globals, List.of(first, second));
+        assertEquals(Map.of(YanoPropertyKeys.Utxo.ENABLED, true,
+                "yano.fixture.a", "1", "yano.fixture.b", 2), globals);
+
+        Map<String, Object> duplicate = new HashMap<>();
+        assertThrows(IllegalStateException.class,
+                () -> YanoProducer.putContributedGlobals(duplicate, List.of(first, first)));
+        assertTrue(duplicate.isEmpty());
+
+        Map<String, Object> hostKey = new HashMap<>(Map.of(YanoPropertyKeys.Utxo.ENABLED, true));
+        RuntimeGlobalsContributor overriding = () -> Map.of(YanoPropertyKeys.Utxo.ENABLED, false);
+        assertThrows(IllegalStateException.class,
+                () -> YanoProducer.putContributedGlobals(hostKey, List.of(overriding)));
+        assertEquals(Map.of(YanoPropertyKeys.Utxo.ENABLED, true), hostKey);
+
+        RuntimeGlobalsContributor absent = () -> null;
+        assertTrue(assertThrows(IllegalStateException.class,
+                () -> YanoProducer.putContributedGlobals(new HashMap<>(), List.of(absent))).getMessage()
+                .contains("returned null"));
     }
 
     @Test
-    void dynamicSettingsAreForwardedForFlatAndIndexedAppChains() {
+    void requiredPluginsReachTheRuntimeGlobalsButNotTheBundleConfiguration() {
         var producer = new YanoProducer(Thread.currentThread().getContextClassLoader());
-        producer.appConfig = new PresentConfig(Map.ofEntries(
-                Map.entry("yano.app-chain.effects.enabled", "true"),
-                Map.entry("yano.app-chain.observation.l1-network-genesis-id", "01".repeat(32)),
-                Map.entry("yano.app-chain.effects.metrics.types", "cardano.payment,webhook"),
-                Map.entry("yano.app-chain.state.commitment-profile", "mpf-blake2b256-v1"),
-                Map.entry("yano.app-chain.state.l1-proof-consumption-required", "true"),
-                Map.entry("yano.app-chain.capabilities.authenticated-snapshots.enabled", "true"),
-                Map.entry("yano.app-chain.chains[0].chain-id", "payments"),
-                Map.entry("yano.app-chain.chains[0].effects.enabled", "true"),
-                Map.entry("yano.app-chain.chains[0].observation.l1-network-genesis-id", "02".repeat(32)),
-                Map.entry("yano.app-chain.chains[0].effects.executor.enabled", "true"),
-                Map.entry("yano.app-chain.chains[0].state.genesis-id", "ab".repeat(32)),
-                Map.entry("yano.app-chain.chains[0].capabilities.authenticated-snapshots.enabled",
-                        "true"),
-                Map.entry("yano.app-chain.chains[0].unrelated.value", "ignored")));
+        producer.appConfig = new PresentConfig(Map.of(
+                YanoPropertyKeys.Plugins.ENABLED, "false",
+                YanoPropertyKeys.Plugins.REQUIRED, " com.example.a, ,com.example.b "));
+        Map<String, Object> globals = new HashMap<>();
 
-        Map<String, Object> globals = new java.util.LinkedHashMap<>();
-        producer.forwardAppChainDynamicKeys(globals);
-        assertEquals("true", globals.get("yano.app-chain.effects.enabled"));
-        assertEquals("01".repeat(32),
-                globals.get("yano.app-chain.observation.l1-network-genesis-id"));
-        assertEquals("cardano.payment,webhook",
-                globals.get("yano.app-chain.effects.metrics.types"));
-        assertEquals("mpf-blake2b256-v1",
-                globals.get("yano.app-chain.state.commitment-profile"));
-        assertEquals("true",
-                globals.get("yano.app-chain.state.l1-proof-consumption-required"));
-        assertEquals("true", globals.get(
-                "yano.app-chain.capabilities.authenticated-snapshots.enabled"));
+        producer.putRequiredPlugins(globals);
 
-        var chain = producer.parseAppChainChains().getFirst();
-        assertEquals("payments", chain.get("chain-id"));
-        assertEquals("true", chain.get("effects.enabled"));
-        assertEquals("02".repeat(32), chain.get("observation.l1-network-genesis-id"));
-        assertEquals("true", chain.get("effects.executor.enabled"));
-        assertEquals("ab".repeat(32), chain.get("state.genesis-id"));
-        assertEquals("true", chain.get(
-                "capabilities.authenticated-snapshots.enabled"));
-        assertFalse(chain.containsKey("unrelated.value"));
+        assertEquals(Set.of("com.example.a", "com.example.b"), PluginRuntimeEnvironment.requiredBundles(globals));
+        assertFalse(producer.pluginOptions().config().containsKey(YanoPropertyKeys.Plugins.REQUIRED));
+
+        producer.appConfig = new PresentConfig(Map.of());
+        Map<String, Object> none = new HashMap<>();
+        producer.putRequiredPlugins(none);
+        assertTrue(none.isEmpty());
     }
 
     @Test
@@ -530,7 +588,7 @@ class YanoProducerTest {
         }
 
         @Override
-        Yano ensureYano() {
+        public Yano ensureYano() {
             ensureCalls++;
             if (startupFailure instanceof RuntimeException runtimeFailure) {
                 throw runtimeFailure;

@@ -1,9 +1,9 @@
 package org.yanoproject.ledgerstate;
 
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
-import org.yanoproject.x.framework.api.appchain.l1view.GovernanceActionType;
-import org.yanoproject.x.framework.api.appchain.l1view.GovernanceProposalStatus;
-import org.yanoproject.x.framework.api.appchain.l1view.GovernanceProposalStatusReason;
+import com.bloxbean.cardano.yaci.core.model.governance.GovActionType;
+import org.yanoproject.api.governance.GovernanceProposalStatus;
+import org.yanoproject.api.governance.GovernanceProposalStatusReason;
 import org.yanoproject.ledgerstate.governance.GovernanceCborCodec;
 import org.rocksdb.ColumnFamilyHandle;
 import org.rocksdb.ReadOptions;
@@ -176,7 +176,7 @@ public final class HistoricalEpochStateView implements AutoCloseable {
     @FunctionalInterface
     public interface ProposalStatusConsumer {
         void accept(byte[] transactionId, int governanceActionIndex,
-                    GovernanceActionType actionType, GovernanceProposalStatus status,
+                    GovActionType actionType, GovernanceProposalStatus status,
                     GovernanceProposalStatusReason reason, long proposedEpoch,
                     long expiresAfterEpoch);
     }

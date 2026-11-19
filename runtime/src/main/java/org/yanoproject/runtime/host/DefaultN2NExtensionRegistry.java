@@ -1,5 +1,6 @@
 package org.yanoproject.runtime.host;
 
+import com.bloxbean.cardano.yaci.core.common.NetworkType;
 import com.bloxbean.cardano.yaci.core.network.server.AgentFactory;
 import com.bloxbean.cardano.yaci.core.protocol.Agent;
 import org.yanoproject.api.host.N2NExtensionRegistry;
@@ -10,13 +11,22 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.OptionalLong;
+import java.util.Set;
 import java.util.function.UnaryOperator;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /** One assembly's pre-connect extension plan. No agents, sockets or workers are created during registration. */
 public final class DefaultN2NExtensionRegistry implements N2NExtensionRegistry {
+    // Public Cardano networks plus the existing Yano devnet magic (YanoConfig.devnetDefault).
+    private static final Set<Long> CARDANO_NETWORK_MAGICS = Stream.concat(
+            Stream.of(NetworkType.values()).map(NetworkType::getProtocolMagic),
+            Stream.of(42L)).collect(Collectors.toUnmodifiableSet());
     private final Map<Integer, AgentFactory> inbound = new LinkedHashMap<>();
     private final List<UnaryOperator<PeerClientFactory>> outbound = new ArrayList<>();
     private final boolean sharedOutbound;
+    private Long appOnlyNetwork;
     private boolean sealed;
 
     public DefaultN2NExtensionRegistry() { this(true); }
@@ -46,6 +56,29 @@ public final class DefaultN2NExtensionRegistry implements N2NExtensionRegistry {
         requireOpen();
         if (!sharedOutbound) throw new UnsupportedOperationException("Shared Cardano peer sessions are unavailable");
         outbound.add(Objects.requireNonNull(decorator, "decorator"));
+    }
+
+    @Override
+    public synchronized void requireAppOnlyNetwork(long protocolMagic) {
+        requireOpen();
+        if (sharedOutbound) throw new UnsupportedOperationException("This host serves Cardano N2N sessions");
+        if (protocolMagic <= 0 || protocolMagic > 0xffff_ffffL) {
+            throw new IllegalArgumentException("App-only network magic must be an unsigned 32-bit value");
+        }
+        if (CARDANO_NETWORK_MAGICS.contains(protocolMagic)) {
+            throw new IllegalArgumentException("App-only network magic " + protocolMagic
+                    + " is a Cardano network magic; use a distinct app network identity");
+        }
+        if (appOnlyNetwork != null && appOnlyNetwork != protocolMagic) {
+            throw new IllegalStateException("Plugins supplied conflicting app-only network magics "
+                    + appOnlyNetwork + " and " + protocolMagic);
+        }
+        appOnlyNetwork = protocolMagic;
+    }
+
+    /** The app-only network magic a plugin supplied, if any. */
+    public synchronized OptionalLong appOnlyNetwork() {
+        return appOnlyNetwork == null ? OptionalLong.empty() : OptionalLong.of(appOnlyNetwork);
     }
 
     public synchronized void seal() { sealed = true; }

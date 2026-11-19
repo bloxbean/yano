@@ -12,9 +12,3 @@ yano:
     directory: /app/plugins
   storage:
     path: /app/chainstate
-  app-chain:
-    storage:
-      path: /app/appchain-chainstate
-    indexer:
-      storage:
-        path: /app/appchain-indexers

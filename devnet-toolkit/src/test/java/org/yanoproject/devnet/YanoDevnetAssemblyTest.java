@@ -3,7 +3,6 @@ package org.yanoproject.devnet;
 import org.yanoproject.api.MempoolQueryGateway;
 import org.yanoproject.api.MempoolAdminGateway;
 import org.yanoproject.api.config.YanoConfig;
-import org.yanoproject.x.framework.api.plugin.domain.DomainApiGateway;
 import org.yanoproject.runtime.assembly.YanoAssembly;
 import org.yanoproject.runtime.assembly.Yano;
 import org.junit.jupiter.api.Test;
@@ -40,7 +39,7 @@ class YanoDevnetAssemblyTest {
             assertTrue(node.devnetControl().isPresent());
             assertTrue(node.pluginCatalog().isPresent());
             assertTrue(node.pluginOperations().isPresent());
-            assertNotSame(DomainApiGateway.empty(), node.domainApis());
+            assertTrue(node.service("org.yanoproject.devnet.absent", Object.class).isEmpty());
             assertNotSame(MempoolQueryGateway.UNAVAILABLE, node.mempoolQueryGateway());
             assertSame(node.txEvaluationGateway(), node.mempoolQueryGateway());
             assertNotSame(MempoolAdminGateway.UNAVAILABLE, node.mempoolAdminGateway());

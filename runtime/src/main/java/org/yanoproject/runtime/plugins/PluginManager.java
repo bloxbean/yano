@@ -275,7 +275,7 @@ public final class PluginManager implements AutoCloseable {
         this.lifecycleObserver = Objects.requireNonNull(
                 lifecycleObserver, "lifecycleObserver");
         this.managedCallbacks = new PluginContextFacades.ManagedCallbackResources(
-                Objects.requireNonNull(callbackRegistrar, "callbackRegistrar"));
+                Objects.requireNonNull(callbackRegistrar, "callbackRegistrar"), catalogCallbacks);
         if (bundleConfigs == null || bundleConfigs.isEmpty()) {
             this.bundleConfigs = Map.of();
         } else {
@@ -295,6 +295,20 @@ public final class PluginManager implements AutoCloseable {
     /** Read an init- or start-scoped service from the existing shared registry. */
     public <T> Optional<T> getService(String key, Class<T> type) {
         return services.get(key, type);
+    }
+
+    /**
+     * A service registered by the currently initialized plugin generation, resolved on every call;
+     * empty before initialization completes and after close. Host services are excluded.
+     */
+    public <T> Optional<T> pluginService(String key, Class<T> type) {
+        synchronized (this) {
+            if (state != State.INITIALIZED && state != State.STARTING && state != State.STARTED
+                    && state != State.STOPPING && state != State.STOPPED) {
+                return Optional.empty();
+            }
+        }
+        return services.getPluginService(key, type);
     }
 
     /** Discover, validate and initialize the selected plugin set exactly once. */
@@ -361,7 +375,7 @@ public final class PluginManager implements AutoCloseable {
                     storageFilters, services, managedCallbacks);
             pluginContexts.put(descriptor.plugin(), context);
             try {
-                runPluginCallback(() -> descriptor.plugin().init(context));
+                runPluginInit(descriptor.id(), () -> descriptor.plugin().init(context));
                 context.completeInitialization();
                 plugins.add(descriptor.plugin());
             } catch (Throwable failure) {
@@ -415,6 +429,24 @@ public final class PluginManager implements AutoCloseable {
         return catalogCallbacks != null
                 ? catalogCallbacks.call(tcclCall)
                 : tcclCall.get();
+    }
+
+    /**
+     * Runs {@code init} as the bundle's own code, the only place it holds owner-registration authority.
+     * Manifested plugins are catalog facades that re-enter the same owner frame inside their own admission.
+     */
+    private <X extends Throwable> void runPluginInit(
+            String bundleId,
+            PluginThreadContext.ThrowingRunnable<X> init
+    ) throws X {
+        if (catalogCallbacks == null) {
+            runPluginCallback(init);
+            return;
+        }
+        runPluginCallback(() -> catalogCallbacks.callAsOwner(bundleId, () -> {
+            init.run();
+            return null;
+        }));
     }
 
     private <X extends Throwable> void runPluginCallback(

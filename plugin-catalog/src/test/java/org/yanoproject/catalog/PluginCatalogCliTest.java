@@ -148,6 +148,39 @@ class PluginCatalogCliTest {
         assertThat(invalidLevel.err()).contains("--api-level must be a positive integer");
     }
 
+    @Test
+    void descriptorKindsAreTrustedOnlyFromHostArtifacts() throws Exception {
+        Path root = Files.createDirectories(temporary.resolve("descriptor-kind"));
+        String provider = "com.example.SinkProvider";
+        write(root, BundleManifestParser.RESOURCE_DIRECTORY + "com.example.sink.json", """
+                {
+                  "schemaVersion": 1,
+                  "id": "com.example.sink",
+                  "version": "1.0.0",
+                  "yanoApi": {"min": 3, "max": 3, "minLevel": 4},
+                  "contributions": [{"kind": "fixture-sink", "name": "sink", "provider": "%s"}]
+                }
+                """.formatted(provider));
+        write(root, "META-INF/services/" + TestKinds.SINK.serviceInterface(), provider + "\n");
+        write(root, provider.replace('.', '/') + ".class", "");
+
+        Result unknown = run("validate", root.toString());
+        assertThat(unknown.exit()).isEqualTo(PluginCatalogCli.EXIT_INVALID_CATALOG);
+        assertThat(unknown.err()).contains("contribution kind is not supported");
+
+        Result trusted = run("inspect", "--host-artifact", TestKinds.HOST_ARTIFACT.toString(),
+                root.toString());
+        assertThat(trusted.exit()).isZero();
+        assertThat(trusted.out()).contains("fixture-sink/sink");
+
+        write(root, TestKinds.DESCRIPTOR, Files.readString(
+                TestKinds.HOST_ARTIFACT.resolve(TestKinds.DESCRIPTOR)));
+        Result untrusted = run("validate", "--host-artifact", TestKinds.HOST_ARTIFACT.toString(),
+                root.toString());
+        assertThat(untrusted.exit()).isEqualTo(PluginCatalogCli.EXIT_INVALID_CATALOG);
+        assertThat(untrusted.err()).contains("trusted only from host class-path artifacts");
+    }
+
     private Path healthArtifact(String name) throws IOException {
         return healthArtifact(name, 3, 4);
     }

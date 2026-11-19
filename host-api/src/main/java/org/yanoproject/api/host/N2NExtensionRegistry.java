@@ -23,4 +23,14 @@ public interface N2NExtensionRegistry {
      * This preserves the shared-session path without creating another peer runtime.
      */
     void decorateOutbound(UnaryOperator<PeerClientFactory> decorator);
+
+    /**
+     * Supplies the app-only network magic of a host without Cardano chainstate (Host API 1.2), during
+     * initialization or assembly. The host rejects known Cardano magics and conflicting magics.
+     *
+     * @param protocolMagic unsigned 32-bit app network magic
+     */
+    default void requireAppOnlyNetwork(long protocolMagic) {
+        throw new UnsupportedOperationException("Host does not serve an app-only network");
+    }
 }

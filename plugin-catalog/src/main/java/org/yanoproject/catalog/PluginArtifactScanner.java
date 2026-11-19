@@ -6,6 +6,9 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.StringReader;
+import java.net.JarURLConnection;
+import java.net.URISyntaxException;
+import java.net.URL;
 import java.nio.ByteBuffer;
 import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
@@ -16,7 +19,6 @@ import java.nio.file.Path;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -51,29 +53,27 @@ public final class PluginArtifactScanner {
     public static final long MAX_ARTIFACT_BYTES = 1024L * 1024L * 1024L;
 
     private static final String SERVICE_DIRECTORY = "META-INF/services/";
-    private static final List<String> API_CLASS_PREFIXES = List.of(
-            "org/yanoproject/api/",
-            "org/yanoproject/x/framework/api/",
-            "org/yanoproject/x/framework/cardano/api/");
     private static final String MULTI_RELEASE_PREFIX = "META-INF/versions/";
 
+    private final ContributionKindRegistry kinds;
     private final BundleManifestParser manifestParser;
     private final ScanObserver scanObserver;
 
-    /** Creates a scanner using the strict schema-v1 manifest parser. */
-    public PluginArtifactScanner() {
-        this(new BundleManifestParser(), ScanObserver.NOOP);
-    }
-
-    PluginArtifactScanner(BundleManifestParser manifestParser) {
-        this(manifestParser, ScanObserver.NOOP);
+    /**
+     * Creates a scanner using the strict schema-v1 manifest parser.
+     *
+     * @param kinds the supported contribution kinds and trusted host artifacts
+     */
+    public PluginArtifactScanner(ContributionKindRegistry kinds) {
+        this(kinds, ScanObserver.NOOP);
     }
 
     PluginArtifactScanner(
-            BundleManifestParser manifestParser,
+            ContributionKindRegistry kinds,
             ScanObserver scanObserver
     ) {
-        this.manifestParser = Objects.requireNonNull(manifestParser, "manifestParser");
+        this.kinds = Objects.requireNonNull(kinds, "kinds");
+        this.manifestParser = new BundleManifestParser(kinds);
         this.scanObserver = Objects.requireNonNull(scanObserver, "scanObserver");
     }
 
@@ -152,6 +152,10 @@ public final class PluginArtifactScanner {
         } finally {
             scanObserver.afterSnapshotInspection(source, snapshot.artifact());
         }
+        if (contents.descriptorPath() != null && !kinds.isHostArtifact(source)) {
+            throw invalid("contribution-kind descriptor '" + safeEntry(contents.descriptorPath())
+                    + "' is trusted only from host class-path artifacts");
+        }
         boolean pluginArtifact = contents.manifest() != null
                 || hasServiceProviders(contents.services());
         rejectManifestClassPath(contents, pluginArtifact || requireClosedClassPath);
@@ -184,8 +188,9 @@ public final class PluginArtifactScanner {
         Set<String> fileEntries = new HashSet<>();
         List<String> manifestPaths = new ArrayList<>();
         List<JarEntry> jarManifestEntries = new ArrayList<>();
-        Map<ContributionKind, byte[]> serviceFiles = new EnumMap<>(ContributionKind.class);
+        Map<ContributionKind, byte[]> serviceFiles = new HashMap<>();
         String apiClass = null;
+        String descriptorPath = null;
         try (JarFile jar = new JarFile(artifact.toFile(), false)) {
             var enumeration = jar.entries();
             int entryCount = 0;
@@ -219,6 +224,10 @@ public final class PluginArtifactScanner {
                 if (isQualifiedManifestPath(name)) {
                     manifestPaths.add(name);
                 }
+                if (ContributionKindRegistry.isDescriptorPath(name)
+                        && (descriptorPath == null || name.compareTo(descriptorPath) < 0)) {
+                    descriptorPath = name;
+                }
                 ContributionKind kind = serviceKind(name);
                 if (kind != null) {
                     if (serviceFiles.containsKey(kind)) {
@@ -237,6 +246,7 @@ public final class PluginArtifactScanner {
                     manifest,
                     parseServices(serviceFiles, providerLimit(manifest)),
                     apiClass,
+                    descriptorPath,
                     Set.copyOf(fileEntries),
                     manifestClassPath);
         }
@@ -272,8 +282,9 @@ public final class PluginArtifactScanner {
         List<String> manifestPaths = new ArrayList<>();
         List<Path> jarManifestFiles = new ArrayList<>();
         Set<String> fileEntries = new HashSet<>();
-        Map<ContributionKind, byte[]> serviceFiles = new EnumMap<>(ContributionKind.class);
+        Map<ContributionKind, byte[]> serviceFiles = new HashMap<>();
         String apiClass = null;
+        String descriptorPath = null;
         long totalEntryNameCharacters = 0;
         for (Path path : allPaths) {
             if (path.equals(artifact)) {
@@ -305,6 +316,10 @@ public final class PluginArtifactScanner {
             if (isQualifiedManifestPath(name)) {
                 manifestPaths.add(name);
             }
+            if (ContributionKindRegistry.isDescriptorPath(name)
+                    && (descriptorPath == null || name.compareTo(descriptorPath) < 0)) {
+                descriptorPath = name;
+            }
             ContributionKind kind = serviceKind(name);
             if (kind != null) {
                 serviceFiles.put(kind, readBounded(path, MAX_SERVICE_FILE_BYTES, "service file"));
@@ -326,6 +341,7 @@ public final class PluginArtifactScanner {
                 manifest,
                 parseServices(serviceFiles, providerLimit(manifest)),
                 apiClass,
+                descriptorPath,
                 Set.copyOf(fileEntries),
                 manifestClassPath);
     }
@@ -414,13 +430,13 @@ public final class PluginArtifactScanner {
                 : CatalogValidation.MAX_CONTRIBUTIONS;
     }
 
-    private static Map<ContributionKind, List<String>> parseServices(
+    private Map<ContributionKind, List<String>> parseServices(
             Map<ContributionKind, byte[]> serviceFiles,
             int providerLimit
     ) {
         Map<ContributionKind, List<String>> services = new LinkedHashMap<>();
         int total = 0;
-        for (ContributionKind kind : ContributionKind.values()) {
+        for (ContributionKind kind : kinds.kinds()) {
             byte[] bytes = serviceFiles.get(kind);
             if (bytes != null) {
                 List<String> providers = parseServiceFile(
@@ -557,7 +573,7 @@ public final class PluginArtifactScanner {
         return output.toByteArray();
     }
 
-    private static ContributionKind serviceKind(String path) {
+    private ContributionKind serviceKind(String path) {
         if (!path.startsWith(SERVICE_DIRECTORY)) {
             return null;
         }
@@ -565,14 +581,9 @@ public final class PluginArtifactScanner {
         if (serviceName.startsWith("org.yanoproject.api.appchain.")
                 || serviceName.startsWith("org.yanoproject.api.plugin.domain.")) {
             throw invalid("retired framework ServiceLoader contract '" + safeEntry(serviceName)
-                    + "'; rebuild the plugin against org.yanoproject.x.framework APIs");
+                    + "'; rebuild the plugin against the current framework APIs");
         }
-        for (ContributionKind kind : ContributionKind.values()) {
-            if (kind.serviceType().getName().equals(serviceName)) {
-                return kind;
-            }
-        }
-        return null;
+        return kinds.forServiceInterface(serviceName).orElse(null);
     }
 
     private static boolean isJarManifestPath(String path) {
@@ -603,11 +614,11 @@ public final class PluginArtifactScanner {
         }
     }
 
-    private static boolean isApiClass(String path) {
+    private boolean isApiClass(String path) {
         if (!path.endsWith(".class")) {
             return false;
         }
-        if (API_CLASS_PREFIXES.stream().anyMatch(path::startsWith)) {
+        if (kinds.isApiClass(path)) {
             return true;
         }
         if (!path.startsWith(MULTI_RELEASE_PREFIX)) {
@@ -622,7 +633,7 @@ public final class PluginArtifactScanner {
             return false;
         }
         String classPath = path.substring(versionEnd + 1);
-        return API_CLASS_PREFIXES.stream().anyMatch(classPath::startsWith);
+        return kinds.isApiClass(classPath);
     }
 
     private static boolean isMultiReleaseOverride(String entry, String baseClassPath) {
@@ -660,6 +671,7 @@ public final class PluginArtifactScanner {
             BundleManifest manifest,
             Map<ContributionKind, List<String>> services,
             String apiClass,
+            String descriptorPath,
             Set<String> fileEntries,
             boolean manifestClassPath
     ) {
@@ -689,5 +701,35 @@ public final class PluginArtifactScanner {
         private String display() {
             return kind.manifestKey() + ":" + provider;
         }
+    }
+
+    /**
+     * Returns the JAR file or exploded artifact root that holds a class-path resource.
+     *
+     * @param resource URL of the resource, as returned by a class loader
+     * @param resourcePath the resource's class-path name
+     * @return JAR file or exploded artifact root
+     * @throws IOException if the resource does not belong to a file JAR or exploded artifact
+     */
+    public static Path classPathArtifact(URL resource, String resourcePath) throws IOException {
+        try {
+            if ("jar".equals(resource.getProtocol())) {
+                JarURLConnection connection = (JarURLConnection) resource.openConnection();
+                connection.setUseCaches(false);
+                URL jar = connection.getJarFileURL();
+                if ("file".equals(jar.getProtocol())) return Path.of(jar.toURI());
+            } else if ("file".equals(resource.getProtocol())) {
+                Path root = Path.of(resource.toURI());
+                for (int segment = 0; segment < resourcePath.split("/").length; segment++) {
+                    root = root.getParent();
+                    if (root == null) throw new IOException("Classpath manifest has no artifact root");
+                }
+                return root;
+            }
+        } catch (URISyntaxException invalid) {
+            throw new IOException("Classpath manifest artifact URL is invalid", invalid);
+        }
+        throw new IOException("Classpath resource " + resourcePath
+                + " must belong to a file JAR or exploded artifact");
     }
 }

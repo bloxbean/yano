@@ -1,14 +1,11 @@
 package org.yanoproject.ledgerstate.governance.epoch;
 
-import org.yanoproject.x.framework.api.appchain.l1view.GovernanceActionType;
-
-
 import com.bloxbean.cardano.yaci.core.model.governance.GovActionId;
 import com.bloxbean.cardano.yaci.core.model.governance.GovActionType;
 import com.bloxbean.cardano.yaci.core.model.governance.actions.TreasuryWithdrawalsAction;
 import org.yanoproject.api.EpochParamProvider;
-import org.yanoproject.x.framework.api.appchain.l1view.GovernanceProposalStatus;
-import org.yanoproject.x.framework.api.appchain.l1view.GovernanceProposalStatusReason;
+import org.yanoproject.api.governance.GovernanceProposalStatus;
+import org.yanoproject.api.governance.GovernanceProposalStatusReason;
 import org.yanoproject.api.era.EraProvider;
 import org.yanoproject.ledgerstate.AdaPotTracker;
 import org.yanoproject.ledgerstate.DefaultAccountStateStore;
@@ -951,28 +948,8 @@ public class GovernanceEpochProcessor {
             GovActionRecord proposal,
             GovernanceProposalStatus status,
             GovernanceProposalStatusReason reason) {
-        return new ProposalLifecycleRecord(actionType(proposal.actionType()), status, reason,
+        return new ProposalLifecycleRecord(proposal.actionType(), status, reason,
                 proposal.proposedInEpoch(), proposal.expiresAfterEpoch());
-    }
-
-    private static GovernanceActionType actionType(
-            GovActionType type) {
-        return switch (type) {
-            case PARAMETER_CHANGE_ACTION ->
-                    GovernanceActionType.PARAMETER_CHANGE;
-            case HARD_FORK_INITIATION_ACTION ->
-                    GovernanceActionType.HARD_FORK_INITIATION;
-            case TREASURY_WITHDRAWALS_ACTION ->
-                    GovernanceActionType.TREASURY_WITHDRAWALS;
-            case NO_CONFIDENCE ->
-                    GovernanceActionType.NO_CONFIDENCE;
-            case UPDATE_COMMITTEE ->
-                    GovernanceActionType.UPDATE_COMMITTEE;
-            case NEW_CONSTITUTION ->
-                    GovernanceActionType.NEW_CONSTITUTION;
-            case INFO_ACTION ->
-                    GovernanceActionType.INFO_ACTION;
-        };
     }
 
     // ===== Active DRep Keys =====

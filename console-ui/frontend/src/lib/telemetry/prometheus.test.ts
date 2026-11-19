@@ -17,10 +17,8 @@ describe('Prometheus history provider', () => {
     }
   });
 
-  it('uses only fixed queries and validates chain parameters', () => {
+  it('uses only fixed queries', () => {
     expect(queryExpression('node.sync-gap')).toBe('max(yano_node_sync_gap_blocks)');
-    expect(queryExpression('appchain.pool', 'orders-chain')).toContain('{chain="orders-chain"}');
-    expect(() => queryExpression('appchain.pool', 'orders"} or up')).toThrow('Invalid app-chain id');
   });
 
   it('prefers the explicit handoff and stores credentials only in the session for the exact origin', () => {

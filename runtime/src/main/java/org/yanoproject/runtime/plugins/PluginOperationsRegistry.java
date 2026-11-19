@@ -4,7 +4,6 @@ import org.yanoproject.api.plugin.PluginBundleInfo;
 import org.yanoproject.api.plugin.PluginCatalogView;
 import org.yanoproject.api.plugin.PluginContributionInfo;
 import org.yanoproject.api.plugin.PluginTrustTier;
-import org.yanoproject.x.framework.api.plugin.domain.DomainHttpMethod;
 import org.yanoproject.api.plugin.operations.PluginBundleRuntimeAggregation;
 import org.yanoproject.api.plugin.operations.PluginBundleRuntimeInfo;
 import org.yanoproject.api.plugin.operations.PluginContributionRuntimeInfo;
@@ -34,6 +33,7 @@ import org.yanoproject.api.plugin.operations.PluginMetricsSource;
 import org.yanoproject.api.plugin.operations.PluginOperation;
 import org.yanoproject.api.plugin.operations.PluginOperationCount;
 import org.yanoproject.api.plugin.operations.PluginOperationOutcome;
+import org.yanoproject.api.plugin.operations.PluginOperationsRecorder;
 import org.yanoproject.api.plugin.operations.PluginOperationsSnapshot;
 import org.yanoproject.api.plugin.operations.PluginOperationsTotals;
 import org.yanoproject.api.plugin.operations.PluginOperationsView;
@@ -61,6 +61,8 @@ import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
+import java.util.function.Predicate;
 import java.util.function.LongSupplier;
 
 /**
@@ -76,10 +78,9 @@ public final class PluginOperationsRegistry implements PluginOperationsView, Aut
     static final int MAX_TELEMETRY_SOURCES = PluginOperationsSnapshot.MAX_BUNDLES * 2;
     static final Duration DEFAULT_SAMPLE_INTERVAL = Duration.ofSeconds(5);
     static final Duration DEFAULT_SAMPLE_DEADLINE = Duration.ofSeconds(1);
-    static final Duration DOMAIN_PUBLICATION_INTERVAL = Duration.ofMillis(100);
+    static final Duration PRODUCT_PUBLICATION_INTERVAL = Duration.ofMillis(100);
 
     private static final String NODE_PLUGIN = "node-plugin";
-    private static final String DOMAIN_API = "domain-api";
     private static final String HEALTH = "health";
     private static final String METRICS = "metrics";
 
@@ -87,6 +88,8 @@ public final class PluginOperationsRegistry implements PluginOperationsView, Aut
     private final Object stateMonitor = new Object();
     private final PluginCatalogView catalog;
     private final PluginProviderRegistry providers;
+    private final Set<String> operationsTrackedKinds;
+    private final PluginOperationsRecorder recorder = new Recorder();
     private final Logger log;
     private final long intervalNanos;
     private final long deadlineNanos;
@@ -114,7 +117,7 @@ public final class PluginOperationsRegistry implements PluginOperationsView, Aut
     private long snapshotBuilds;
 
     public PluginOperationsRegistry(PluginRuntimeEnvironment environment, Logger log) {
-        this(environment.catalog(), environment.providers(), log,
+        this(environment.catalog(), environment.providers(), environment.operationsTrackedKinds(), log,
                 DEFAULT_SAMPLE_INTERVAL, DEFAULT_SAMPLE_DEADLINE,
                 DEFAULT_WORKERS, DEFAULT_QUEUE_CAPACITY,
                 System::currentTimeMillis, System::nanoTime);
@@ -123,6 +126,7 @@ public final class PluginOperationsRegistry implements PluginOperationsView, Aut
     PluginOperationsRegistry(
             PluginCatalogView catalog,
             PluginProviderRegistry providers,
+            Set<String> operationsTrackedKinds,
             Logger log,
             Duration interval,
             Duration deadline,
@@ -133,6 +137,7 @@ public final class PluginOperationsRegistry implements PluginOperationsView, Aut
     ) {
         this.catalog = Objects.requireNonNull(catalog, "catalog");
         this.providers = Objects.requireNonNull(providers, "providers");
+        this.operationsTrackedKinds = Set.copyOf(operationsTrackedKinds);
         this.log = Objects.requireNonNull(log, "log");
         this.epochMillis = Objects.requireNonNull(epochMillis, "epochMillis");
         this.nanoTime = Objects.requireNonNull(nanoTime, "nanoTime");
@@ -183,7 +188,8 @@ public final class PluginOperationsRegistry implements PluginOperationsView, Aut
                 state.contributions.put(key(contribution.kind(), contribution.name()),
                         new ContributionState(
                                 contribution.kind(), contribution.name(),
-                                contribution.trustTier(), lifecycle));
+                                contribution.trustTier(), lifecycle,
+                                operationsTrackedKinds.contains(contribution.kind())));
             }
             bundles.put(bundle.id(), state);
         }
@@ -379,102 +385,118 @@ public final class PluginOperationsRegistry implements PluginOperationsView, Aut
         }
     }
 
-    void domainActivating(String bundleId) {
-        contributionTransition(bundleId, DOMAIN_API, PluginLifecycleState.ACTIVATING,
-                PluginHealthStatus.UNKNOWN, PluginFailure.none());
+    /**
+     * Returns this host's recorder for product operations of tracked kinds
+     * ({@link org.yanoproject.catalog.ContributionKind#operationsTracked()}).
+     *
+     * @return per-host recorder
+     */
+    public PluginOperationsRecorder recorder() {
+        return recorder;
     }
 
-    void domainActive(String bundleId) {
-        contributionTransition(bundleId, DOMAIN_API, PluginLifecycleState.ACTIVE,
-                PluginHealthStatus.UP, PluginFailure.none());
-        increment(bundleId, PluginOperation.ACTIVATION, PluginOperationOutcome.SUCCEEDED);
+    /** Whether {@code bundleId} owns an operations-tracked contribution of {@code kind}. */
+    private boolean tracked(String bundleId, String kind) {
+        return kind != null && operationsTrackedKinds.contains(kind)
+                && ownsTrackedContribution(bundleId, kind::equals);
     }
 
-    void domainActivationFailed(String bundleId) {
-        contributionFailure(bundleId, DOMAIN_API, PluginFailureCode.ACTIVATION_FAILED,
-                PluginHealthStatus.DOWN);
-        increment(bundleId, PluginOperation.ACTIVATION, PluginOperationOutcome.FAILED);
+    /** Whether {@code bundleId} owns any operations-tracked contribution. */
+    private boolean tracksProducts(String bundleId) {
+        return ownsTrackedContribution(bundleId, kind -> true);
     }
 
-    void domainStopped(String bundleId, boolean succeeded) {
-        if (succeeded) {
-            contributionTransition(bundleId, DOMAIN_API, PluginLifecycleState.STOPPED,
-                    PluginHealthStatus.UNKNOWN, PluginFailure.none());
-        } else {
-            contributionFailure(bundleId, DOMAIN_API, PluginFailureCode.CLOSE_FAILED,
-                    PluginHealthStatus.DOWN);
+    private boolean ownsTrackedContribution(String bundleId, Predicate<String> kind) {
+        synchronized (stateMonitor) {
+            BundleState bundle = bundles.get(bundleId);
+            return bundle != null && bundle.contributions.values().stream()
+                    .anyMatch(contribution -> contribution.operationsTracked && kind.test(contribution.kind));
         }
     }
 
-    void domainAdmitted(String bundleId) {
+    private void trackedQueue(String bundleId, Consumer<BundleState> update) {
         synchronized (stateMonitor) {
-            if (closed) {
+            if (closed || !tracksProducts(bundleId)) {
                 return;
             }
-            BundleState bundle = bundles.get(bundleId);
-            if (bundle != null) {
-                bundle.domainQueued++;
-                scheduleDynamicPublicationLocked();
-            }
-        }
-    }
-
-    void domainStarted(String bundleId) {
-        synchronized (stateMonitor) {
-            if (closed) {
-                return;
-            }
-            BundleState bundle = bundles.get(bundleId);
-            if (bundle != null) {
-                bundle.domainQueued = Math.max(0, bundle.domainQueued - 1);
-                bundle.domainActive++;
-                scheduleDynamicPublicationLocked();
-            }
-        }
-    }
-
-    void domainQueueFinished(String bundleId) {
-        synchronized (stateMonitor) {
-            if (closed) {
-                return;
-            }
-            BundleState bundle = bundles.get(bundleId);
-            if (bundle == null) {
-                return;
-            }
-            bundle.domainQueued = Math.max(0, bundle.domainQueued - 1);
+            update.accept(bundles.get(bundleId));
             scheduleDynamicPublicationLocked();
         }
     }
 
-    void domainCallbackFinished(String bundleId) {
-        synchronized (stateMonitor) {
-            if (closed) {
-                return;
+    private final class Recorder implements PluginOperationsRecorder {
+        @Override
+        public void activating(String kind, String bundleId) {
+            if (tracked(bundleId, kind)) {
+                contributionTransition(bundleId, kind, PluginLifecycleState.ACTIVATING,
+                        PluginHealthStatus.UNKNOWN, PluginFailure.none());
             }
-            BundleState bundle = bundles.get(bundleId);
-            if (bundle == null) {
-                return;
-            }
-            bundle.domainActive = Math.max(0, bundle.domainActive - 1);
-            scheduleDynamicPublicationLocked();
         }
-    }
 
-    void domainOutcome(
-            String bundleId,
-            DomainHttpMethod method,
-            PluginOperationOutcome outcome
-    ) {
-        synchronized (stateMonitor) {
-            if (closed) {
+        @Override
+        public void active(String kind, String bundleId) {
+            if (tracked(bundleId, kind)) {
+                contributionTransition(bundleId, kind, PluginLifecycleState.ACTIVE,
+                        PluginHealthStatus.UP, PluginFailure.none());
+                increment(bundleId, PluginOperation.ACTIVATION, PluginOperationOutcome.SUCCEEDED);
+            }
+        }
+
+        @Override
+        public void activationFailed(String kind, String bundleId) {
+            if (tracked(bundleId, kind)) {
+                contributionFailure(bundleId, kind, PluginFailureCode.ACTIVATION_FAILED,
+                        PluginHealthStatus.DOWN);
+                increment(bundleId, PluginOperation.ACTIVATION, PluginOperationOutcome.FAILED);
+            }
+        }
+
+        @Override
+        public void stopped(String kind, String bundleId, boolean succeeded) {
+            if (!tracked(bundleId, kind)) {
                 return;
             }
-            BundleState bundle = bundles.get(bundleId);
-            if (bundle != null) {
-                incrementLocked(bundle, domainOperation(method), outcome);
-                scheduleDynamicPublicationLocked();
+            if (succeeded) {
+                contributionTransition(bundleId, kind, PluginLifecycleState.STOPPED,
+                        PluginHealthStatus.UNKNOWN, PluginFailure.none());
+            } else {
+                contributionFailure(bundleId, kind, PluginFailureCode.CLOSE_FAILED,
+                        PluginHealthStatus.DOWN);
             }
+        }
+
+        @Override
+        public void admitted(String bundleId) {
+            trackedQueue(bundleId, bundle -> bundle.productQueued++);
+        }
+
+        @Override
+        public void started(String bundleId) {
+            trackedQueue(bundleId, bundle -> {
+                bundle.productQueued = Math.max(0, bundle.productQueued - 1);
+                bundle.productActive++;
+            });
+        }
+
+        @Override
+        public void queueFinished(String bundleId) {
+            trackedQueue(bundleId, bundle -> bundle.productQueued = Math.max(0, bundle.productQueued - 1));
+        }
+
+        @Override
+        public void callbackFinished(String bundleId) {
+            trackedQueue(bundleId, bundle -> bundle.productActive = Math.max(0, bundle.productActive - 1));
+        }
+
+        @Override
+        public void outcome(String bundleId, PluginOperation operation, PluginOperationOutcome outcome) {
+            Objects.requireNonNull(operation, "operation");
+            Objects.requireNonNull(outcome, "outcome");
+            if (operation != PluginOperation.DOMAIN_GET && operation != PluginOperation.DOMAIN_POST) {
+                throw new IllegalArgumentException("Plugin product outcomes are DOMAIN_GET or DOMAIN_POST, not "
+                        + operation);
+            }
+            trackedQueue(bundleId, bundle -> incrementLocked(bundle, operation, outcome));
         }
     }
 
@@ -960,11 +982,6 @@ public final class PluginOperationsRegistry implements PluginOperationsView, Aut
         }
     }
 
-    private static PluginOperation domainOperation(DomainHttpMethod method) {
-        return method == DomainHttpMethod.GET
-                ? PluginOperation.DOMAIN_GET : PluginOperation.DOMAIN_POST;
-    }
-
     private static ContributionState findContribution(BundleState bundle, String kind) {
         if (bundle == null) {
             return null;
@@ -1018,7 +1035,7 @@ public final class PluginOperationsRegistry implements PluginOperationsView, Aut
                         publishLocked();
                     }
                 }
-            }, DOMAIN_PUBLICATION_INTERVAL.toNanos(), TimeUnit.NANOSECONDS);
+            }, PRODUCT_PUBLICATION_INTERVAL.toNanos(), TimeUnit.NANOSECONDS);
         } catch (RejectedExecutionException ignored) {
             // A concurrent close publishes one final snapshot synchronously.
         }
@@ -1070,8 +1087,8 @@ public final class PluginOperationsRegistry implements PluginOperationsView, Aut
             bundleInfos.add(new PluginBundleRuntimeInfo(
                     bundle.id, aggregation.lifecycle(), aggregation.health(),
                     aggregation.failure(), aggregation.metricsStale(), lastTransition,
-                    bundle.domainActive + bundle.sampleActive + bundle.activationActive,
-                    bundle.domainQueued + bundle.sampleQueued + bundle.activationQueued,
+                    bundle.productActive + bundle.sampleActive + bundle.activationActive,
+                    bundle.productQueued + bundle.sampleQueued + bundle.activationQueued,
                     operationCounts(bundle), contributionInfos));
         }
 
@@ -1154,7 +1171,7 @@ public final class PluginOperationsRegistry implements PluginOperationsView, Aut
                         continue;
                     }
                     for (ContributionState contribution : bundle.contributions.values()) {
-                        boolean registryObserved = DOMAIN_API.equals(contribution.kind)
+                        boolean registryObserved = contribution.operationsTracked
                                 || HEALTH.equals(contribution.kind)
                                 || METRICS.equals(contribution.kind);
                         boolean terminallyStopped =
@@ -2002,8 +2019,8 @@ public final class PluginOperationsRegistry implements PluginOperationsView, Aut
         private final Map<String, ContributionState> contributions = new LinkedHashMap<>();
         private final EnumMap<PluginOperation, EnumMap<PluginOperationOutcome, Long>> operations =
                 new EnumMap<>(PluginOperation.class);
-        private int domainActive;
-        private int domainQueued;
+        private int productActive;
+        private int productQueued;
         private int sampleActive;
         private int sampleQueued;
         private int activationActive;
@@ -2019,6 +2036,7 @@ public final class PluginOperationsRegistry implements PluginOperationsView, Aut
         private final String kind;
         private final String name;
         private final PluginTrustTier trustTier;
+        private final boolean operationsTracked;
         private PluginLifecycleState lifecycle;
         private PluginHealthStatus health = PluginHealthStatus.UNKNOWN;
         private PluginFailure failure = PluginFailure.none();
@@ -2029,12 +2047,14 @@ public final class PluginOperationsRegistry implements PluginOperationsView, Aut
                 String kind,
                 String name,
                 PluginTrustTier trustTier,
-                PluginLifecycleState lifecycle
+                PluginLifecycleState lifecycle,
+                boolean operationsTracked
         ) {
             this.kind = kind;
             this.name = name;
             this.trustTier = trustTier;
             this.lifecycle = lifecycle;
+            this.operationsTracked = operationsTracked;
         }
 
         private PluginContributionRuntimeInfo info(boolean selected) {
@@ -2049,7 +2069,7 @@ public final class PluginOperationsRegistry implements PluginOperationsView, Aut
         }
 
         private boolean lifecycleObserved() {
-            return NODE_PLUGIN.equals(kind) || DOMAIN_API.equals(kind)
+            return NODE_PLUGIN.equals(kind) || operationsTracked
                     || HEALTH.equals(kind) || METRICS.equals(kind);
         }
     }

@@ -11,9 +11,6 @@
   "operate/plugins": [
     "docs/PLUGIN_OPERATIONS.md"
   ],
-  "reference/plugin-contract": [
-    "docs/APP_CHAIN_PLUGIN_QUERY_AND_DOMAIN_API.md"
-  ],
   "reference/account-state": [
     "docs/ACCOUNT_STATE_AND_ROLLBACK.md"
   ],
@@ -31,14 +28,6 @@
   ],
   "operate/mempool": [
     "docs/mempool-administration.md"
-  ],
-  "app-chains/ordered-log": [
-    "docs/appchain/state-machines/ordered-log.md",
-    "docs/appchain/submission.md"
-  ],
-  "app-chains/consensus": [
-    "docs/APP_CHAIN_CONSENSUS_GUIDE.md",
-    "docs/appchain/submission.md"
   ],
   "operate/console": [
     "docs/console-ui.md"
@@ -65,39 +54,16 @@
   ],
   "develop/time-travel": [
     "testkit/README.md",
-    "app/src/main/java/org/yanoproject/app/api/devnet/DevnetResource.java"
-  ],
-  "develop/app-chain-testkit": [
-    "appchain/appchain-testkit/README.md"
+    "app-core/src/main/java/org/yanoproject/app/api/devnet/DevnetResource.java"
   ],
   "develop/transactions": [
-    "app/src/main/java/org/yanoproject/app/api/tx/TxResource.java",
+    "app-core/src/main/java/org/yanoproject/app/api/tx/TxResource.java",
     "app/bin/yano.sh",
-    "app/src/main/java/org/yanoproject/app/YanoProducer.java"
-  ],
-  "app-chains/overview": [
-    "appchain/README.md",
-    "docs/appchain/state-machines/ordered-log.md"
-  ],
-  "app-chains/extensions": [
-    "appchain/README.md",
-    "docs/APP_CHAIN_PLUGIN_QUERY_AND_DOMAIN_API.md"
-  ],
-  "app-chains/proofs": [
-    "docs/appchain/state-machines/ordered-log.md",
-    "docs/APP_CHAIN_CONSENSUS_GUIDE.md",
-    "docs/console-ui.md"
-  ],
-  "app-chains/quickstart": [
-    "app/config/application-appchain.yml",
-    "app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java"
-  ],
-  "app-chains/observations": [
-    "docs/appchain/observations.md"
+    "app-core/src/main/java/org/yanoproject/app/YanoProducer.java"
   ],
   "start/overview": [
     "README.md",
-    "app/src/main/resources/application.yml"
+    "app-core/src/main/resources/application.yml"
   ],
   "start/quickstart": [
     "https://github.com/bloxbean/yano/releases/latest",
@@ -132,9 +98,9 @@
   ],
   "operate/troubleshooting": [
     "README.md",
-    "app/src/main/resources/application.yml",
-    "app/src/main/java/org/yanoproject/app/YanoResource.java",
-    "app/src/main/java/org/yanoproject/app/api/status/StatusResource.java"
+    "app-core/src/main/resources/application.yml",
+    "app-core/src/main/java/org/yanoproject/app/YanoResource.java",
+    "app-core/src/main/java/org/yanoproject/app/api/status/StatusResource.java"
   ],
   "operate/upgrades": [
     "docs/UPGRADING.md",
@@ -150,11 +116,11 @@
     "docs/BUILD_AND_TEST.md"
   ],
   "node/upstream": [
-    "app/src/main/resources/application.yml",
+    "app-core/src/main/resources/application.yml",
     "node-api/src/main/java/org/yanoproject/api/config/YanoPropertyKeys.java"
   ],
   "node/networks": [
-    "app/src/main/resources/application.yml",
+    "app-core/src/main/resources/application.yml",
     "app/config/application-preprod.yml",
     "app/bin/yano.sh"
   ],
@@ -169,25 +135,24 @@
     "app/config/application.yml"
   ],
   "reference/http-api": [
-    "app/src/main/resources/application.yml",
-    "app/src/main/java/org/yanoproject/app/api/ApiGroup.java"
+    "app-core/src/main/resources/application.yml",
+    "app-core/src/main/java/org/yanoproject/app/api/ApiGroup.java"
   ],
   "reference/configuration": [
-    "app/src/main/resources/application.yml",
+    "app-core/src/main/resources/application.yml",
     "docs/BUILD_DISTRIBUTIONS.md"
   ],
   "start/capabilities": [
-    "app/src/main/resources/application.yml",
+    "app-core/src/main/resources/application.yml",
     "app/config/application-wallet.yml",
-    "app/config/application-projection.yml",
-    "appchain/README.md"
+    "app/config/application-projection.yml"
   ],
   "contribute/build-from-source": [
     "docs/BUILD_DISTRIBUTIONS.md"
   ],
   "develop/blockfrost": [
-    "app/src/main/java/org/yanoproject/app/api/utils/EvaluationResource.java",
-    "app/src/main/java/org/yanoproject/app/api/tx/TxResource.java",
+    "app-core/src/main/java/org/yanoproject/app/api/utils/EvaluationResource.java",
+    "app-core/src/main/java/org/yanoproject/app/api/tx/TxResource.java",
     "runtime/src/main/java/org/yanoproject/runtime/tx/TxSubsystem.java",
     "runtime/src/main/java/org/yanoproject/runtime/sync/SyncSubsystem.java",
     "compat-tests/ccl/src/main/java/org/yanoproject/compat/ccl/CompatProbe.java",

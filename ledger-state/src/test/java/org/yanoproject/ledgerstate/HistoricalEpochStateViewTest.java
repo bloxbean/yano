@@ -2,9 +2,9 @@ package org.yanoproject.ledgerstate;
 
 import org.yanoproject.ledgerstate.test.TestRocksDBHelper;
 import com.bloxbean.cardano.yaci.core.model.governance.GovActionId;
-import org.yanoproject.x.framework.api.appchain.l1view.GovernanceActionType;
-import org.yanoproject.x.framework.api.appchain.l1view.GovernanceProposalStatus;
-import org.yanoproject.x.framework.api.appchain.l1view.GovernanceProposalStatusReason;
+import com.bloxbean.cardano.yaci.core.model.governance.GovActionType;
+import org.yanoproject.api.governance.GovernanceProposalStatus;
+import org.yanoproject.api.governance.GovernanceProposalStatusReason;
 import org.yanoproject.ledgerstate.governance.model.ProposalLifecycleRecord;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -152,7 +152,7 @@ class HistoricalEpochStateViewTest {
     }
 
     private static ProposalLifecycleRecord lifecycle(GovernanceProposalStatus status) {
-        return new ProposalLifecycleRecord(GovernanceActionType.PARAMETER_CHANGE, status,
+        return new ProposalLifecycleRecord(GovActionType.PARAMETER_CHANGE_ACTION, status,
                 status == GovernanceProposalStatus.RATIFIED
                         ? GovernanceProposalStatusReason.RATIFIED : GovernanceProposalStatusReason.NONE,
                 40, 45);
