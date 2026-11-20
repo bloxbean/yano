@@ -87,8 +87,8 @@ class CommitteeStatePruningBoundaryTest {
 
         // Enrolled by an UpdateCommittee enacted at the boundary into 13.
         node.writeGovernance((store, batch, ops) -> {
-            Map<Credential, Integer> added = new LinkedHashMap<>();
-            added.put(new Credential(StakeCredType.ADDR_KEYHASH, RESIGNED), 130);
+            Map<Credential, Long> added = new LinkedHashMap<>();
+            added.put(new Credential(StakeCredType.ADDR_KEYHASH, RESIGNED), 130L);
             store.storeProposal(ENROLL, new GovActionRecord(BigInteger.ONE, "e0" + "11".repeat(28), 11, 17,
                     GovActionType.UPDATE_COMMITTEE, null, null,
                     UpdateCommittee.builder().membersForRemoval(new LinkedHashSet<>()).newMembersAndTerms(added)

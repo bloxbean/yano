@@ -96,10 +96,10 @@ class GovernanceTwoPhaseCommitTest {
         }
 
         // Build the UpdateCommittee action (adds 3 new members with expiry 372)
-        var newMembers = new LinkedHashMap<Credential, Integer>();
-        newMembers.put(new Credential(StakeCredType.ADDR_KEYHASH, NEW_COLD1), 372);
-        newMembers.put(new Credential(StakeCredType.ADDR_KEYHASH, NEW_COLD2), 372);
-        newMembers.put(new Credential(StakeCredType.ADDR_KEYHASH, NEW_COLD3), 372);
+        var newMembers = new LinkedHashMap<Credential, Long>();
+        newMembers.put(new Credential(StakeCredType.ADDR_KEYHASH, NEW_COLD1), 372L);
+        newMembers.put(new Credential(StakeCredType.ADDR_KEYHASH, NEW_COLD2), 372L);
+        newMembers.put(new Credential(StakeCredType.ADDR_KEYHASH, NEW_COLD3), 372L);
 
         var ucAction = UpdateCommittee.builder()
                 .newMembersAndTerms(newMembers)
@@ -154,8 +154,8 @@ class GovernanceTwoPhaseCommitTest {
             commit(batch);
         }
 
-        var newMembers = new LinkedHashMap<Credential, Integer>();
-        newMembers.put(new Credential(StakeCredType.ADDR_KEYHASH, NEW_COLD1), 372);
+        var newMembers = new LinkedHashMap<Credential, Long>();
+        newMembers.put(new Credential(StakeCredType.ADDR_KEYHASH, NEW_COLD1), 372L);
         var ucAction = UpdateCommittee.builder().newMembersAndTerms(newMembers).build();
 
         var proposal = new GovActionRecord(
