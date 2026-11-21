@@ -726,11 +726,11 @@ class GovRuleTest {
             procedure.getDataItems().set(0, new UnsignedInteger(3));
         });
         assertThatThrownBy(() -> RawTransaction.parse(badVote, built.tx())).isInstanceOf(TxDecodingException.class)
-                .hasMessageContaining("unsigned integer 3 exceeds 2");
+                .hasMessageContaining("unknown vote 3");
         byte[] noVotes = editVotes(built.cbor(), byVoter -> byVoter.put(byVoter.getKeys().iterator().next(),
                 new co.nstant.in.cbor.model.Map()));
         assertThatThrownBy(() -> RawTransaction.parse(noVotes, built.tx())).isInstanceOf(TxDecodingException.class)
-                .hasMessageContaining("must be non-empty");
+                .hasMessageContaining("voting_procedures key at").hasMessageContaining("must be non-empty");
         assertThat(RawTransaction.parse(built.cbor(), built.tx()).votes().values()).singleElement()
                 .isEqualTo(Map.of(MutationWorld.INFO_ACTION, 1));
     }

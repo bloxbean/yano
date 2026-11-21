@@ -207,7 +207,8 @@ class HaskellPolicyTest {
     @Test
     void aCertificateIsWalkedInTheBody() {
         bothAccept("a4" + INPUTS + OUTPUTS + FEE + "0481" + "8200" + CRED, "a0");
-        bothReject("a4" + INPUTS + OUTPUTS + FEE + "0480", "a0", "Certificates");
+        bothReject("a4" + INPUTS + OUTPUTS + FEE + "0480", "a0",
+                "transaction_body key 04: the NONEMPTY_CERTIFICATE_SET at 45 must be non-empty");
         bothReject("a4" + INPUTS + OUTPUTS + FEE + "0482" + "8200" + CRED + "8200" + CRED, "a0",
                 "duplicate certificate at");
         bothReject("a4" + INPUTS + OUTPUTS + FEE + "0481" + "8200" + "8200" + "581b" + "11".repeat(27), "a0",
@@ -408,8 +409,8 @@ class HaskellPolicyTest {
                 "duplicate voter");
         bothReject(votes + "a1" + voter + "a2" + ACTION_ID + vote + "82" + "590020" + "22".repeat(32) + "00" + vote,
                 "a0", "duplicate gov_action_id");
-        bothReject(votes + "a1" + voter + "a1" + ACTION_ID + "8203f6", "a0", "exceeds 2");
-        bothReject(votes + "a1" + voter + "a0", "a0", "must be non-empty");
+        bothReject(votes + "a1" + voter + "a1" + ACTION_ID + "8203f6", "a0", "unknown vote 3");
+        bothReject(votes + "a1" + voter + "a0", "a0", "voting_procedures key at 46: the NONEMPTY_MAP at 78 must be");
         bothReject(votes + "a1" + voter + "a1" + ACTION_ID + "9f00f6ff", "a0", "VOTING_PROCEDURE is a RecD record");
     }
 
@@ -442,13 +443,25 @@ class HaskellPolicyTest {
                 "proposal_procedure is a RecD record");
     }
 
+    /** A rejection names the field: the record and key it is under, or the item's offset. */
+    @Test
+    void aRejectionNamesItsField() {
+        String longUrl = "7881" + "61".repeat(129);
+        bothReject("a4" + INPUTS + OUTPUTS + FEE + "1481" + "8400" + ACCOUNT + "8106" + "82" + longUrl + HASH32, "a0",
+                "anchor item at");
+        bothReject("a4" + INPUTS + OUTPUTS + FEE + "0e80", "a0",
+                "transaction_body key 0e: the NONEMPTY_SET at 45 must be non-empty");
+        bothReject("a4" + INPUTS + OUTPUTS + FEE + "09" + "a1" + HASH28 + "a1" + "40" + "3b8000000000000000", "a0",
+                "overflow when decoding mint field");
+    }
+
     @Test
     void aParameterUpdateIsReadByItsTable() {
         bothAccept(proposing("8400f6" + "a0" + "f6"), "a0");
         bothReject(proposing("8400f6" + "a1" + "0e" + "820a00" + "f6"), "a0", "is not in Conway");
         bothReject(proposing("8400f6" + "a1" + "12" + "a1" + "190100" + "80" + "f6"), "a0", "exceeds 255");
         bothReject(proposing("8400f6" + "a1" + "12" + "a1" + "00" + "81" + "1b8000000000000000" + "f6"), "a0",
-                "overflow");
+                "overflow when decoding cost model");
         bothReject(proposing("8400f6" + "a1" + "13" + "9f" + "d81e820101" + "d81e820101" + "ff" + "f6"), "a0",
                 "EX_UNIT_PRICES is a RecD record");
         bothReject(proposing("8400f6" + "a1" + "09" + "d81e820100" + "f6"), "a0", "denominator");

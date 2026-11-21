@@ -8,6 +8,7 @@ import java.nio.charset.CharacterCodingException;
 import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.function.Supplier;
 
 /**
  * Decoders for the bounded Conway field types that {@link HaskellPolicy} checks, with the bounds
@@ -31,27 +32,31 @@ final class BoundedFields {
     private BoundedFields() {
     }
 
-    /** Reads a {@code Url}. */
-    static void url(CborSpan item, String what) {
-        text(item, what + " url");
+    /**
+     * Reads a {@code Url}.
+     *
+     * @param field the field it is, named only when it is rejected
+     */
+    static void url(CborSpan item, Supplier<String> field) {
+        text(item, () -> field.get() + " url");
     }
 
     /** Reads a {@code DnsName}. */
     static void dnsName(CborSpan item) {
-        text(item, "relay DNS name");
+        text(item, () -> "relay DNS name");
     }
 
-    private static void text(CborSpan item, String what) {
+    private static void text(CborSpan item, Supplier<String> what) {
         byte[] text = StrictCbor.definiteText(item);
         try {
             StandardCharsets.UTF_8.newDecoder().onMalformedInput(CodingErrorAction.REPORT)
                     .onUnmappableCharacter(CodingErrorAction.REPORT).decode(ByteBuffer.wrap(text));
         } catch (CharacterCodingException e) {
-            throw new TxDecodingException(what + " is not valid UTF-8");
+            throw new TxDecodingException(what.get() + " is not valid UTF-8");
         }
         int length = text.length;
         if (length > MAX_TEXT_BYTES) {
-            throw new TxDecodingException(what + " exceeds " + MAX_TEXT_BYTES + " bytes: " + length);
+            throw new TxDecodingException(what.get() + " exceeds " + MAX_TEXT_BYTES + " bytes: " + length);
         }
     }
 

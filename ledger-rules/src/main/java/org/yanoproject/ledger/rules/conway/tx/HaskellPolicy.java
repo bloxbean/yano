@@ -122,6 +122,7 @@ public final class HaskellPolicy implements FormatPolicy {
      * @throws RuntimeException when Haskell would not decode it, normally a {@link TxDecodingException}
      */
     public void walk(FieldType type, CborSpan value) {
+        checkField(type, value, null, null);
         check(type, value, Era.Conway);
         if (type.record() != null) {
             walk(type.record(), value);
@@ -198,11 +199,13 @@ public final class HaskellPolicy implements FormatPolicy {
             if (dispatchedByToken && (value.buffer()[value.offset()] & 0xff) == MAP_HEAD_8_BYTES) {
                 throw new TxDecodingException(record + " at " + value.offset() + " is a map with an 8-byte head");
             }
+            checkField(field.type(), value, record, null);
             return;
         }
         if (occurrence > 0 && field.type() != FieldType.REDEEMER_VALUE) {
             throw new TxDecodingException("repeated " + at(record, key, value));
         }
+        checkField(field.type(), value, record, key);
         if (field.record() != null && isSet(field.type())) {
             distinct(StrictCbor.set(value), field.record(), era);
         } else if (field.record() != null && hasRecordKeys(field.record())) {
@@ -304,9 +307,9 @@ public final class HaskellPolicy implements FormatPolicy {
                     throw new TxDecodingException("asset name of " + found + " bytes");
                 }
             }
-            case INT64 -> int64(value);
+            case INT64 -> int64(value, "mint field");
             case NONZERO_INT64 -> {
-                if (int64(value).signum() == 0) {
+                if (int64(value, "mint field").signum() == 0) {
                     throw new TxDecodingException("MultiAsset cannot contain zeros");
                 }
             }
@@ -344,14 +347,18 @@ public final class HaskellPolicy implements FormatPolicy {
             // ExUnits' decNat: at most maxBound :: Int64
             case EX_UNIT -> StrictCbor.unsignedLong(value);
             case REWARD_ACCOUNT -> rewardAccount(value);
-            case URL -> BoundedFields.url(value, "ledger record");
             case DNS_NAME -> BoundedFields.dnsName(value);
             case UNIT_INTERVAL -> rational(value, true);
             case NONNEGATIVE_INTERVAL -> rational(value, false);
             case OPTIONAL_HASH28 -> sizedOrNull(value, KEY_HASH_LENGTH, "script hash");
-            case VOTE -> atMost(value, MAX_VOTE);
+            case VOTE -> {
+                if (StrictCbor.unsignedLong(value) > MAX_VOTE) {
+                    throw new TxDecodingException("unknown vote " + StrictCbor.unsigned(value) + " at "
+                            + value.offset());
+                }
+            }
             case LANGUAGE -> atMost(value, MAX_LANGUAGE);
-            case COST_MODEL -> StrictCbor.array(value).forEach(HaskellPolicy::int64);
+            case COST_MODEL -> StrictCbor.array(value).forEach(cost -> int64(cost, "cost model"));
             case OPTIONAL_PORT -> {
                 if (!value.isNull() && StrictCbor.unsignedLong(value) > MAX_PORT) {
                     throw new TxDecodingException("relay port exceeds Word16");
@@ -361,14 +368,42 @@ public final class HaskellPolicy implements FormatPolicy {
             case OPTIONAL_IPV6 -> sizedOrNull(value, IPV6_LENGTH, "IPv6 address");
             case LIST, RELAY_LIST -> StrictCbor.array(value);
             case SET, CREDENTIAL_SET -> StrictCbor.set(value);
-            case NONEMPTY_LIST, NONEMPTY_SET -> nonEmpty(StrictCbor.set(value).isEmpty(), type.name());
-            case NONEMPTY_ARRAY -> nonEmpty(StrictCbor.array(value).isEmpty(), type.name());
-            case NONEMPTY_MAP -> nonEmpty(StrictCbor.map(value).isEmpty(), type.name());
             case KEY_HASH_SET -> keyHashes(value);
-            case NONEMPTY_CERTIFICATE_SET -> nonEmpty(StrictCbor.set(value).isEmpty(), "Certificates");
             default -> {
             }
         }
+    }
+
+    /**
+     * The rules of a type whose rejection names its field ({@link #field}): a {@code Url}'s, and a collection's that
+     * must not be empty.
+     *
+     * @param record the record the value is in, or null for a value read alone
+     * @param key    its key in the record, or null
+     */
+    private static void checkField(FieldType type, CborSpan value, RecordSpec record, CborSpan key) {
+        boolean empty;
+        switch (type) {
+            case URL -> {
+                BoundedFields.url(value, () -> field(type, value, record, key));
+                return;
+            }
+            case NONEMPTY_LIST, NONEMPTY_SET, NONEMPTY_CERTIFICATE_SET -> empty = StrictCbor.set(value).isEmpty();
+            case NONEMPTY_ARRAY -> empty = StrictCbor.array(value).isEmpty();
+            case NONEMPTY_MAP -> empty = StrictCbor.map(value).isEmpty();
+            default -> {
+                return;
+            }
+        }
+        if (empty) {
+            throw new TxDecodingException(field(type, value, record, key) + ": the " + type + " at " + value.offset()
+                    + " must be non-empty when supplied");
+        }
+    }
+
+    /** @return the field a value is: the record and key it is under, or its type when it is read alone */
+    private static String field(FieldType type, CborSpan value, RecordSpec record, CborSpan key) {
+        return record == null ? type.name() : at(record, key, value);
     }
 
     private static void sized(CborSpan value, int length, String what) {
@@ -396,10 +431,10 @@ public final class HaskellPolicy implements FormatPolicy {
      * {@code decodeIntegerBounded64} (Mary/Value.hs:310-335) and a cost model's {@code Int64}: an integer, not a
      * bignum, within {@code Int64}.
      */
-    private static BigInteger int64(CborSpan value) {
+    private static BigInteger int64(CborSpan value, String what) {
         BigInteger found = StrictCbor.integer(value);
         if (found.compareTo(MIN_INT64) < 0 || found.compareTo(MAX_INT64) > 0) {
-            throw new TxDecodingException("overflow when decoding mint field: " + found);
+            throw new TxDecodingException("overflow when decoding " + what + " at " + value.offset() + ": " + found);
         }
         return found;
     }
@@ -456,12 +491,6 @@ public final class HaskellPolicy implements FormatPolicy {
             if (!seen.add(EqualityKey.of(item, record, era))) {
                 throw new TxDecodingException("duplicate " + record + " at " + item.offset());
             }
-        }
-    }
-
-    private static void nonEmpty(boolean empty, String field) {
-        if (empty) {
-            throw new TxDecodingException("'" + field + "' must be non-empty when supplied");
         }
     }
 

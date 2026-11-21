@@ -157,7 +157,7 @@ class RawTransactionTest {
                 "repeated withdrawals key");
         assertDecodingFailure("84" + body("05a1" + "581d62" + "44".repeat(28) + "01") + "a0f5f6", "account address");
         assertDecodingFailure("84" + body("05a0") + "a0f5f6", "non-empty");
-        assertDecodingFailure("84" + body("0480") + "a0f5f6", "Certificates");
+        assertDecodingFailure("84" + body("0480") + "a0f5f6", "transaction_body key 04: the NONEMPTY_CERTIFICATE_SET");
         assertDecodingFailure("84" + body("0d80") + "a0f5f6", "non-empty");
         assertDecodingFailure("84" + body("1600") + "a0f5f6", "positive coin");
         assertDecodingFailure("84" + BODY + "a10080" + "f5f6", "non-empty");
