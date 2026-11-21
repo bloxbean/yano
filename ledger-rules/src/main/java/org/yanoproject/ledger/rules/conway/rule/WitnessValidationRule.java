@@ -3,6 +3,7 @@ package org.yanoproject.ledger.rules.conway.rule;
 import com.bloxbean.cardano.client.crypto.Blake2bUtil;
 import com.bloxbean.cardano.client.crypto.api.impl.BouncyCastleEd25519Verifier;
 import com.bloxbean.cardano.client.crypto.api.impl.EdDSASigningProvider;
+import com.bloxbean.cardano.client.exception.CborRuntimeException;
 import com.bloxbean.cardano.client.plutus.spec.*;
 import com.bloxbean.cardano.client.plutus.util.ScriptDataHashGenerator;
 import com.bloxbean.cardano.client.spec.Script;
@@ -14,6 +15,8 @@ import com.bloxbean.cardano.client.util.HexUtil;
 
 import org.yanoproject.ledger.rules.conway.RuleValidationError;
 import org.yanoproject.ledger.rules.conway.LedgerContext;
+import org.yanoproject.ledger.rules.conway.tx.RawScript;
+import org.yanoproject.ledger.rules.conway.tx.TxDecodingException;
 import org.yanoproject.ledger.rules.view.slice.UtxoSlice;
 import org.yanoproject.ledger.rules.util.RequiredWitnessResolver;
 
@@ -440,35 +443,12 @@ public class WitnessValidationRule implements LedgerRule {
             utxoSlice.lookup(input).ifPresent(output -> {
                 if (output.getScriptRef() != null && output.getScriptRef().length > 0) {
                     try {
-                        // Determine script type from first byte of CBOR array
-                        Script script = deserializeScriptRef(output.getScriptRef());
-                        if (script != null) {
-                            hashes.add(HexUtil.encodeHexString(script.getScriptHash()));
-                        }
-                    } catch (Exception e) {
-                        // Can't parse reference script
+                        hashes.add(RawScript.fromScriptRef(output.getScriptRef()).hashHex());
+                    } catch (TxDecodingException | CborRuntimeException e) {
+                        // a reference script that does not decode provides no script
                     }
                 }
             });
-        }
-    }
-
-    /**
-     * Deserialize a script reference to get its Script object.
-     */
-    private Script deserializeScriptRef(byte[] scriptRefBytes) {
-        try {
-            var array = (co.nstant.in.cbor.model.Array)
-                    com.bloxbean.cardano.client.common.cbor.CborSerializationUtil.deserialize(scriptRefBytes);
-            int type = ((co.nstant.in.cbor.model.UnsignedInteger) array.getDataItems().get(0))
-                    .getValue().intValue();
-            if (type == 0) {
-                return NativeScript.deserializeScriptRef(scriptRefBytes);
-            } else {
-                return PlutusScript.deserializeScriptRef(scriptRefBytes);
-            }
-        } catch (Exception e) {
-            return null;
         }
     }
 

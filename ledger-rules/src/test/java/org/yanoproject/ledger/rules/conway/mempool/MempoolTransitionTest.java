@@ -1,6 +1,7 @@
 package org.yanoproject.ledger.rules.conway.mempool;
 
 import com.bloxbean.cardano.client.address.Credential;
+import com.bloxbean.cardano.client.common.cbor.CborSpan;
 import com.bloxbean.cardano.client.transaction.spec.TransactionInput;
 import com.bloxbean.cardano.client.transaction.spec.cert.AuthCommitteeHotCert;
 import com.bloxbean.cardano.client.transaction.spec.governance.Vote;
@@ -25,6 +26,7 @@ import org.yanoproject.ledger.rules.view.LedgerView;
 import org.yanoproject.ledger.rules.view.OverlayLedgerView;
 import org.yanoproject.ledger.rules.view.model.Outpoints;
 
+import java.io.ByteArrayOutputStream;
 import java.math.BigInteger;
 import java.util.List;
 
@@ -63,6 +65,25 @@ class MempoolTransitionTest {
                 new GovActionId(MutationWorld.INFO_ACTION.txHashHex(), MutationWorld.INFO_ACTION.index()),
                 new VotingProcedure(Vote.YES, null));
         return votes;
+    }
+
+    /**
+     * A transaction submitted without its validity flag is valid (Alonzo/Tx.hs:538-553): its signatures, size and fee
+     * are those of the same transaction with the flag, which the size does not count.
+     */
+    @Test
+    void aTransactionWithoutItsValidityFlagIsAdmittedAsValid() {
+        for (int pv : new int[]{10, 11}) {
+            byte[] withFlag = ConwayTxBuilder.build(MutationWorld.simpleSpec(), MutationWorld.view(pv)).cbor();
+            List<CborSpan> items = CborSpan.of(withFlag).items();
+            assertThat(items.get(2).asBoolean()).isTrue();
+            ByteArrayOutputStream withoutFlag = new ByteArrayOutputStream();
+            withoutFlag.write(0x83);
+            List.of(items.get(0), items.get(1), items.get(3)).forEach(item -> withoutFlag.writeBytes(item.bytes()));
+            assertThat(run(withFlag, MutationWorld.view(pv), pv, Rule.MEMPOOL)).containsExactly("Valid");
+            assertThat(run(withoutFlag.toByteArray(), MutationWorld.view(pv), pv, Rule.MEMPOOL))
+                    .containsExactly("Valid");
+        }
     }
 
     @Test

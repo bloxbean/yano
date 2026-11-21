@@ -29,7 +29,7 @@ import java.util.Set;
  * {@code [1, [scripts]]}, {@code [2, [scripts]]}, {@code [3, n, [scripts]]}, {@code [4, slot]}, {@code [5, slot]}),
  * which CCL's native script decoder implements, with its key hashes definite-length byte strings. CCL's decoder also
  * reads Dijkstra's guard, type 6, in any era, and so does this class, so that sync can still hash a reference script
- * holding one; the strict Conway decoder refuses it ({@link #requireConwayTypes()}). The hash is CCL's,
+ * holding one; {@link HaskellPolicy} refuses it in Conway ({@link #requireConwayTypes()}). The hash is CCL's,
  * from the original bytes; a native script is decoded and evaluated by CCL without recursion, so any nesting depth
  * works on any thread.</p>
  */
@@ -64,11 +64,25 @@ public final class RawScript {
         if (language < NATIVE || language > PLUTUS_V3) {
             throw new TxDecodingException("script language " + language + " is not a Conway language");
         }
-        var view = new com.bloxbean.cardano.client.transaction.raw.RawScript(language, span);
         if (language != NATIVE) {
-            return new RawScript(view, StrictCbor.definiteBytes(span), null);
+            StrictCbor.definiteLength(span);
+        } else {
+            requireDefiniteByteStrings(span);
         }
-        requireDefiniteByteStrings(span);
+        return accepted(new com.bloxbean.cardano.client.transaction.raw.RawScript(language, span));
+    }
+
+    /**
+     * A script {@link HaskellPolicy} has accepted: a Plutus script's bytes, or a native script decoded.
+     *
+     * @param view CCL's view of the script
+     * @throws TxDecodingException when a native script does not decode
+     */
+    static RawScript accepted(com.bloxbean.cardano.client.transaction.raw.RawScript view) {
+        CborSpan span = view.span();
+        if (view.type() != NATIVE) {
+            return new RawScript(view, span.byteString(), null);
+        }
         try {
             return new RawScript(view, span.bytes(), (NativeScript) RawModels.toScript(view));
         } catch (CborDeserializationException | CborRuntimeException e) {
@@ -78,15 +92,15 @@ public final class RawScript {
 
     /**
      * Conway's {@code TimelockRaw} has the types 0 to 5 (Allegra/Scripts.hs:235-245), at any depth. CCL's decoder also
-     * reads Dijkstra's {@code RequireGuard}, type 6, in any era (its ADR 0004), so the strict Conway decoder refuses a
-     * native script holding one. Without recursion, as scripts can be nested thousands deep. A Plutus script passes.
+     * reads Dijkstra's {@code RequireGuard}, type 6, in any era (its ADR 0004), so {@link HaskellPolicy} refuses a
+     * Conway native script holding one. Without recursion, as scripts can be nested thousands deep. A Plutus script
+     * passes.
      *
-     * @return this script
      * @throws TxDecodingException for a native script holding a guard
      */
-    RawScript requireConwayTypes() {
+    void requireConwayTypes() {
         if (nativeScript == null) {
-            return this;
+            return;
         }
         Deque<NativeScript> pending = new ArrayDeque<>();
         pending.push(nativeScript);
@@ -103,7 +117,6 @@ public final class RawScript {
                 atLeast.getScripts().forEach(pending::push);
             }
         }
-        return this;
     }
 
     /**
@@ -124,7 +137,7 @@ public final class RawScript {
         return readScript(ref);
     }
 
-    /** Reads {@code [language, script]}. */
+    /** Reads {@code script = [language, script]}, a reference script's content. */
     static RawScript readScript(CborSpan script) {
         List<CborSpan> fields = StrictCbor.array(script, 2, "a script is [language, script]");
         long language = StrictCbor.unsignedLong(fields.get(0));

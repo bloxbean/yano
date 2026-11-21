@@ -17,7 +17,7 @@ cardano-node, Amaru and Dingo are listed today.
 
 | Scenario | Kind | Corpus | Report entry |
 |---|---|---|---|
-| `ledger-rules` | functional | 290 transaction fixtures in the pragma repository, `scenarios/ledger-rules/fixtures/` (Amaru's fixture format) | `{id, result}`: `"pass"`, a predicate name from the scenario schema, or `"DecodingFailure"` |
+| `ledger-rules` | functional | 368 transaction fixtures (from corpus `62800627`) in the pragma repository, `scenarios/ledger-rules/fixtures/` (Amaru's fixture format) | `{id, result}`: `"pass"`, a predicate name from the scenario schema, or `"DecodingFailure"` |
 | `uplc-conformance` | functional | 1,064 UPLC vectors (`uplc-conformance.tar.zst`), protocol versions 10 and 11, cost models included | `{id, title, group, plutus_version, protocol_version, evaluation, budget}` |
 | `uplc-turbo` | performance | 3,997 Flat-encoded mainnet scripts (`turbo.tar.zst`), by epoch | per script: `cpu_us`, `mem_bytes`, `budget_cpu`, `budget_mem`, plus the machine |
 | `cbor-decoding` | functional | `r2rationality/cardano-cbor-dataset`, `dataset/conway`: 97 rules, 10,914 valid and 31,761 invalid samples | format version 2: the outcome of every sample, and the dataset and node commits |
@@ -82,7 +82,8 @@ Gradle task `:ledger-conformance:nodeDiversityReports` follows the existing `con
   corpora.
 
 The corpus revisions are pinned in `ledger-conformance/node-diversity/corpora.env`: git commits for the two
-repositories and SHA-256s for the two tarballs. `ledger-conformance/node-diversity/fetch-corpora.sh <dir>` fetches and
+repositories and SHA-256s for the two tarballs, plus the Amaru commit of the ledger-rules fixtures and SHA-256s of the
+three files taken from it (section 3). `ledger-conformance/node-diversity/fetch-corpora.sh <dir>` fetches and
 verifies them. Each report records the corpus it ran on where the schema allows (`corpus` for CBOR).
 
 ### 3. ledger-rules: the default engine, reported the way the Haskell reference reports
@@ -107,10 +108,30 @@ verifies them. Each report records the corpus it ran on where the schema allows 
   `StakeKeyNotRegistered`, and from corpus `e02a9e1c` `IncorrectDepositDRep`, Haskell's GOVCERT
   `ConwayDRepIncorrectDeposit`). The loader also accepts pragma's layout, where shared documents sit beside
   `scenarios/` rather than under `common/`.
-- **Expected score:** 289/290 at corpus `e02a9e1c` (283/284 at `9d14fd8c`). Fixture 00280 expects `OutputTooBigUTxO` for
-  a Byron address with oversized attributes. In Haskell that transaction fails only `OutputBootAddrAttrsTooBig`:
-  `validateOutputTooBigUTxO` measures the serialized *value* (`Alonzo/Rules/Utxo.hs`), and Babbage/Conway run both
-  checks. Yano agrees with Haskell. The fixture is to be raised upstream rather than worked around.
+- **Corpus `9dc68a75` (2026-11-14).** 368 fixtures: 78 new ids, 12 renumbered to Amaru's numbering (results unchanged),
+  one removed. The table gains 19 names. Seven of them (`ByronTxOutInContext`, `CurrentTreasuryFieldNotSupported`,
+  `InlineDatumsNotSupported`, `MissingCostModel`, `ProposalProceduresFieldNotSupported`,
+  `TreasuryDonationFieldNotSupported`, `VotingProceduresFieldNotSupported`), with the existing `OutsideForecast`, all
+  stand for Haskell's `UTXOS.CollectErrors`, and are told apart by the `CollectError` in the failure, as Amaru's checker does
+  (`Run.hs:495-504`). `IncorrectDepositDRep` also covers `ConwayDRepIncorrectRefund` (`Run.hs:549-550`). The report
+  carries `dataset_commit`, the Amaru commit the fixtures come from (`NDC_LEDGER_RULES_DATASET_COMMIT`), without which the
+  site marks it outdated. 32 fixtures name three protocol-parameter files the pragma repository lacks;
+  `fetch-corpora.sh` adds them from Amaru at that commit, checked by sha256, and fails once pragma has them, so that the
+  workaround is removed. Score: 368/368.
+- **Corpus `62800627` (2026-11-20).** The five commits after `9dc68a75` change only the ledger-rules and uplc-turbo
+  READMEs and add a node (`nodes/scarab`); the fixtures are unchanged. The CBOR dataset is pinned at `ed6c49a4`, four
+  commits after `4fd977b2` that change only `dataset/conway/coverage.json` and the Haskell reference reports under
+  `dataset/reports`; no sample changed, so the report's `dataset_commit` names the revision of the newest reference
+  report.
+- **Expected score:** 368/368 at corpus `62800627` (and `9dc68a75`); earlier, 290/290 at `e02a9e1c` (284/284 at `9d14fd8c`). Fixture 00280 expects `OutputTooBigUTxO` for
+  a Byron address with oversized attributes. Yano reports `OutputBootAddrAttrsTooBig`, as current Haskell does: the
+  value is 5 bytes against `max_value_size` 5,000, so `validateOutputTooBigUTxO` (`Alonzo/Rules/Utxo.hs`) cannot fire.
+  Haskell before cardano-ledger `c0f8975c0c` (2026-09-07, `cardano-ledger-conway` 1.24.0.0) renamed that failure to
+  `OutputTooBigUTxO` on its way into Conway (`shelleyToAllegraUtxoPredFailure`), and the corpus's checker is built
+  against `cardano-ledger-conway` 1.22.1.0. A temporary alias in `AmaruCorpusNames`, for this one scenario, therefore
+  lets `OutputBootAddrAttrsTooBig` match the fixture's name; any other scenario expecting `OutputTooBigUTxO`, such as
+  00087, still needs that constructor. Yano's rule is unchanged. The alias goes once the fixture
+  names `OutputBootAddrAttrsTooBig` upstream.
 
 ### 4. uplc-conformance: julc, as phase 2 runs it
 
@@ -165,12 +186,17 @@ The scenario is meant to exercise the decoder the node relies on. In Yano that i
 
 - CCL's model decoders (`Transaction.deserialize` and the element types it uses), which `java-julc` decodes with
   first;
-- followed by Yano's strict `RawTransaction` family (`StrictCbor`, `RawOutput`, `RawCertificate`, `RawProposal`,
-  `RawParamUpdate`, `RawVoter`, `RawAuxData`, `PlutusData`), which apply Haskell's decoding rules.
+- followed by Yano's strict reader: CCL's walk and views (`RawTx` and its record tables) with `HaskellPolicy`, which
+  applies Haskell's decoding rules, read by `RawTransaction`.
+
+Whether a sample decodes is the strict reader's alone (ADR 0003 D9), so the report measures one reader and one
+policy. The model's decoding is a diagnostic, with one exception: as admission runs the model first, the gate
+(`CborRejectionGate`) fails on a valid sample the report passes and the model rejects, which the node would refuse.
+There is none.
 
 For each corpus rule:
 
-- **valid** samples (`valid`, `manual-valid`) must pass both decoders and re-encode to the reference:
+- **valid** samples (`valid`, `manual-valid`) must pass the strict reader and re-encode to the reference:
   - for the seven rules the dataset compares exactly (`mkByteExactRule` in its `EraSpec.hs`: `auxiliary_data`,
     `header`, `native_script`, `plutus_data`, `redeemers`, `transaction_body`, `transaction_witness_set`), byte for
     byte, from the original bytes the node keeps, as Haskell's `MemoBytes` does;
@@ -182,10 +208,10 @@ For each corpus rule:
   - for every other rule, after re-encoding the decoded CCL model, with both sides normalized by the dataset's
     specification (`CborNormalizer`). The normalizer reproduces the dataset's normalization vectors, and the report
     test checks it against them before every run.
-- **every other sample** (`invalid-zap-<n>`, `manual-invalid`) must be rejected by the decoder pair.
+- **every other sample** (`invalid-zap-<n>`, `manual-invalid`) must be rejected by the strict reader.
 
-**How elements reach the decoders.** The strict readers are package-private. A test fixture in their package,
-`StrictElements` (`ledger-rules` test fixtures), exposes one method per element and adds no decoding of its own.
+**How elements reach the decoders.** A rule that is one type or one record of CCL's tables is walked by itself with
+`HaskellPolicy` (`CborRule.reads`); `script` is read as an output's reference script, `#6.24(bytes .cbor script)`.
 
 - An item the node reads only inside a larger structure is placed in a minimal, valid one first: a transaction for
   `auxiliary_data`, `redeemer(s)`, `transaction_body`, `transaction_input`, `transaction_witness_set` and
@@ -263,14 +289,16 @@ fixtures pass) and, with the Flat-first evaluation order (§4), uplc-conformance
 cbor-decoding are unchanged, for 98.92% overall under the site's scoring rules. With julc 0.1.0-pre20 (#261 and #262):
 uplc-conformance 1064/1064 and uplc-turbo 3986/3997, every other result identical, for 99.06%.
 
-Findings, none of them masked in the harness:
+Findings, none of them masked in the harness except the temporary 00280 alias (item 1):
 
 1. **ledger-rules fixture 00280 (upstream).** It expects `OutputTooBigUTxO` for an output to a Byron address with
    oversized attributes. Haskell reports only `OutputBootAddrAttrsTooBig`: `validateOutputTooBigUTxO` measures the
    value. That is what Yano reports, and the scenario schema has no such predicate. The fixture's two outputs carry
    plain lovelace and `max_value_size` is 5,000, so `OutputTooBigUTxO` cannot fire, yet pragma's cardano-node and
-   Amaru reports both give `OutputTooBigUTxO`. Yano's result is not mapped to match them; the question goes to the
-   corpus maintainers.
+   Amaru reports both give `OutputTooBigUTxO`. The cause is a Haskell naming bug fixed in cardano-ledger
+   `c0f8975c0c` (2026-09-07), which the corpus's checker (`cardano-ledger-conway` 1.22.1.0) predates. A temporary
+   alias, for that scenario alone, matches Yano's `OutputBootAddrAttrsTooBig` to the fixture's name (section 3); the
+   fixture goes to the corpus maintainers, and the alias is removed once it is updated.
 2. **julc text parser.** Six `value` constant vectors (unordered, duplicate, zero or empty entries) are accepted where
    Haskell rejects them (plutus `conValue` requires canonical form, plutus #7816): bloxbean/julc#260, fixed by
    bloxbean/julc#262 (julc 0.1.0-pre20). Text-only: a `value` constant has no Flat form, and chain data is not affected.
@@ -310,8 +338,8 @@ Findings, none of them masked in the harness:
    encodings.
 
 The cbor-decoding report prints each decoder alone as a diagnostic: Yano's strict readers 865/866 valid and
-8039/8334 invalid, the library decoders 611/866 and 5534/8334 (CCL, and yaci for headers). The report itself counts
-the two together, as the node runs them.
+8039/8334 invalid, the library decoders 611/866 and 5534/8334 (CCL, and yaci for headers). The report then counted
+the two together; since ADR 0003 it counts the strict reader alone (section 6).
 
 ## Results on the regenerated dataset (2026-11-05, `main` dc1a2ac4e with this harness, CCL 0.8.0-pre7)
 

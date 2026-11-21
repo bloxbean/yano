@@ -97,7 +97,7 @@ public record ConformanceCase(String id, String title, Kind kind, byte[] txCbor,
     /**
      * @return the constructors an engine's first failure may be: the Haskell list, or the expected constructor; for an
      *         Amaru scenario also the constructors Amaru's checker reports under the same corpus name
-     *         ({@link AmaruCorpusNames#aliases(String)})
+     *         ({@link AmaruCorpusNames#aliases(String, String)})
      */
     public Set<String> acceptedFirst() {
         Set<String> accepted = new LinkedHashSet<>();
@@ -107,7 +107,7 @@ public record ConformanceCase(String id, String title, Kind kind, byte[] txCbor,
             accepted.add(expectedConstructor());
         }
         if (kind == Kind.SCENARIO && expected instanceof Expected.Predicate p) {
-            accepted.addAll(AmaruCorpusNames.aliases(p.corpusName()));
+            accepted.addAll(AmaruCorpusNames.aliases(id, p.corpusName()));
         }
         return accepted;
     }

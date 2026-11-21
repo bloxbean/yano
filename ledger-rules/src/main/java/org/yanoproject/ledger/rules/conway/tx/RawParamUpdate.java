@@ -1,14 +1,14 @@
 package org.yanoproject.ledger.rules.conway.tx;
 
 import com.bloxbean.cardano.client.common.cbor.CborSpan;
+import com.bloxbean.cardano.client.transaction.raw.ProtocolParamField;
+import com.bloxbean.cardano.client.transaction.raw.RawProtocolParamUpdate;
 
 import org.yanoproject.ledger.rules.view.model.ProposalState;
 
 import java.math.BigInteger;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.HashSet;
-import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -19,31 +19,13 @@ import java.util.TreeSet;
 
 /**
  * A Conway {@code PParamsUpdate} read from the original bytes of a {@code ParameterChange} proposal
- * ({@code protocol_param_update}, keys 0–33): CCL's {@code ProtocolParamUpdate} has no Conway fields (keys 25–33), so
- * the {@code GOV} rule cannot use it for {@code MalformedProposal} ({@code ppuWellFormed}) or for the security group
- * that decides whether stake pools may vote.
+ * ({@code protocol_param_update}, keys 0–33), with what the {@code GOV} rule needs for {@code MalformedProposal}
+ * ({@code ppuWellFormed}) and for the security group that decides whether stake pools may vote.
  *
- * <p><b>Decoding</b> follows Haskell's {@code DecCBOR (PParamsUpdate era)} at decoder versions 9–11
- * (cardano-ledger-core {@code Core/PParams.hs:257-294}: {@code SparseKeyed} over Conway's {@code eraPParams},
- * Conway/PParams.hs:862-894), and anything it would refuse is a {@link TxDecodingException}
- * ({@code ENGINE.DecodingFailure}):</p>
- * <ul>
- *   <li>a map (definite or indefinite) without duplicate keys ({@code duplicateKey}, Coders.hs:563-569) whose keys are
- *       Conway's updatable parameters: 0–11 and 16–33 (12 {@code d}, 13 {@code extraEntropy}, 15 {@code minUTxOValue}
- *       are not Conway parameters, and the protocol version, 14, is not updatable in Conway,
- *       {@code ppGovProtocolVersion}, Conway/PParams.hs:1347-1354);</li>
- *   <li>coins ({@code CompactForm Coin}, {@code CoinPerByte}): {@code Word64} — keys 0, 1, 5, 6, 16, 17, 30, 31;</li>
- *   <li>{@code Word32}: 2, 3, 22 and the {@code EpochInterval}s 7, 28, 29, 32; {@code Word16}: 4, 8, 23, 24, 27;</li>
- *   <li>{@code NonNegativeInterval}: 9, 33; {@code UnitInterval}: 10, 11 (tag-30 rationals, {@link BoundedFields});</li>
- *   <li>18 {@code CostModels}: a map of {@code Word8} language ids to lists of {@code Int64}, without duplicate keys
- *       ({@code decodeCostModelsLenient}, Plutus/CostModels.hs:302-316; unknown languages are kept, and plutus-ledger-api
- *       1.65 accepts any length for a known one, {@code tagWithParamNames});</li>
- *   <li>19 {@code Prices}: {@code [NonNegativeInterval, NonNegativeInterval]}; 20, 21 {@code ExUnits}:
- *       {@code [mem, steps]}, each at most {@code maxBound :: Int64}; both {@code RecD} records, so definite-length
- *       arrays (Plutus/ExUnits.hs:195-231, {@link StrictCbor#definiteArray});</li>
- *   <li>25 {@code PoolVotingThresholds}: five {@code UnitInterval}s; 26 {@code DRepVotingThresholds}: ten; read with
- *       {@code decodeRecordNamed}, so definite or indefinite (Conway/PParams.hs:366-374, 519-532).</li>
- * </ul>
+ * <p>Read through CCL's view ({@link RawProtocolParamUpdate}) of an update that {@link HaskellPolicy} has walked:
+ * Haskell's {@code DecCBOR (PParamsUpdate era)} at decoder versions 9–11 (cardano-ledger-core
+ * {@code Core/PParams.hs:262-294}: {@code SparseKeyed} over Conway's {@code eraPParams}). Its table,
+ * {@link ProtocolParamField}, says which keys Conway updates and the type of each.</p>
  */
 public final class RawParamUpdate {
 
@@ -54,11 +36,6 @@ public final class RawParamUpdate {
      */
     public static final Set<Integer> SECURITY_GROUP_KEYS = ProposalState.SECURITY_GROUP_KEYS;
 
-    private static final BigInteger WORD64_MAX = BigInteger.ONE.shiftLeft(64).subtract(BigInteger.ONE);
-    private static final BigInteger WORD32_MAX = BigInteger.valueOf(0xFFFF_FFFFL);
-    private static final BigInteger INT64_MAX = BigInteger.valueOf(Long.MAX_VALUE);
-    private static final BigInteger INT64_MIN = BigInteger.valueOf(Long.MIN_VALUE);
-
     private final SortedSet<Integer> keys;
     private final SortedMap<Integer, BigInteger> integers;
 
@@ -67,70 +44,23 @@ public final class RawParamUpdate {
         this.integers = Collections.unmodifiableSortedMap(integers);
     }
 
-    /** Reads a {@code protocol_param_update}. */
-    static RawParamUpdate read(CborSpan item) {
+    /**
+     * @return the update that CCL's reader read, which {@link HaskellPolicy} has accepted: its keys, and the value of
+     *         each whose type is a number (coins, sizes, epoch intervals, counts)
+     */
+    static RawParamUpdate accepted(RawProtocolParamUpdate update) {
         SortedSet<Integer> keys = new TreeSet<>();
         SortedMap<Integer, BigInteger> integers = new TreeMap<>();
-        for (Map.Entry<CborSpan, CborSpan> entry : StrictCbor.map(item)) {
-            BigInteger rawKey = StrictCbor.unsigned(entry.getKey());
-            if (rawKey.bitLength() > 31 || !keys.add(rawKey.intValue())) {
-                throw new TxDecodingException("PParamsUpdate: " + (rawKey.bitLength() > 31 ? "invalid" : "duplicate")
-                        + " key " + rawKey);
-            }
-            int key = rawKey.intValue();
-            CborSpan value = entry.getValue();
-            switch (key) {
-                case 0, 1, 5, 6, 16, 17, 30, 31 -> integers.put(key, bounded(value, WORD64_MAX, key));
-                case 2, 3, 7, 22, 28, 29, 32 -> integers.put(key, bounded(value, WORD32_MAX, key));
-                case 4, 8, 23, 24, 27 -> integers.put(key, bounded(value, BigInteger.valueOf(0xFFFF), key));
-                case 9, 33 -> BoundedFields.boundedRational(value, "PParamsUpdate key " + key, false);
-                case 10, 11 -> BoundedFields.boundedRational(value, "PParamsUpdate key " + key, true);
-                case 18 -> costModels(value);
-                case 19 -> StrictCbor.definiteArray(value, 2, "Prices has 2 elements").forEach(
-                        price -> BoundedFields.boundedRational(price, "price", false));
-                case 20, 21 -> BoundedFields.exUnits(value, "PParamsUpdate key " + key + " ExUnits");
-                case 25 -> fixedArray(value, 5, "PoolVotingThresholds").forEach(
-                        threshold -> BoundedFields.boundedRational(threshold, "pool voting threshold", true));
-                case 26 -> fixedArray(value, 10, "DRepVotingThresholds").forEach(
-                        threshold -> BoundedFields.boundedRational(threshold, "DRep voting threshold", true));
-                default -> throw new TxDecodingException("PParamsUpdate: invalid key " + key);
-            }
-        }
-        return new RawParamUpdate(keys, integers);
-    }
-
-    private static BigInteger bounded(CborSpan item, BigInteger max, int key) {
-        BigInteger value = StrictCbor.unsigned(item);
-        if (value.compareTo(max) > 0) {
-            throw new TxDecodingException("PParamsUpdate key " + key + ": " + value + " exceeds " + max);
-        }
-        return value;
-    }
-
-    private static List<CborSpan> fixedArray(CborSpan item, int length, String what) {
-        List<CborSpan> elements = StrictCbor.array(item);
-        if (elements.size() != length) {
-            throw new TxDecodingException(what + " has " + elements.size() + " elements, expected " + length);
-        }
-        return elements;
-    }
-
-    /** {@code Map Word8 [Int64]} without duplicate languages. */
-    private static void costModels(CborSpan item) {
-        Set<Long> seen = new HashSet<>();
-        for (Map.Entry<CborSpan, CborSpan> entry : StrictCbor.map(item)) {
-            long language = StrictCbor.unsignedLong(entry.getKey());
-            if (language > 0xFF || !seen.add(language)) {
-                throw new TxDecodingException("CostModels: " + (language > 0xFF ? "invalid" : "duplicate")
-                        + " language " + language);
-            }
-            for (CborSpan parameter : StrictCbor.array(entry.getValue())) {
-                BigInteger value = StrictCbor.integer(parameter);
-                if (value.compareTo(INT64_MAX) > 0 || value.compareTo(INT64_MIN) < 0) {
-                    throw new TxDecodingException("CostModels: parameter " + value + " exceeds Int64");
+        for (Map.Entry<CborSpan, CborSpan> entry : update.span().entries()) {
+            int key = Math.toIntExact(entry.getKey().asLong());
+            keys.add(key);
+            switch (ProtocolParamField.RECORD.field(key, update.era()).type()) {
+                case COIN, UINT16, UINT32 -> integers.put(key, StrictCbor.unsigned(entry.getValue()));
+                default -> {
                 }
             }
         }
+        return new RawParamUpdate(keys, integers);
     }
 
     /** @return the keys present, ascending */
