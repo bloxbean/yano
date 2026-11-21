@@ -6,8 +6,11 @@ name: Ledger Conformance
 on:
   workflow_dispatch:
   push:
+    # Path filters are not evaluated for tag pushes, so every v* release tag runs the harness.
     branches:
       - '**'
+    tags:
+      - 'v*'
     paths:
       - 'ledger-conformance/**'
       - 'ledger-rules/**'
