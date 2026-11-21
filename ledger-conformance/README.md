@@ -1,11 +1,11 @@
 # Yano Ledger Conformance
 
 The ledger-rules conformance harness ([ADR-056](../adr/056-conway-java-ledger-rules-with-state-overlays.md)
-§8). It runs the transaction-validation engines (the Java rules, Scalus and, optionally, Amaru) side by side
-over the Amaru scenarios, the cardano-blueprint vectors and a mutation matrix, gates the Java engine, and
-generates the conformance reports, including the Cardano node-diversity reports
+§8). It runs the transaction-validation engines (the Java rules and Scalus) side by side over the Amaru
+scenarios, the cardano-blueprint vectors and a mutation matrix, gates the Java engine, and generates the
+conformance reports, including the Cardano node-diversity reports
 ([ADR-060](../adr/060-node-diversity-conformance-reports.md)). It is a separate module because it needs
-every engine, and `scalus-bridge` and `amaru-validator` themselves depend on `ledger-rules`.
+every engine, and `scalus-bridge` itself depends on `ledger-rules`.
 
 ## Artifact
 
@@ -19,7 +19,7 @@ Test packages under `org.yanoproject.ledger.conformance`:
 | Package | What it holds |
 |---|---|
 | `runner` | `ConformanceRunner`, `ConformanceEngine`, `ScenarioCases`: loads cases and runs engines over them. |
-| `engines` | Engine adapters (`JavaViewEngine`, `ScalusViewEngine`, legacy variants, `EngineLatencyBenchmarkTest`); `src/amaruTest` adds `AmaruReferenceEngine`, compiled only with `-PwithAmaru=true`. |
+| `engines` | Engine adapters (`JavaViewEngine`, `ScalusViewEngine`, legacy variants, `EngineLatencyBenchmarkTest`). |
 | `gate` | Java-engine gates (`JavaEnginePhase3/4/5GateTest`, `BlueprintVectorGateTest`, ...). |
 | `coverage`, `mutation`, `blueprint` | Coverage matrix of `@Covers` tests, mutation matrix, cardano-blueprint vector runner. |
 | `report`, `diversity` | Baseline report and the node-diversity report generators. |
@@ -35,8 +35,7 @@ Data and scripts:
 
 - Test dependencies on [`ledger-rules`](../ledger-rules/README.md) (and its test fixtures),
   [`scalus-bridge`](../scalus-bridge/README.md), [`script-evaluators`](../script-evaluators/README.md),
-  [`runtime`](../runtime/README.md), `julc-vm-java`, and the optional
-  [`amaru-validator`](../amaru-validator/README.md).
+  [`runtime`](../runtime/README.md) and `julc-vm-java`.
 - No module depends on it.
 
 ## Build and test
@@ -45,7 +44,7 @@ Data and scripts:
 # runner, coverage, mutation and blueprint gates; the scenario parts skip without the Amaru corpus
 ./gradlew :ledger-conformance:test
 ./gradlew :ledger-conformance:test -PamaruScenariosDir=<amaru clone or its crates/amaru-ledger/tests/data/transaction>
-./gradlew :ledger-conformance:conformanceReport -PamaruScenariosDir=<dir> [-PwithAmaru=true -PamaruWasm=<module.wasm>]
+./gradlew :ledger-conformance:conformanceReport -PamaruScenariosDir=<dir>
 ledger-conformance/node-diversity/fetch-corpora.sh <dir>
 ./gradlew :ledger-conformance:nodeDiversityReports -PnodeDiversityCorpora=<dir>
 ```

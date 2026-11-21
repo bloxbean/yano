@@ -23,7 +23,7 @@ import java.util.Set;
  * @param txCbor    the transaction bytes
  * @param view      the ledger state
  * @param env       the validation environment
- * @param network   network magic, era history and global parameters (for engines that need them, e.g. Amaru)
+ * @param network   network magic, era history and global parameters (for engines that need them)
  * @param constants Haskell-hardcoded values the case moves (Amaru scenarios only; otherwise
  *                  {@link AmaruScenario.LedgerConstants#NONE})
  * @param expected  the expected Haskell verdict

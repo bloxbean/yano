@@ -20,7 +20,9 @@ switch to `java-julc` is done (2026-10-01); the rest waits for the Julc release.
 - [ADR-057](057-optional-amaru-wasm-transaction-validator.md) adds an optional
   validator built from Pragma's Amaru ledger compiled to WebAssembly. It shares
   the validation API, ledger view and overlays defined here, and it is the
-  differential oracle for this ADR's conformance gates.
+  differential oracle for this ADR's conformance gates. *Note (2026-11-07):
+  [ADR-062](062-remove-the-amaru-wasm-validator.md) removed that validator and
+  its oracle role; Amaru's scenarios stay as test data.*
 - [ADR-051](051-upgrade-scalus-to-1.1.1.md) upgraded Scalus to `1.1.1`. That
   upgrade, and the permanent `YanoValueNotConservedUTxOValidator` override, show
   what it costs to keep ledger admission correct through a third-party rule set.
@@ -122,7 +124,7 @@ switch to `java-julc` is done (2026-10-01); the rest waits for the Julc release.
    - a per-constructor coverage matrix;
    - Amaru's scenarios;
    - cardano-blueprint vectors;
-   - differential runs against Amaru-wasm;
+   - differential runs against Amaru-wasm (removed by ADR-062);
    - shadow validation of synced PV10+ blocks;
    - a mutation matrix;
    - JVM/native parity.
@@ -293,7 +295,7 @@ switch to `java-julc` is done (2026-10-01); the rest waits for the Julc release.
 | `ccl-ledger-rules` | **Removed.** Its code moves into `ledger-rules` under `org.yanoproject.ledger.rules.*`. Removed from `settings.gradle` and the BOM. No external consumer was found in yano-x, yaci-store or yaci-devkit, so no relocation shim is needed. |
 | `script-evaluators` (new) | `AikenTxEvaluator`, `JulcTxEvaluator` and `YaciScriptSupplier`, moved from `ledger-rules` with their tests, into `org.yanoproject.ledger.scripteval`. They keep the `TransactionEvaluator` interface. |
 | `scalus-bridge` | The Scalus engine, the Scalus `TransactionEvaluator`, and the Scalus `ScriptPhaseEvaluator`. Package unchanged (`org.yanoproject.scalusbridge`). |
-| `amaru-validator` (ADR-057) | Optional. Depends on `ledger-rules`. Package `org.yanoproject.ledger.amaru`. |
+| `amaru-validator` (ADR-057) | Optional. Depends on `ledger-rules`. Package `org.yanoproject.ledger.amaru`. *Removed by ADR-062.* |
 
 **Package layout.** The root is `org.yanoproject.ledger`, a domain name as
 `AGENTS.md` requires, not a product name. `org.yanoproject.ledgerstate` is not
@@ -867,12 +869,8 @@ The static set is taken from the `lblStatic`/`runTestOnSignal` labels at the
 pinned revision (`Babbage/Rules/Utxow.hs`, `Babbage/Rules/Utxo.hs`,
 `Alonzo/Rules/Utxos.hs`).
 
-**Exception, the Amaru engines (from Amaru `v10.11.20261105`).** The Amaru
-module cannot skip Plutus: Amaru made its phase-one rules crate-private, so
-phase-one mode runs Amaru's script evaluation inside the module (ADR-057 open
-question 1). Under `amaru` and `amaru-scalus`, re-application and every
-`amaru-scalus` admission cost Amaru's Plutus evaluation, tens to hundreds of
-milliseconds per real Plutus transaction (ADR-057 Phase E re-run, 2026-11-07).
+*The exception for the Amaru engines added with Amaru `v10.11.20261105` (PR #240) is withdrawn: ADR-062 removed the
+Amaru engines.*
 
 **Block production.**
 - `BlockTransactionSelectors.selectMempool` acquires one `CanonicalSnapshot`
@@ -892,6 +890,9 @@ look like a `LedgerStateProvider`, so `CertStateBridge` reads mempool-local,
 block-local and ticked state.
 
 ### 7. Engine selection and shadowing
+
+*Note (2026-11-07): ADR-062 removed `amaru` and `amaru-scalus`; the engines are `java-julc`, `java-scalus` and
+`scalus`.*
 
 ```yaml
 yano:
@@ -936,7 +937,7 @@ yano:
 | **Coverage matrix** | Every leaf Conway constructor across `MEMPOOL`/`LEDGER`/`CERTS`/`DELEG`/`POOL`/`GOVCERT`/`GOV`/`UTXOW`/`UTXO`/`UTXOS` at PV10–11 (the count is measured in Phase 2) has a rule and at least one passing negative test. Every PV gate is tested on both sides. A unit test fails the build if a constructor has no `@Covers("GOV.ProposalDepositIncorrect")` test. | `ledger-rules/docs/conway-rule-coverage.md` |
 | **Amaru scenarios** | Haskell-cross-checked JSON scenarios (initial state, tx, expected Haskell predicate) load into an in-memory `LedgerView`. The verdict and the constructor must match. | Vendored copy, pinned to the Amaru tag used by ADR-057, with Apache-2.0 NOTICE, under `ledger-rules/src/conformanceTest/resources/amaru/` |
 | **cardano-blueprint vectors** | Conway CBOR vectors generated from the Haskell Imp tests. Needs a `NewEpochState` decoder. Tick and epoch events are skipped, as in Amaru. | `conformanceTest`, pinned tarball with checksum |
-| **Amaru-wasm differential** | For every scenario, mutated transaction and shadow-dump bundle, the Java verdict equals the Amaru verdict. Divergences are triaged against Haskell and recorded. | ADR-057 Phase D |
+| **Amaru-wasm differential** | For every scenario, mutated transaction and shadow-dump bundle, the Java verdict equals the Amaru verdict. Divergences are triaged against Haskell and recorded. *Removed by ADR-062: disagreements are settled against Haskell directly.* | ADR-057 Phase D |
 | **Shadow sync validation** | Every transaction of every synced Conway block (PV9+ since Phase 5b; preprod, preview, mainnet from the Conway hard fork) validates against the pre-block state (captured after the block's epoch boundary, before its own changes; Phase 7a) plus a block-local overlay. `invalidTransactions` must come out phase-2 invalid, all others valid. Catches false rejections and PV drift. It cannot catch false acceptances. | `yano.validation.shadow-sync=true` |
 | **Mutation matrix** | From valid base transactions, at least one mutant per constructor is rejected with that constructor. | `conformanceTest` |
 | **Haskell differential** (optional) | Mutated invalid transactions submitted over n2c to a local devnet Haskell node (compatibility folder). Compare the `ApplyTxError` constructors. Never submit to a public network. | Manual / CI-optional |
@@ -2237,7 +2238,7 @@ same base-plus-delta model.
   0.8 ms per transaction in Chicory), and phase-one mode only saves Plutus (nothing from Amaru `v10.11.20261105`,
   §6), so a re-application rebuild costs about the same as full validation; the 2 s target holds for Amaru up to roughly 2,400 mempool transactions. Above that a
   rebuild can take several seconds and, on a fast devnet with a large mempool, lead to `CATCHING_UP` (the accepted
-  fallback, never a stale publication). Amaru stays the optional oracle (ADR-057); the default and `java` meet the
+  fallback, never a stale publication). Amaru stays the optional oracle (ADR-057; removed by ADR-062); the default and `java` meet the
   target.
 
   The O(layers) overlay misses three targets, so `OverlayLedgerView` now carries a persistent per-key index per

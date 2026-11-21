@@ -2,14 +2,14 @@
 // file and centralDeploymentExclusions in the root build).
 //
 // It is a module of its own, not the `conformanceTest` source set of ledger-rules the ADR first described,
-// because it runs every engine side by side: scalus-bridge and the optional amaru-validator both depend on
-// ledger-rules, so ledger-rules cannot depend on them.
+// because it runs every engine side by side: scalus-bridge depends on ledger-rules, so ledger-rules cannot
+// depend on it.
 //
 //   ./gradlew :ledger-conformance:test                  runner, coverage matrix and mutation matrix; the
 //                                                       scenario parts skip without the Amaru corpus
-//   -PamaruScenariosDir=<amaru clone or its            the 368 Amaru scenarios (or AMARU_SCENARIOS_DIR)
-//      crates/amaru-ledger/tests/data/transaction>
-//   -PwithAmaru=true -PamaruWasm=<module.wasm>         adds the Amaru engine as the reference
+//   -PamaruScenariosDir=<amaru clone or its            the 368 Amaru scenarios (or AMARU_SCENARIOS_DIR), at the tag
+//      crates/amaru-ledger/tests/data/transaction>     AMARU_TAG in node-diversity/corpora.env (fetch-corpora.sh
+//                                                       fetches it to <dir>/amaru)
 //   ./gradlew :ledger-conformance:conformanceReport ... regenerates docs/baseline-2026-09.md,
 //                                                       docs/blueprint-vectors-2026-09.md and
 //                                                       ledger-rules/docs/conway-rule-coverage.md
@@ -21,15 +21,12 @@
 //                                                       vendored vectors/cardano-blueprint, see its README.md)
 //   -PengineBenchmark=true                             EngineLatencyBenchmarkTest: warm p50/p99 per engine on the
 //                                                       Amaru scenarios and the preprod/preview replay bundles
-//                                                       (ADR-057 Phase E; amaru-validator/README.md)
 //   ./gradlew :ledger-conformance:nodeDiversityReports  ADR-060: the Cardano node-diversity reports, written to
 //      -PnodeDiversityCorpora=<dir>                     build/node-diversity/yano-<version>-<yyyymmdd>-<scenario>.json
 //                                                       (or NODE_DIVERSITY_CORPORA; the corpora that
 //                                                       ledger-conformance/node-diversity/fetch-corpora.sh fetches)
 
 description = 'ADR-056 conformance harness: Amaru scenarios, coverage matrix, mutation matrix, engine baseline'
-
-def withAmaru = rootProject.findProject(':amaru-validator') != null
 
 dependencies {
     testImplementation project(':ledger-rules')
@@ -43,14 +40,6 @@ dependencies {
     testImplementation project(':runtime')
     testImplementation libs.jackson.databind
     testImplementation libs.cardano.client.address
-    if (withAmaru) {
-        testImplementation project(':amaru-validator')
-    }
-}
-
-// The Amaru reference engine adapter compiles only when the optional module is in the build.
-if (withAmaru) {
-    sourceSets.test.java.srcDir 'src/amaruTest/java'
 }
 
 def scenariosDir = providers.gradleProperty('amaruScenariosDir')
@@ -66,11 +55,10 @@ def blueprintVectorsDir = providers.gradleProperty('blueprintVectors')
 // ADR-060: the pinned corpora of the node-diversity reports (node-diversity/corpora.env).
 def nodeDiversityCorpora = providers.gradleProperty('nodeDiversityCorpora')
         .orElse(providers.environmentVariable('NODE_DIVERSITY_CORPORA')).getOrElse('')
+// A pin of node-diversity/corpora.env: the node-diversity corpora (ADR-060) and the Amaru scenarios' tag (ADR-062 D5).
+def corpusPin = { String name -> (file('node-diversity/corpora.env').text =~ /(?m)^${name}=(\S+)/)[0][1] }
 // Strict since the ADR-056 Phase 5 gate: an in-scope constructor without a @Covers test fails the build.
 def strict = providers.gradleProperty('conformance.strict').getOrElse('true')
-// The Amaru module under test must report this crate version (amaru_version()'s crate= line); the reference engine
-// refuses a stale module.
-def amaruCrateVersion = (rootProject.file('amaru-validator-wasm/Cargo.toml').text =~ /(?m)^version\s*=\s*"([^"]+)"/)[0][1]
 
 tasks.withType(Test).configureEach {
     if (scenariosDir) {
@@ -78,12 +66,7 @@ tasks.withType(Test).configureEach {
     }
     systemProperty 'blueprint.vectors.dir', blueprintVectorsDir
     systemProperty 'conformance.strict', strict
-    systemProperty 'conformance.withAmaru', withAmaru.toString()
-    if (withAmaru) {
-        systemProperty 'amaru.wasm.crateVersion', amaruCrateVersion
-        systemProperty 'amaru.wasm.file', project(':amaru-validator').layout.buildDirectory
-                .file('amaru-wasm/amaru_validator.wasm').get().asFile.absolutePath
-    }
+    systemProperty 'conformance.amaruTag', corpusPin('AMARU_TAG')
     // Test classes of other modules scanned for @Covers (ledger-rules' rule tests from Phase 3 on).
     systemProperty 'conformance.scan.dirs',
             project(':ledger-rules').layout.buildDirectory.dir('classes/java/test').get().asFile.absolutePath
@@ -91,8 +74,7 @@ tasks.withType(Test).configureEach {
     if (nodeDiversityCorpora) {
         systemProperty 'node.diversity.corpora', file(nodeDiversityCorpora).absolutePath
         // The cbor-decoding report names both commits.
-        systemProperty 'node.diversity.cborDatasetCommit',
-                (file('node-diversity/corpora.env').text =~ /(?m)^CBOR_DATASET_REVISION=(\S+)/)[0][1]
+        systemProperty 'node.diversity.cborDatasetCommit', corpusPin('CBOR_DATASET_REVISION')
         systemProperty 'node.diversity.commit',
                 providers.exec { commandLine 'git', 'rev-parse', 'HEAD' }.standardOutput.asText.get().trim()
     }
@@ -115,9 +97,6 @@ tasks.withType(Test).configureEach {
     // The results depend on the external Amaru corpus and on engines outside this module: always run.
     outputs.cacheIf { false }
     outputs.upToDateWhen { false }
-    if (withAmaru) {
-        maxHeapSize = '4g'
-    }
 }
 
 tasks.register('conformanceReport', Test) {
@@ -137,7 +116,7 @@ tasks.register('conformanceReport', Test) {
     doFirst {
         if (!scenariosDir) {
             throw new GradleException('conformanceReport needs the Amaru scenarios: pass -PamaruScenariosDir=<dir> ' +
-                    'or set AMARU_SCENARIOS_DIR (a clone of pragma-org/amaru at the tag in amaru-validator-wasm/AMARU_VERSION)')
+                    'or set AMARU_SCENARIOS_DIR (a clone of pragma-org/amaru at AMARU_TAG in node-diversity/corpora.env)')
         }
     }
 }
@@ -170,7 +149,7 @@ tasks.register('nodeDiversityReports', Test) {
     }
 }
 
-// Never published: a test harness, like amaru-validator (ADR-057 §3).
+// Never published: a test harness.
 def conformancePublication = publishing.publications.findByName('mavenJava')
 if (conformancePublication != null) {
     publishing.publications.remove(conformancePublication)

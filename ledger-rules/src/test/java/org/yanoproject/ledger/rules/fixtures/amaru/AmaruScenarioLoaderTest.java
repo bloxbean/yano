@@ -1,6 +1,7 @@
 package org.yanoproject.ledger.rules.fixtures.amaru;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.yanoproject.ledger.rules.LedgerRuleName;
 import org.yanoproject.ledger.rules.fixtures.amaru.AmaruScenario.Expected;
 import org.yanoproject.ledger.rules.view.model.CommitteeMemberState;
@@ -8,13 +9,14 @@ import org.yanoproject.ledger.rules.view.model.CredentialKey;
 import org.yanoproject.ledger.rules.view.model.UtxoEntry;
 
 import java.math.BigInteger;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/** The scenario loader reads the whole corpus; skipped when {@code AMARU_SCENARIOS_DIR} is not set. */
+/** The scenario loader reads the whole corpus; the corpus tests skip when {@code AMARU_SCENARIOS_DIR} is not set. */
 class AmaruScenarioLoaderTest {
 
     @Test
@@ -69,6 +71,14 @@ class AmaruScenarioLoaderTest {
         assertThat(committee).hasSize(1);
         assertThat(committee.getFirst().isElected()).isFalse();
         assertThat(committee.getFirst().hot()).isNotNull();
+    }
+
+    @Test
+    void aConfiguredDirectoryWithoutScenariosFailsInsteadOfSkipping(@TempDir Path dir) {
+        assertThat(AmaruScenarioLoader.locateScenariosDir(" ")).isEmpty();
+        assertThatThrownBy(() -> AmaruScenarioLoader.locateScenariosDir(dir.toString()))
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessageContaining(dir.toString());
     }
 
     @Test

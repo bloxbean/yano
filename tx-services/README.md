@@ -17,12 +17,12 @@ Package `org.yanoproject.tx`:
 | Type | Purpose |
 |---|---|
 | `DefaultTransactionServicesFactory` | `create(TransactionBootstrapContext, TransactionBootstrapOptions)` returns the `TransactionServices`: the Scalus transaction validator, the ExUnits evaluator chosen by `yano.block-producer.script-evaluator` (`scalus`, `julc`, otherwise Aiken) and the ADR-056 validation engines. `app-core` passes it to the runtime as its `TransactionServicesFactory`. |
-| `ValidationEngineBootstrap` | Discovers `LedgerValidationEngineFactory` implementations with `ServiceLoader` (`scalus` from `scalus-bridge`, `amaru*` from the optional `amaru-validator`) and builds the configured engines. |
+| `ValidationEngineBootstrap` | Discovers `LedgerValidationEngineFactory` implementations with `ServiceLoader` (`scalus` from `scalus-bridge`) and builds the configured engines. |
 | `ShadowBundleReplay` | Replays shadow-validation bundles through an engine; also a command line (`java -cp app/build/yano.jar org.yanoproject.tx.ShadowBundleReplay [--scalus] <bundle.json or dir>...`). |
 | `TransactionProtocolParamsResolver`, `RuntimeSlotConfigSupplier` | Effective protocol parameters and slot timing for validation and evaluation. |
 
 Test fixtures (`org.yanoproject.tx.gate`): the devnet ledger-rules gate (`DevnetGateNode`,
-`DevnetFollowerNode`, `BlockRevalidator`, `RemoteYanoNode`, ...), shared with `amaru-validator`.
+`DevnetFollowerNode`, `BlockRevalidator`, `RemoteYanoNode`, ...).
 
 ## Dependencies and boundaries
 
@@ -31,7 +31,8 @@ Test fixtures (`org.yanoproject.tx.gate`): the devnet ledger-rules gate (`Devnet
 - Used by `app-core`; `runtime` must not depend on it.
 
 Design: [ADR-056](../adr/056-conway-java-ledger-rules-with-state-overlays.md),
-[ADR-057](../adr/057-optional-amaru-wasm-transaction-validator.md).
+[ADR-057](../adr/057-optional-amaru-wasm-transaction-validator.md) (its Amaru engine removed by
+[ADR-062](../adr/062-remove-the-amaru-wasm-validator.md)).
 
 ## Build and test
 

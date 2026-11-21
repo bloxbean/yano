@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
-# ADR-060: fetches the pinned node-diversity corpora (corpora.env) into <dir>, for
+# ADR-060, ADR-062: fetches the pinned conformance corpora (corpora.env) into <dir>, for
 #   ./gradlew :ledger-conformance:nodeDiversityReports -PnodeDiversityCorpora=<dir>
+#   ./gradlew :ledger-conformance:test -PamaruScenariosDir=<dir>/amaru
 #
+# <dir>/amaru                       Amaru at AMARU_REVISION (tag AMARU_TAG; the transaction scenarios)
 # <dir>/node-diversity-conformance  pragma's repository at NDC_REVISION (the ledger-rules fixtures)
 # <dir>/cardano-cbor-dataset        the CBOR dataset at CBOR_DATASET_REVISION
 # <dir>/uplc-conformance            the UPLC vectors, checked against UPLC_CORPUS_SHA256
 # <dir>/turbo                       the turbo scripts, checked against TURBO_CORPUS_SHA256
 #
-# Idempotent: a repository already at its pin and a tarball already extracted are kept.
+# Idempotent: a repository already at its pin and a tarball already extracted are kept. An existing directory at another
+# revision (for example a working clone, or a checkout of an older pin) is never replaced: the script stops, naming it.
 set -euo pipefail
 
 if [[ $# -ne 1 ]]; then
@@ -20,12 +23,16 @@ source "$(dirname "$0")/corpora.env"
 mkdir -p "$DIR"
 
 checkout() {
-    local repository=$1 revision=$2 target=$3
-    if [[ "$(git -C "$target" rev-parse HEAD 2>/dev/null)" == "$revision" ]]; then
-        echo "$target: at $revision"
-        return
+    local repository=$1 revision=$2 target=$3 actual
+    if [[ -e "$target" ]]; then
+        actual=$(git -C "$target" rev-parse HEAD 2>/dev/null || true)
+        if [[ "$actual" == "$revision" ]]; then
+            echo "$target: at $revision"
+            return
+        fi
+        echo "$target exists at ${actual:-no git revision}, expected $revision: remove it or use another <dir>" >&2
+        exit 1
     fi
-    rm -rf "$target"
     git init -q "$target"
     git -C "$target" fetch -q --depth 1 "$repository" "$revision"
     git -C "$target" checkout -q FETCH_HEAD
@@ -64,6 +71,7 @@ extract() {
     echo "$target: extracted $url"
 }
 
+checkout "$AMARU_REPOSITORY" "$AMARU_REVISION" "$DIR/amaru"
 checkout "$NDC_REPOSITORY" "$NDC_REVISION" "$DIR/node-diversity-conformance"
 checkout "$CBOR_DATASET_REPOSITORY" "$CBOR_DATASET_REVISION" "$DIR/cardano-cbor-dataset"
 extract "$UPLC_CORPUS_URL" "$UPLC_CORPUS_SHA256" "$DIR/uplc-conformance"

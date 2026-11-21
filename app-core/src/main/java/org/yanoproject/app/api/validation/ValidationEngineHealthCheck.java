@@ -6,26 +6,15 @@ import org.eclipse.microprofile.health.HealthCheck;
 import org.eclipse.microprofile.health.HealthCheckResponse;
 import org.eclipse.microprofile.health.HealthCheckResponseBuilder;
 import org.eclipse.microprofile.health.Readiness;
-import org.yanoproject.ledger.rules.LedgerValidationEngines;
+import org.yanoproject.ledger.rules.LedgerValidationEngine;
 import org.yanoproject.runtime.validation.ValidationEngines;
 import org.yanoproject.runtime.validation.shadowsync.ShadowSyncReport;
 import org.yanoproject.runtime.validation.shadowsync.ShadowSyncValidator;
 
 /**
- * Readiness of the validation engines (ADR-057 §2): it matters only when an Amaru engine ({@code amaru} or
- * {@code amaru-scalus}) is the admission or a shadow engine, since only Amaru can turn unhealthy (after
- * {@code max-abandoned} stuck calls it fails every request closed until restart).
- *
- * <ul>
- *   <li>No Amaru engine configured: UP, with the engine name.</li>
- *   <li>Admission engine unhealthy: DOWN (every admission is rejected).</li>
- *   <li>Only a shadow engine unhealthy: UP with {@code shadowUnhealthy} set; admission is unaffected, and the
- *       {@code yano_validation_engine_healthy} metric alerts.</li>
- *   <li>Shadow-sync engines (ADR-056 Phase 7a) never gate readiness: an unhealthy one (an Amaru engine that failed
- *       closed) only makes shadow sync report engine failures. Their health is reported as data
- *       ({@code shadowSync.<engine>.healthy}, {@code shadowSyncUnhealthy}) and in
- *       {@code yano_validation_shadow_sync_engine_healthy}.</li>
- * </ul>
+ * The validation engines in the readiness report (ADR-056 §7, ADR-062 D4): the admission and shadow engine names and,
+ * when shadow sync (ADR-056 Phase 7a) runs, its engines and counters. Always UP: no engine can turn unhealthy, and
+ * shadow-sync findings are reported, never gating readiness.
  */
 @Readiness
 @ApplicationScoped
@@ -47,9 +36,9 @@ public class ValidationEngineHealthCheck implements HealthCheck {
         if (engines == null) {
             return builder.up().withData("engine", "scalus (legacy)").build();
         }
-        ValidationEngines.Status status = engines.status();
-        builder.withData("engine", status.engine())
-                .withData("shadowEngines", String.join(",", status.shadowEngines()));
+        builder.withData("engine", engines.admissionEngineName())
+                .withData("shadowEngines", String.join(",",
+                        engines.shadowEngines().stream().map(LedgerValidationEngine::name).toList()));
         ShadowSyncValidator sync = engines.shadowSync();
         if (sync != null) {
             ShadowSyncValidator.Status syncStatus = sync.status();
@@ -60,17 +49,7 @@ public class ValidationEngineHealthCheck implements HealthCheck {
                     .withData("shadowSync.engineFailures", stats.engineFailuresTotal())
                     .withData("shadowSync.blockFailures", stats.blockFailures())
                     .withData("shadowSync.inFlight", syncStatus.inFlight());
-            status.shadowSyncHealth().forEach((name, healthy) ->
-                    builder.withData("shadowSync." + name + ".healthy", healthy));
-            builder.withData("shadowSyncUnhealthy", status.shadowSyncHealth().containsValue(false));
         }
-        if (!engines.uses(LedgerValidationEngines.AMARU) && !engines.uses(LedgerValidationEngines.AMARU_SCALUS)) {
-            return builder.up().build();
-        }
-        status.engineHealth().forEach((name, healthy) -> builder.withData(name + ".healthy", healthy));
-        boolean shadowUnhealthy = status.engineHealth().entrySet().stream()
-                .anyMatch(e -> !e.getKey().equals(status.engine()) && !e.getValue());
-        builder.withData("shadowUnhealthy", shadowUnhealthy);
-        return status.admissionHealthy() ? builder.up().build() : builder.down().build();
+        return builder.up().build();
     }
 }

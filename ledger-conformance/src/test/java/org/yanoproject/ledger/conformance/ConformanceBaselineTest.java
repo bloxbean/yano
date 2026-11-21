@@ -2,7 +2,6 @@ package org.yanoproject.ledger.conformance;
 
 import org.junit.jupiter.api.Test;
 import org.yanoproject.ledger.conformance.engines.BaselineEngines;
-import org.yanoproject.ledger.conformance.mutation.Mutation;
 import org.yanoproject.ledger.conformance.mutation.Mutations;
 import org.yanoproject.ledger.conformance.report.BaselineReport;
 import org.yanoproject.ledger.conformance.report.BaselineReport.EngineRun;
@@ -10,7 +9,6 @@ import org.yanoproject.ledger.conformance.runner.CaseResult;
 import org.yanoproject.ledger.conformance.runner.ConformanceCase;
 import org.yanoproject.ledger.conformance.runner.ConformanceEngine;
 import org.yanoproject.ledger.conformance.runner.ConformanceRunner;
-import org.yanoproject.ledger.conformance.runner.Observation;
 import org.yanoproject.ledger.conformance.runner.ScenarioCases;
 import org.yanoproject.ledger.rules.fixtures.amaru.AmaruScenarioLoader;
 
@@ -22,15 +20,12 @@ import java.util.Locale;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * ADR-056 Phase 2 baseline: every engine ({@code scalus-legacy}, {@code scalus-legacy+supplementary},
- * {@code scalus-engine}, {@code java-legacy}, and {@code amaru} in {@code -PwithAmaru=true} builds) over the Amaru
- * scenarios and the mutation matrix, written to {@code build/conformance/baseline.md} (and, under
- * {@code conformanceReport}, to {@code ledger-conformance/docs/baseline-2026-09.md}).
+ * ADR-056 Phase 2 baseline: every engine of {@link BaselineEngines#all()} over the Amaru scenarios and the mutation
+ * matrix, written to {@code build/conformance/baseline.md} (and, under {@code conformanceReport}, to
+ * {@code ledger-conformance/docs/baseline-2026-09.md}).
  *
  * <p>The baseline is informational: engines are expected to fail cases. The test asserts that the runner answers
- * every case for every engine and, with the reference engine present, that Amaru still matches the corpus (every
- * scenario except those at protocol version 9, which it refuses by design: 350 of 368) and every mutant. Without the
- * corpus the scenario half is left out of the report.</p>
+ * every case for every engine. Without the corpus the scenario half is left out of the report.</p>
  */
 class ConformanceBaselineTest {
 
@@ -57,49 +52,11 @@ class ConformanceBaselineTest {
         if (!scenarios.isEmpty()) {
             assertThat(scenarios).hasSize(AmaruScenarioLoader.EXPECTED_SCENARIOS);
         }
-        runs.stream().filter(r -> r.engine().name().equals(BaselineEngines.AMARU)).findFirst()
-                .ifPresent(ConformanceBaselineTest::assertReference);
 
         String report = new BaselineReport(runs).toMarkdown();
         Path written = ConformanceSettings.write("baseline.md", "conformance.baseline.file", report);
         System.out.println("Baseline report: " + written);
         assertThat(report).contains("## Summary", "## Mutation matrix");
-    }
-
-    /** Amaru is the reference: its gate result must still hold through this harness. */
-    private static void assertReference(EngineRun amaru) {
-        List<CaseResult> misses = amaru.scenarios().stream().filter(r -> !r.constructorMatch()).toList();
-        if (!amaru.scenarios().isEmpty()) {
-            // The 18 scenarios at protocol version 9 are refused (invariant 6).
-            assertThat(amaru.scenarios().size() - misses.size()).as("amaru scenario matches")
-                    .isEqualTo(AmaruScenarioLoader.EXPECTED_SCENARIOS - 18);
-            assertThat(misses).allSatisfy(miss -> {
-                assertThat(miss.testCase().env().protocolMajor()).isLessThan(10);
-                assertThat(Observation.isEraNotSupported(miss.observation().first())).isTrue();
-            });
-        }
-        assertThat(amaru.mutations()).as("amaru over the mutation matrix")
-                .allMatch(ConformanceBaselineTest::matchesOrRecordedAmaruDivergence);
-    }
-
-    /**
-     * A mutant Amaru judges as Haskell does, or one whose fault Amaru names differently from Haskell (or accepts) and
-     * for which that divergence is recorded ({@code Mutation#amaruReports()}).
-     */
-    private static boolean matchesOrRecordedAmaruDivergence(CaseResult result) {
-        if (result.constructorMatch()) {
-            return true;
-        }
-        // The protocol version 9 world (bases and mutants): Amaru refuses it by design (ADR-056 invariant 6).
-        if (result.testCase().env().protocolMajor() < 10) {
-            return !result.observation().valid() && Observation.isEraNotSupported(result.observation().first());
-        }
-        String id = result.testCase().id();
-        return Mutations.all().stream()
-                .filter(m -> m.caseId().equals(id) && m.amaruReports() != null)
-                .anyMatch(m -> Mutation.AMARU_ACCEPTS.equals(m.amaruReports()) ? result.observation().valid()
-                        : !result.observation().valid()
-                        && m.amaruReports().equals(result.observation().first().qualifiedName()));
     }
 
     private static long count(List<CaseResult> results, boolean verdict) {

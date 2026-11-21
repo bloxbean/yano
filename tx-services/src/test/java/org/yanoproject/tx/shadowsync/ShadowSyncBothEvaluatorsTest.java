@@ -27,7 +27,6 @@ import org.yanoproject.scalusbridge.ScalusScriptPhaseEvaluator;
 
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
@@ -53,7 +52,6 @@ class ShadowSyncBothEvaluatorsTest {
             assertThat(engines.affectsAdmission()).isFalse();
             assertThat(engines.shadowSyncEngines()).extracting(LedgerValidationEngine::name)
                     .containsExactly("java-julc", "java-scalus");
-            assertThat(engines.status().shadowSyncHealth()).containsOnlyKeys("java-julc", "java-scalus");
             // Each runs its own evaluator: a failing script is reported in that evaluator's words.
             TxValidationRequest failing = new TxValidationRequest(failingScriptTx(true), MutationWorld.view(),
                     MutationWorld.env(), TxValidationRequest.Rule.LEDGER, TxValidationRequest.Origin.SYNC, null);
@@ -109,11 +107,6 @@ class ShadowSyncBothEvaluatorsTest {
         ScriptPhaseEvaluator julc = new JulcScriptPhaseEvaluator();
         return new EngineContext() {
             @Override
-            public Optional<String> config(String key) {
-                return Optional.empty();
-            }
-
-            @Override
             public Supplier<NetworkParameters> network() {
                 return () -> {
                     throw new IllegalStateException("not used");
@@ -145,11 +138,6 @@ class ShadowSyncBothEvaluatorsTest {
             @Override
             public ScriptPhaseEvaluator julcScriptPhaseEvaluator() {
                 return julc;
-            }
-
-            @Override
-            public int validationThreads() {
-                return 1;
             }
         };
     }

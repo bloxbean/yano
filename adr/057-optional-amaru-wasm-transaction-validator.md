@@ -2,6 +2,8 @@
 
 ## Status
 
+Superseded by [ADR-062](062-remove-the-amaru-wasm-validator.md) (2026-11-07).
+
 Accepted (2026-09-28). The design was reviewed by Fable and in four Codex
 review rounds on PR #155; Codex approved it at `40dfd3168`. Satya accepted it
 with the decisions recorded at the end of this ADR.
@@ -697,7 +699,7 @@ p99 ≤ 10 ms) and faster than the spike's Chicory runtime-compiler figures.
   matrix, blueprint vectors), and `amaru` as an admission shadow or shadow-sync engine,
   with dumps (`ShadowValidationRunner`, ADR-056 Phase 7a). The `amaru-wasm.yml`
   `conformance` job runs it on every build of the module. The recorded divergences, none
-  fixed (full list in `amaru-validator/README.md`, "Known divergences and limits"):
+  fixed (full list in the appendix, "Known divergences and limits", copied from `amaru-validator/README.md`):
   - **Accepted by Amaru, rejected by Haskell**, both on the conformance mutants: a PlutusV3
     script followed by one extra byte (`UTXOW.MalformedScriptWitnesses`), and a VRF key hash
     reused by another pool at PV 11 (`POOL.VRFKeyHashAlreadyRegistered`).
@@ -752,7 +754,7 @@ p99 ≤ 10 ms) and faster than the spike's Chicory runtime-compiler figures.
 
 #### Phase E results: developer guide (2026-09-30)
 
-[`amaru-validator/README.md`](../amaru-validator/README.md) covers:
+`amaru-validator/README.md` (deleted by ADR-062; its divergence list is in the appendix) covered:
 
 - the four roles: admission engine, admission shadow, shadow-sync engine, test oracle;
 - building the module: toolchains, `AMARU_VERSION`, and the CI artifact;
@@ -1095,3 +1097,38 @@ reverts this ADR completely. No persisted state is involved.
    (formerly `phase2: amaru` or `full`). The `yano.validation.amaru.phase2` key is removed; the other
    `yano.validation.amaru.*` settings apply to both engines. Phase results above use the names of their time. A
    future `amaru-julc` is another factory on the same `ScriptPhaseEvaluator` SPI.
+
+## Appendix: known divergences and limits
+
+*Copied from `amaru-validator/README.md` at `4d416510c`, before ADR-062 deleted the module.*
+
+- **Conway from protocol version 10 only.** Below 10, or for a non-Conway body, the engine answers
+  `ENGINE.EraNotSupported` (ADR-057 invariant 6).
+- **Transactions Amaru accepts and Haskell rejects** (recorded on the conformance mutants,
+  engine `amaru`):
+  - a PlutusV3 script whose CBOR is followed by one more byte (Haskell:
+    `UTXOW.MalformedScriptWitnesses`);
+  - a pool registration whose VRF key hash another pool already uses, at PV 11 (Haskell:
+    `POOL.VRFKeyHashAlreadyRegistered`). The request carries pool ids only.
+- **Rejected by both, under a different name:**
+  - Constructor names: scenario 00280 (`OutputTooBigUTxO` for Haskell's
+    `OutputBootAddrAttrsTooBig`), non-ADA collateral (`ValueNotConservedUTxO` for
+    `CollateralContainsNonADA`), and `VotersDoNotExist` for PV 11's `UnelectedCommitteeVoters`.
+  - Amaru stops at its first failure, while Haskell lists all of them.
+- **`amaru-scalus` phase two is Scalus, but Amaru evaluates the scripts too.** The engine calls
+  the Scalus evaluator whenever a transaction has redeemers or Plutus witness scripts, or spends an
+  input carrying a reference script. From Amaru `v10.11.20261105` the module's phase-one mode runs
+  Amaru's own Plutus evaluation as well and drops its verdict (Amaru keeps its phase-one rules
+  crate-private; `INTERFACE.md`, "Modes"). It reports `MalformedScriptWitnesses` and
+  `CollectErrors` itself, and re-application saves no Plutus time.
+- **CCL decoding is still needed** for the MEMPOOL step and for effects. A transaction Amaru
+  accepts but CCL cannot decode fails closed.
+- **Speed.** Wasm runs about 15–20 times slower than native Amaru. On the scenario corpus
+  (small test scripts) `amaru` takes p50 1.0 ms and p99 2.7 ms. On real preprod/preview Plutus
+  transactions both Amaru engines take p50 15–44 ms and p99 170–250 ms, because Amaru's script
+  evaluation is slow under Endive; `amaru-scalus` took 3 ms and 7 ms before Amaru
+  `v10.11.20261105` (ADR-057 Phase E re-run, 2026-11-07). The Java engines stay at p50 1–2.4 ms.
+  Prefer them for admission on public networks.
+
+ADR-056 (Phase 3a and 3b results) and `ledger-conformance/docs/baseline-2026-09.md` hold the full
+list and the Haskell references.

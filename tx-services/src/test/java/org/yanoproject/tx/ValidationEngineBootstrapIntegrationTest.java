@@ -30,6 +30,7 @@ import java.net.URLClassLoader;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -103,8 +104,7 @@ class ValidationEngineBootstrapIntegrationTest {
     void scalusWithAShadowEngineKeepsLegacyAdmission(@TempDir Path dir) {
         AtomicReference<TransactionServices> services = new AtomicReference<>();
         try (Yano node = build(dir, Map.of(YanoPropertyKeys.Validation.ENGINE, "scalus",
-                YanoPropertyKeys.Validation.SHADOW_ENGINES, "capture",
-                YanoPropertyKeys.Validation.AMARU_TIMEOUT_MS, "750"), services)) {
+                YanoPropertyKeys.Validation.SHADOW_ENGINES, "capture"), services)) {
             var engines = services.get().validationEngines();
             assertThat(engines).isNotNull();
             assertThat(engines.legacyAdmission()).as("shadows never change admission").isTrue();
@@ -114,9 +114,7 @@ class ValidationEngineBootstrapIntegrationTest {
             assertThat(services.get().validator()).as("the legacy validator stays for block selection").isNotNull();
 
             EngineContext context = CapturingFactory.CONTEXT.get();
-            assertThat(context.config(YanoPropertyKeys.Validation.AMARU_TIMEOUT_MS)).contains("750");
             assertThat(context.scriptPhaseEvaluator()).isInstanceOf(ScalusScriptPhaseEvaluator.class);
-            assertThat(context.validationThreads()).isEqualTo(4);
             NetworkParameters network = context.network().get();
             assertThat(network.networkMagic()).isEqualTo(42);
             assertThat(network.firstNonByronSlot()).isZero();
@@ -155,7 +153,6 @@ class ValidationEngineBootstrapIntegrationTest {
             assertThat(engines.settings().shadowSyncSettings().maxInFlight()).isEqualTo(3);
             assertThat(engines.shadowSync()).as("started by the runtime").isNotNull();
             assertThat(node.validationEngines()).containsSame(engines);
-            assertThat(engines.status().shadowSyncHealth()).containsEntry("java-julc", true);
 
             // Installing the same engines again neither starts a second validator nor stops the running one.
             var running = engines.shadowSync();
@@ -201,17 +198,26 @@ class ValidationEngineBootstrapIntegrationTest {
                 .hasMessageContaining("java-julc").hasMessageContaining("java-scalus");
     }
 
+    /**
+     * ADR-062 D3: the removed Amaru engines, as admission engine, admission shadow or shadow-sync engine, stop startup
+     * with the unknown-engine message.
+     */
     @Test
-    void amaruWithoutTheModuleStopsStartup(@TempDir Path dir) {
+    void theRemovedAmaruEnginesStopStartupAsUnknown(@TempDir Path dir) {
         for (String amaru : new String[]{"amaru", "amaru-scalus"}) {
-            assertThatThrownBy(() -> build(dir, Map.of(YanoPropertyKeys.Validation.ENGINE, amaru),
-                    new AtomicReference<>()))
-                    .isInstanceOf(ValidationEngineConfigurationException.class)
-                    .hasMessageContaining("amaru-validator module is not on the classpath");
-            assertThatThrownBy(() -> build(dir, Map.of(YanoPropertyKeys.Validation.SHADOW_ENGINES, amaru),
-                    new AtomicReference<>()))
-                    .isInstanceOf(ValidationEngineConfigurationException.class)
-                    .hasMessageContaining("-PwithAmaru=true");
+            List<Map<String, Object>> uses = List.of(
+                    Map.of(YanoPropertyKeys.Validation.ENGINE, amaru),
+                    Map.of(YanoPropertyKeys.Validation.SHADOW_ENGINES, amaru),
+                    Map.of(YanoPropertyKeys.Validation.ENGINE, "scalus",
+                            YanoPropertyKeys.Validation.SHADOW_SYNC, "true",
+                            YanoPropertyKeys.Validation.SHADOW_SYNC_ENGINES, amaru));
+            for (Map<String, Object> validation : uses) {
+                assertThatThrownBy(() -> build(dir, validation, new AtomicReference<>()))
+                        .as("%s", validation)
+                        .isInstanceOf(ValidationEngineConfigurationException.class)
+                        .hasMessageStartingWith("Unknown validation engine '" + amaru + "'. Available: ")
+                        .hasMessageContaining("java-julc");
+            }
         }
     }
 

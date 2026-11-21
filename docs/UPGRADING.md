@@ -1,5 +1,24 @@
 # Upgrading preview releases
 
+## ADR-062 Amaru validation engine removed
+
+The optional Amaru WebAssembly validation engine is gone. It was never in a distribution, Docker image or
+publication, so the configuration changes below affect only nodes built with `-PwithAmaru=true`. The engine-health
+metrics and health fields (last item) are removed in every build.
+
+- With transaction evaluation on (`yano.block-producer.tx-evaluation`, the default), `yano.validation.engine` or
+  `yano.validation.shadow-engines` naming `amaru` or `amaru-scalus` now stops startup with "Unknown validation
+  engine '…'. Available: …"; so does `yano.validation.shadow-sync-engines` when shadow sync
+  (`yano.validation.shadow-sync`) is also on. Set `yano.validation.engine=java-julc` (the default), or remove the
+  entry from the list.
+- The `yano.validation.amaru.*` keys (`pool-size`, `timeout-ms`, `max-abandoned`, `max-memory-pages`) are ignored.
+- The build property `-PwithAmaru` is ignored.
+- In every build, engine health is gone with the only engine that could turn unhealthy: the metrics
+  `yano_validation_engine_healthy` and `yano_validation_shadow_sync_engine_healthy` are removed, and the
+  `validation-engine` readiness check (always UP) and the transaction subsystem's health details no longer carry
+  health fields (`<engine>.healthy`, `shadowUnhealthy`, `shadowSync.<engine>.healthy`, `shadowSyncUnhealthy`,
+  `validationEngineHealthy`).
+
 ## ADR-064 app chains moved to Yano X
 
 Application ledgers (app chains) are no longer part of Yano. They are built on Yano by the
@@ -54,7 +73,8 @@ the internal stake-key and DRep deposit total. Recreate such devnets.
   on: set `yano.utxo.enabled=true`, `yano.validation.engine=scalus` or `yano.block-producer.tx-evaluation=false`.
 - `yano.validation.java-engine.experimental` is removed and ignored if still set.
 - Amaru builds (`-PwithAmaru=true`): the former `amaru` (Scalus for Plutus) is now `amaru-scalus`; `amaru` now
-  means Amaru for both phases. `yano.validation.amaru.phase2` is gone.
+  means Amaru for both phases. `yano.validation.amaru.phase2` is gone. Superseded by ADR-062 (above): both engines
+  are removed.
 
 ## ADR-050 pool-lifecycle correctness
 

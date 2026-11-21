@@ -58,9 +58,8 @@ import java.util.function.Function;
 
 /**
  * An in-process devnet block producer for the ADR-056 Phase 6b gates, with an engine-API admission engine
- * ({@code java-julc} or {@code java-scalus}, or {@code amaru-scalus} or {@code amaru}): isolated temporary storage
- * and a free port, short epochs, and the governance parameters patched so a proposal expires within the test (lifetime
- * 1 epoch).
+ * ({@code java-julc} or {@code java-scalus}): isolated temporary storage and a free port, short epochs, and the
+ * governance parameters patched so a proposal expires within the test (lifetime 1 epoch).
  */
 public final class DevnetGateNode implements AutoCloseable {
 

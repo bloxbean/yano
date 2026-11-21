@@ -4,7 +4,6 @@ import org.junit.jupiter.api.Test;
 import org.yanoproject.ledger.rules.phase2.ScriptPhaseEvaluator;
 
 import java.util.List;
-import java.util.Optional;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
@@ -55,17 +54,15 @@ class LedgerValidationEnginesTest {
                 .hasMessageContaining("JavaJulcEngineFactory");
     }
 
+    /** ADR-062 D3: the removed Amaru engines take the unknown-engine path, like any other unknown name. */
     @Test
-    void amaruWithoutTheModuleFailsClearly() {
+    void removedAmaruEnginesAreUnknown() {
         LedgerValidationEngines engines = LedgerValidationEngines.discover(getClass().getClassLoader());
 
-        assertThat(engines.available()).doesNotContain("amaru", "amaru-scalus");
         for (String amaru : new String[]{"amaru", "amaru-scalus"}) {
             assertThatThrownBy(() -> engines.factory(amaru))
                     .isInstanceOf(IllegalStateException.class)
-                    .hasMessageContaining("'" + amaru + "' is configured but the amaru-validator module is not on the "
-                            + "classpath")
-                    .hasMessageContaining("-PwithAmaru=true");
+                    .hasMessageStartingWith("Unknown validation engine '" + amaru + "'. Available: ");
         }
     }
 
@@ -106,18 +103,8 @@ class LedgerValidationEnginesTest {
                 .hasMessageContaining("must differ from yano.validation.engine");
     }
 
-    @Test
-    void engineHealthDefaultsToHealthy() {
-        assertThat(new FakeFactory().create(context()).isHealthy()).isTrue();
-    }
-
     private static EngineContext context() {
         return new EngineContext() {
-            @Override
-            public Optional<String> config(String key) {
-                return Optional.empty();
-            }
-
             @Override
             public Supplier<NetworkParameters> network() {
                 return () -> {
@@ -143,11 +130,6 @@ class LedgerValidationEnginesTest {
             @Override
             public ScriptPhaseEvaluator scriptPhaseEvaluator() {
                 return null;
-            }
-
-            @Override
-            public int validationThreads() {
-                return 1;
             }
         };
     }

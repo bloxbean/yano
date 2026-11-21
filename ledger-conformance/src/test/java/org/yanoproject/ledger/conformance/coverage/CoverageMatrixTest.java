@@ -77,7 +77,7 @@ class CoverageMatrixTest {
         assertThat(scan.coverings()).as("the mutation matrix's @Covers tests are found").isNotEmpty();
 
         Path written = ConformanceSettings.write("conway-rule-coverage.md", "conformance.coverage.file",
-                matrix.toMarkdown(catalogue.cardanoLedger(), ConformanceSettings.AMARU_TAG));
+                matrix.toMarkdown(catalogue.cardanoLedger(), ConformanceSettings.amaruTag()));
         List<String> missing = matrix.missingTests();
         System.out.printf("Coverage matrix: %d in scope, %d test + scenario, %d test, %d scenario only, %d gap "
                         + "(%s)%n", matrix.inScope(), matrix.count(CoverageMatrix.Status.TEST_AND_SCENARIO),
