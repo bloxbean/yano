@@ -25,7 +25,7 @@ use amaru_ledger::{
         transaction::{
             phase_one::{
                 InvalidCertificates, InvalidCollateral, InvalidFees, InvalidInputs, InvalidScripts,
-                InvalidTransactionMetadata, InvalidValidityInterval, InvalidVerificationKeyWitness,
+                InvalidTransactionMetadata, InvalidTreasury, InvalidValidityInterval, InvalidVerificationKeyWitness,
                 InvalidVotingProcedures, InvalidWithdrawals, PhaseOneError,
                 outputs::{InvalidOutput, InvalidOutputs},
                 proposals::InvalidProposals,
@@ -56,13 +56,13 @@ type Names = (&'static str, Option<&'static str>);
 /// the transaction's certificates (Amaru reports a wrong stake or DRep deposit and a wrong refund
 /// with one variant; Haskell distinguishes them).
 pub struct MappingContext<'a> {
-    pub protocol_major: u64,
+    pub protocol_major: u32,
     pub certificates: &'a [Certificate],
 }
 
 impl<'a> MappingContext<'a> {
-    pub fn new(protocol_major: u64, body: &'a TransactionBody) -> Self {
-        Self { protocol_major, certificates: body.certificates.as_deref().unwrap_or(&[]) }
+    pub fn new(protocol_major: u32, body: &'a TransactionBody) -> Self {
+        Self { protocol_major, certificates: body.certificates.as_ref().map_or(&[], AsRef::as_ref) }
     }
 
     /// PV > 10 gates (`hardforkConwayMoveWithdrawalsAndDRepChecksToLedgerRule`,
@@ -150,12 +150,21 @@ fn phase_one_names(err: &PhaseOneError, context: &MappingContext<'_>) -> Names {
             InvalidInputs::NonDisjointRefInputs { .. } => (UTXO, Some("BabbageNonDisjointRefInputs")),
             InvalidInputs::EmptyInputSet => (UTXO, Some("InputSetEmptyUTxO")),
             InvalidInputs::RefScriptSizeTooBig { .. } => (LEDGER, Some("ConwayTxRefScriptsSizeTooBig")),
+            InvalidInputs::TooManyCollateralInputs { .. } => (UTXO, Some("TooManyCollateralInputs")),
         },
         // Haskell reports every failing output; Amaru collects them too. The first one decides.
         E::Outputs(outputs) => first_invalid_output(outputs).map(output_names).unwrap_or((UTXO, None)),
         E::Certificates(e) => certificate_names(e, context),
         E::Fees(e) => match e {
             InvalidFees::FeeTooSmall { .. } => (UTXO, Some("FeeTooSmallUTxO")),
+            InvalidFees::Collateral(e) => match e {
+                InvalidCollateral::LockedAtScriptAddress(_) => (UTXO, Some("ScriptsNotPaidUTxO")),
+                InvalidCollateral::InsufficientBalance { .. } => (UTXO, Some("InsufficientCollateral")),
+                InvalidCollateral::DeclaredCollateralMismatch { .. } => (UTXO, Some("IncorrectTotalCollateralField")),
+                InvalidCollateral::NoCollateral => (UTXO, Some("NoCollateralInputs")),
+                // Amaru's corpus (Haskell-checked) asserts ValueNotConservedUTxO for this case.
+                InvalidCollateral::ValueNotConserved(_) => (UTXO, Some("ValueNotConservedUTxO")),
+            },
         },
         E::Withdrawals(e) => match e {
             // Static UTXO check at every PV.
@@ -206,16 +215,6 @@ fn phase_one_names(err: &PhaseOneError, context: &MappingContext<'_>) -> Names {
             // Unreachable once phase one passed (inputs resolve; scripts decoded as witnesses).
             PreparationError::MissingInput(_) | PreparationError::ScriptDeserialization(_) => (UTXOS, None),
         },
-        E::Collateral(e) => match e {
-            InvalidCollateral::UnknownInput(_) => (UTXO, Some("BadInputsUTxO")),
-            InvalidCollateral::TooManyInputs { .. } => (UTXO, Some("TooManyCollateralInputs")),
-            InvalidCollateral::LockedAtScriptAddress(_) => (UTXO, Some("ScriptsNotPaidUTxO")),
-            InvalidCollateral::InsufficientBalance { .. } => (UTXO, Some("InsufficientCollateral")),
-            InvalidCollateral::DeclaredCollateralMismatch { .. } => (UTXO, Some("IncorrectTotalCollateralField")),
-            InvalidCollateral::NoCollateral => (UTXO, Some("NoCollateralInputs")),
-            // Amaru's corpus (Haskell-checked) asserts ValueNotConservedUTxO for this case.
-            InvalidCollateral::ValueNotConserved(_) => (UTXO, Some("ValueNotConservedUTxO")),
-        },
         E::Proposals(e) => match e {
             InvalidProposals::IncorrectDeposit { .. } => (GOV, Some("ProposalDepositIncorrect")),
             InvalidProposals::ReturnAddressWrongNetwork { .. } => (GOV, Some("ProposalProcedureNetworkIdMismatch")),
@@ -254,7 +253,9 @@ fn phase_one_names(err: &PhaseOneError, context: &MappingContext<'_>) -> Names {
         },
         E::InvalidNetwork { .. } => (UTXO, Some("WrongNetworkInTxBody")),
         E::TooLarge { .. } => (UTXO, Some("MaxTxSizeUTxO")),
-        E::TreasuryValueMismatch { .. } => (LEDGER, Some("ConwayTreasuryValueMismatch")),
+        E::Treasury(e) => match e {
+            InvalidTreasury::ValueMismatch { .. } => (LEDGER, Some("ConwayTreasuryValueMismatch")),
+        },
         E::ValidityInterval(e) => match e {
             InvalidValidityInterval::OutsideValidityInterval { .. } => (UTXO, Some("OutsideValidityIntervalUTxO")),
             // Amaru's check is Haskell's script-context translation failure, not Haskell's `OutsideForecast`:
@@ -262,7 +263,7 @@ fn phase_one_names(err: &PhaseOneError, context: &MappingContext<'_>) -> Names {
             // current slot and cannot fail, while `transValidityInterval` uses the unextended one in Conway
             // (`Shelley/API/Mempool.hs:283-293`, `Babbage/Rules/Ledgers.hs:126-133`) and reports
             // `CollectErrors [BadTranslation (TimeTranslationPastHorizon ..)]` (`Babbage/Rules/Utxos.hs:143, 206`).
-            // Amaru's own Haskell checker spells that failure "OutsideForecast" (`Run.hs:443-445`).
+            // Amaru's own Haskell checker spells that failure "OutsideForecast" (`Run.hs:500-502`).
             InvalidValidityInterval::OutsideForecast(_) => (UTXOS, Some("CollectErrors")),
         },
         E::ValueNotPreserved(_) => (UTXO, Some("ValueNotConservedUTxO")),
@@ -294,6 +295,8 @@ fn certificate_names(err: &InvalidCertificates, context: &MappingContext<'_>) ->
         },
         C::ImpossibleSlotArithmetic(_) => (CERTS, None),
         C::PoolWrongNetwork { .. } => (POOL, Some("WrongNetworkPOOL")),
+        // Haskell's spelling (Shelley/Rules/Pool.hs).
+        C::PoolMetadataHashTooBig { .. } => (POOL, Some("PoolMedataHashTooBig")),
         C::PoolCostTooLow { .. } => (POOL, Some("StakePoolCostTooLowPOOL")),
         C::PoolRetirementWrongEpoch { .. } => (POOL, Some("StakePoolRetirementWrongEpochPOOL")),
         C::StakePoolUnknown(_) => (POOL, Some("StakePoolNotRegisteredOnKeyPOOL")),
@@ -338,7 +341,7 @@ fn invalid_output_samples() -> [InvalidOutput; 5] {
         InvalidOutput::TooSmall { minimum_value: 0, given_value: 0 },
         InvalidOutput::ValueTooLarge { maximum_size: 0, given_size: 0 },
         InvalidOutput::WrongNetwork { expected: Network::Mainnet, actual: Network::Testnet },
-        InvalidOutput::MalformedReferenceScript(Hash::from([0u8; 28].as_slice())),
+        InvalidOutput::MalformedReferenceScript(Hash::from([0u8; 28])),
         InvalidOutput::BootAddrAttrsTooBig { size: 0 },
     ]
 }
@@ -419,9 +422,9 @@ mod tests {
 
     #[test]
     fn variant_path_reads_nested_variants() {
-        let err = PhaseOneError::Certificates(InvalidCertificates::StakeCredentialNotRegistered(
-            amaru_kernel::Credential::KeyHash(Hash::from([1u8; 28].as_slice())),
+        let err = PhaseOneError::Certificates(InvalidCertificates::StakeCredentialInvalidPoolDelegation(
+            DelegateError::UnknownSource(amaru_kernel::Credential::KeyHash(Hash::from([1u8; 28]))),
         ));
-        assert_eq!(variant_path(&err), "Certificates.StakeCredentialNotRegistered.KeyHash.Hash");
+        assert_eq!(variant_path(&err), "Certificates.StakeCredentialInvalidPoolDelegation.UnknownSource.KeyHash");
     }
 }

@@ -30,8 +30,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * ADR-056 Phase 6a (review MAJOR-1): the Amaru adapter records the resolved-inputs digest; re-applying a reusable
- * {@code previous} runs the module in phase-one mode (its static checks cannot be skipped inside the module) and runs
- * no phase-2 evaluation.
+ * {@code previous} runs the module in phase-one mode (its static checks cannot be skipped inside the module) and does
+ * not call the host's phase-2 evaluator. (From Amaru {@code v10.11.20261105} the module's phase-one mode still runs
+ * Amaru's own script evaluation; INTERFACE.md, "Modes".)
  */
 class AmaruEngineReapplyTest {
 

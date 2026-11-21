@@ -279,11 +279,12 @@ class AmaruEngineBehaviourTest {
 
     @Test
     void anUnsupportedAbiVersionFailsConstruction() {
+        // A version 1 module (before the protocol-version and governance-action-index fields narrowed).
         AmaruScenario s = scenario(DELEGATION);
         AmaruInstance wrongAbi = new AmaruInstance() {
             @Override
             public int abiVersion() {
-                return 2;
+                return 1;
             }
 
             @Override
@@ -308,7 +309,7 @@ class AmaruEngineBehaviourTest {
         assertThatThrownBy(() -> new AmaruTransactionValidator(LedgerValidationEngines.AMARU, config(),
                 ScenarioSupport.network(s), null, AmaruLedgerConstants.HASKELL, () -> wrongAbi))
                 .isInstanceOf(IllegalStateException.class)
-                .hasMessageContaining("interface version 2");
+                .hasMessageContaining("interface version 1");
     }
 
     // --------------------------------------------------------------------------------- MEMPOOL
@@ -403,20 +404,20 @@ class AmaruEngineBehaviourTest {
     }
 
     @Test
-    void amaruScalusSendsMalformedPlutusWitnessesToTheEvaluator() {
-        // Amaru's phase-one mode does not decode Plutus witness scripts (INTERFACE.md, "Modes").
+    void amaruScalusReportsMalformedPlutusWitnessesFromAmarusPhaseOne() {
+        // Amaru's phase-one mode decodes Plutus witness scripts (INTERFACE.md, "Modes"), so the evaluator never runs.
         AmaruScenario s = scenario("00256-fail-plutus-witness-script-that-cannot-be-flat-decoded.json");
-        LedgerFailure malformed = new LedgerFailure(LedgerRuleName.UTXOW, "MalformedScriptWitnesses",
-                LedgerFailure.Phase.PHASE_1, "");
         AtomicReference<Integer> calls = new AtomicReference<>(0);
         ScriptPhaseEvaluator evaluator = (txCbor, tx, inputs, params, slotConfig) -> {
             calls.set(calls.get() + 1);
-            return new ScriptPhaseResult.Rejected(List.of(malformed));
+            return new ScriptPhaseResult.Passed(List.of());
         };
         try (AmaruTransactionValidator engine = engine(s, new FaultyInstance.Shared(), config(), evaluator)) {
-            assertThat(onlyFailure(ScenarioSupport.validate(engine, s, Rule.LEDGER, Origin.LOCAL)))
-                    .isEqualTo(malformed);
-            assertThat(calls.get()).isEqualTo(1);
+            LedgerFailure failure = onlyFailure(ScenarioSupport.validate(engine, s, Rule.LEDGER, Origin.LOCAL));
+            assertThat(failure.qualifiedName()).isEqualTo("UTXOW.MalformedScriptWitnesses");
+            assertThat(failure.phase()).isEqualTo(LedgerFailure.Phase.PHASE_1);
+            assertThat(failure.detail()).startsWith("PhaseOne.ScriptPreparation.MalformedScriptWitness");
+            assertThat(calls.get()).isZero();
         }
     }
 
@@ -473,7 +474,7 @@ class AmaruEngineBehaviourTest {
             assertThat(valid.effects().changes()).contains(
                     new LedgerChange.StakeDelegated(account, s.state().pools().getFirst()));
             assertThat(valid.effects().consumed()).containsExactly(s.state().utxo().getFirst().outpoint());
-            assertThat(engine.amaruVersion()).contains("tag=v10.11.20260925");
+            assertThat(engine.amaruVersion()).contains("tag=v10.11.20261105");
             assertThat(engine.name()).isEqualTo(LedgerValidationEngines.AMARU);
         }
     }

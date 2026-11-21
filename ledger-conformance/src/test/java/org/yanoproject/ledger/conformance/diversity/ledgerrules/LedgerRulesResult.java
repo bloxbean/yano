@@ -10,7 +10,8 @@ import org.yanoproject.ledger.rules.fixtures.amaru.AmaruScenario.Expected;
  * (Amaru's {@code validation-rules} checker, {@code Command/ValidatePhaseOne/Run.hs}, which produces cardano-node's
  * report): {@code "pass"} when accepted; the fixture's predicate when it is among the failures, in any position
  * (Haskell's STS order puts {@code UTXOW} before {@code CERTS}); otherwise the first failure under its corpus name, or
- * its bare Haskell constructor when no corpus name maps to it.
+ * its bare Haskell constructor when no corpus name, or no single one the checker would pick, maps to it
+ * ({@link AmaruCorpusNames#corpusName}).
  */
 final class LedgerRulesResult {
 

@@ -1,4 +1,4 @@
-//! Interface version 1: the CBOR request and response documents exchanged with the host.
+//! Interface version 2: the CBOR request and response documents exchanged with the host.
 //!
 //! The schema is owned by Yano, not by Amaru, and is specified (with CDDL) in `INTERFACE.md`.
 //! Every document is a CBOR map with small unsigned integer keys. Unknown keys are rejected, so an
@@ -18,8 +18,9 @@ use amaru_kernel::{
 use amaru_ledger::context::{AccountState, CCMember, ProposalStateSlim};
 
 /// The interface version implemented by this module; returned by the `abi_version` export and
-/// carried in every request.
-pub const ABI_VERSION: u32 = 1;
+/// carried in every request. Version 2 (Amaru `v10.11.20261105`) narrows protocol-version components to
+/// `u32` and the governance action index to `u16` (INTERFACE.md, "Changes from version 1").
+pub const ABI_VERSION: u32 = 2;
 
 pub type DecodeError = cbor::decode::Error;
 
@@ -28,8 +29,8 @@ pub type DecodeError = cbor::decode::Error;
 /// How much of Amaru's validation to run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
-    /// Amaru's phase-one rules only (`rules::transaction::phase_one::execute`). Plutus scripts are
-    /// not run, so the host runs phase-2 itself.
+    /// Amaru's phase-one verdict: `validate_transaction` (Amaru keeps its phase-one rules crate-private), with a
+    /// phase-two verdict reported as `Ok`, so the host runs phase-2 itself.
     PhaseOne = 0,
     /// Amaru's full `rules::block::validate_transaction`: phase-one, then phase-two through Amaru's
     /// own UPLC machine.
@@ -119,7 +120,7 @@ type EncodeResult = Result<(), cbor::encode::Error<std::convert::Infallible>>;
 type Enc<'a> = Encoder<&'a mut Vec<u8>>;
 
 impl Request {
-    /// Encode as a v1 request document. This is the reference encoder: hosts must produce
+    /// Encode as a request document. This is the reference encoder: hosts must produce
     /// byte-for-byte the same structure (field order does not matter, key set does).
     pub fn to_cbor(&self) -> Vec<u8> {
         let mut buffer = Vec::new();
@@ -227,7 +228,7 @@ impl Request {
         Ok(())
     }
 
-    /// Decode a v1 request document.
+    /// Decode a request document.
     pub fn from_cbor(bytes: &[u8]) -> Result<Self, DecodeError> {
         let mut d = Decoder::new(bytes);
         let request = Self::decode(&mut d)?;
@@ -286,7 +287,7 @@ impl Request {
                     })?)
                 }
                 key::ACCOUNTS => accounts = Some(decode_array(d, decode_account)?),
-                key::POOLS => pools = Some(decode_array(d, decode_hash28)?),
+                key::POOLS => pools = Some(decode_array(d, decode_pool_id)?),
                 key::DREPS => {
                     dreps = Some(decode_array(d, |d| {
                         expect_array(d, 4)?;
@@ -378,7 +379,7 @@ impl KeysEnv {
         (|| -> EncodeResult {
             e.map(2)?;
             e.u64(0)?.u32(ABI_VERSION)?;
-            e.u64(1)?.array(2)?.u64(self.protocol_version.major())?.u64(self.protocol_version.minor())?;
+            e.u64(1)?.array(2)?.u32(self.protocol_version.major())?.u32(self.protocol_version.minor())?;
             Ok(())
         })()
         .expect("infallible");
@@ -398,7 +399,7 @@ impl KeysEnv {
                 }
                 1 => {
                     expect_array(d, 2)?;
-                    protocol_version = Some(ProtocolVersion::new(d.u64()?, d.u64()?));
+                    protocol_version = Some(ProtocolVersion::new(d.u32()?, d.u32()?));
                 }
                 other => return Err(DecodeError::message(format!("unknown env key {other}"))),
             }
@@ -595,7 +596,7 @@ impl RequiredKeys {
                 0 => status = Some(d.u8()?),
                 1 => keys.inputs = decode_array(d, decode_input)?,
                 2 => keys.accounts = decode_array(d, decode_credential)?,
-                3 => keys.pools = decode_array(d, decode_hash28)?,
+                3 => keys.pools = decode_array(d, decode_pool_id)?,
                 4 => keys.dreps = decode_array(d, decode_credential)?,
                 5 => keys.committee_cold = decode_array(d, decode_credential)?,
                 6 => keys.committee_hot = decode_array(d, decode_credential)?,
@@ -696,14 +697,16 @@ fn decode_nullable<'b, T>(
 
 fn decode_hash<const N: usize>(d: &mut Decoder<'_>) -> Result<Hash<N>, DecodeError> {
     let bytes = d.bytes()?;
-    if bytes.len() != N {
-        return Err(DecodeError::message(format!("expected a {N}-byte hash, got {} bytes", bytes.len())));
-    }
-    Ok(Hash::from(bytes))
+    Hash::try_from(bytes)
+        .map_err(|_| DecodeError::message(format!("expected a {N}-byte hash, got {} bytes", bytes.len())))
 }
 
 fn decode_hash28(d: &mut Decoder<'_>) -> Result<Hash<28>, DecodeError> {
     decode_hash::<28>(d)
+}
+
+fn decode_pool_id(d: &mut Decoder<'_>) -> Result<PoolId, DecodeError> {
+    decode_hash28(d).map(PoolId::from)
 }
 
 /// `credential = [0, addr_keyhash] / [1, script_hash]` (Conway CDDL `credential`).
@@ -759,13 +762,13 @@ fn decode_input(d: &mut Decoder<'_>) -> Result<TransactionInput, DecodeError> {
 
 /// `gov_action_id = [transaction_id, index]`.
 fn encode_proposal_id(e: &mut Enc<'_>, id: &ProposalId) -> EncodeResult {
-    e.array(2)?.bytes(id.transaction_id.as_ref())?.u32(id.proposal_index)?;
+    e.array(2)?.bytes(id.transaction_id.as_ref())?.u16(id.proposal_index)?;
     Ok(())
 }
 
 fn decode_proposal_id(d: &mut Decoder<'_>) -> Result<ProposalId, DecodeError> {
     expect_array(d, 2)?;
-    Ok(ProposalId { transaction_id: decode_hash::<32>(d)?, proposal_index: d.u32()? })
+    Ok(ProposalId { transaction_id: decode_hash::<32>(d)?, proposal_index: d.u16()? })
 }
 
 /// `transaction_pointer = [slot, transaction_index]`.
@@ -837,7 +840,7 @@ fn decode_account(d: &mut Decoder<'_>) -> Result<(Credential, AccountState), Dec
     let rewards = d.u64()?;
     let pool = decode_nullable(d, |d| {
         expect_array(d, 2)?;
-        Ok((decode_hash28(d)?, decode_certificate_pointer(d)?))
+        Ok((decode_pool_id(d)?, decode_certificate_pointer(d)?))
     })?;
     let drep = decode_nullable(d, |d| {
         expect_array(d, 2)?;
@@ -857,7 +860,7 @@ fn encode_proposal_kind(e: &mut Enc<'_>, kind: &ProposalSlim) -> EncodeResult {
             e.array(2)?.u8(0)?.bool(bool::from(*security_group))?;
         }
         ProposalSlim::HardFork(version) => {
-            e.array(3)?.u8(1)?.u64(version.major())?.u64(version.minor())?;
+            e.array(3)?.u8(1)?.u32(version.major())?.u32(version.minor())?;
         }
         ProposalSlim::ConstitutionalCommittee => {
             e.array(1)?.u8(2)?;
@@ -876,7 +879,7 @@ fn decode_proposal_kind(d: &mut Decoder<'_>) -> Result<ProposalSlim, DecodeError
     let len = d.array()?;
     match (d.u8()?, len) {
         (0, Some(2)) => Ok(ProposalSlim::ProtocolParameters(d.bool()?.into())),
-        (1, Some(3)) => Ok(ProposalSlim::HardFork(ProtocolVersion::new(d.u64()?, d.u64()?))),
+        (1, Some(3)) => Ok(ProposalSlim::HardFork(ProtocolVersion::new(d.u32()?, d.u32()?))),
         (2, Some(1)) => Ok(ProposalSlim::ConstitutionalCommittee),
         (3, Some(1)) => Ok(ProposalSlim::Constitution),
         (4, Some(1)) => Ok(ProposalSlim::Orphan(true.into())),
@@ -1013,7 +1016,7 @@ fn encode_ledger_constants(e: &mut Enc<'_>, c: &LedgerConstants) -> EncodeResult
         e.u8(2)?.u32(value)?;
     }
     if let Some(value) = &c.ref_script_cost_multiplier {
-        e.u8(3)?.array(2)?.u64(value.numerator)?.u64(value.denominator)?;
+        e.u8(3)?.array(2)?.u64(value.numerator())?.u64(value.denominator())?;
     }
     Ok(())
 }
@@ -1029,10 +1032,9 @@ fn decode_ledger_constants(d: &mut Decoder<'_>) -> Result<LedgerConstants, Decod
                 expect_array(d, 2)?;
                 let numerator = d.u64()?;
                 let denominator = d.u64()?;
-                if denominator == 0 {
-                    return Err(DecodeError::message("ref_script_cost_multiplier has a zero denominator"));
-                }
-                constants.ref_script_cost_multiplier = Some(RationalNumber { numerator, denominator });
+                let multiplier = RationalNumber::new(numerator, denominator)
+                    .map_err(|e| DecodeError::message(format!("ref_script_cost_multiplier: {e}")))?;
+                constants.ref_script_cost_multiplier = Some(multiplier);
             }
             other => return Err(DecodeError::message(format!("unknown ledger_constants key {other}"))),
         }
@@ -1053,4 +1055,51 @@ pub(crate) fn into_unique_map<K: Ord + std::fmt::Debug, V>(
         }
     }
     Ok(map)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn decoder_of(build: impl FnOnce(&mut Encoder<&mut Vec<u8>>)) -> Vec<u8> {
+        let mut buffer = Vec::new();
+        build(&mut Encoder::new(&mut buffer));
+        buffer
+    }
+
+    /// Version 2 bounds: protocol-version components are `u32` (Amaru's `ProtocolVersion`), the governance
+    /// action index is `u16` (Haskell's `GovActionIx`, a `Word16`).
+    #[test]
+    fn narrowed_fields_accept_their_maximum_and_refuse_one_more() {
+        let hard_fork = |minor: u64| {
+            decoder_of(|e| {
+                e.array(3).unwrap().u8(1).unwrap().u32(10).unwrap().u64(minor).unwrap();
+            })
+        };
+        let max = hard_fork(u64::from(u32::MAX));
+        assert!(matches!(
+            decode_proposal_kind(&mut Decoder::new(&max)),
+            Ok(ProposalSlim::HardFork(version)) if version.minor() == u32::MAX
+        ));
+        assert!(decode_proposal_kind(&mut Decoder::new(&hard_fork(u64::from(u32::MAX) + 1))).is_err());
+
+        let env = |minor: u64| {
+            decoder_of(|e| {
+                e.map(2).unwrap().u8(0).unwrap().u32(ABI_VERSION).unwrap();
+                e.u8(1).unwrap().array(2).unwrap().u32(10).unwrap().u64(minor).unwrap();
+            })
+        };
+        let max = KeysEnv::from_cbor(&env(u64::from(u32::MAX))).expect("u32::MAX minor");
+        assert_eq!(max.protocol_version.minor(), u32::MAX);
+        assert!(KeysEnv::from_cbor(&env(u64::from(u32::MAX) + 1)).is_err());
+
+        let proposal_id = |index: u32| {
+            decoder_of(|e| {
+                e.array(2).unwrap().bytes(&[7u8; 32]).unwrap().u32(index).unwrap();
+            })
+        };
+        let max = decode_proposal_id(&mut Decoder::new(&proposal_id(u32::from(u16::MAX)))).expect("u16::MAX index");
+        assert_eq!(max.proposal_index, u16::MAX);
+        assert!(decode_proposal_id(&mut Decoder::new(&proposal_id(u32::from(u16::MAX) + 1))).is_err());
+    }
 }

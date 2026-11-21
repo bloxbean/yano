@@ -1,8 +1,11 @@
-# amaru-validator-wasm interface, version 1
+# amaru-validator-wasm interface, version 2
 
 This is the contract between `amaru_validator.wasm` and its host (Yano's optional
 `amaru-validator` Java module, ADR-057 Phase B). Yano owns it; it is independent of
 Amaru's internal types and is versioned by `abi_version`.
+
+Version 2 (Amaru `v10.11.20261105`) differs from version 1 only in the integer
+widths of three fields; see "Changes from version 1" at the end.
 
 The Rust reference implementation is `src/interface.rs`. The fixture test
 (`tests/amaru_scenarios.rs`) encodes every Amaru scenario through it, and checks
@@ -43,7 +46,7 @@ that each request round-trips byte for byte.
 
 | Export | Signature (wasm) | Meaning |
 |---|---|---|
-| `abi_version` | `() -> i32` | Interface version, `1`. A host refuses a module whose version it does not support (invariant 5). |
+| `abi_version` | `() -> i32` | Interface version, `2`. A host refuses a module whose version it does not support (invariant 5). |
 | `amaru_version` | `() -> i32` (ptr) | Buffer holding the UTF-8 text of `AMARU_VERSION` (`tag=…`, `commit=…`, `toolchain=…` lines) followed by `crate=<version>`, this crate's `Cargo.toml` version. The crate version is bumped whenever host-visible behaviour changes without an Amaru upgrade (for example the failure-name mapping), so a host can refuse a stale module. |
 | `alloc` | `(len: i32) -> i32` (ptr) | Allocates `len` bytes (zeroed) for the host to write into. |
 | `dealloc` | `(ptr: i32, len: i32)` | Frees a buffer from `alloc` (the same `len`), or a returned buffer (`4 + payload length`). |
@@ -84,7 +87,7 @@ hash32          = bytes .size 32
 credential      = [0, hash28] / [1, hash28]           ; key hash / script hash (Conway CDDL)
 drep            = [0, hash28] / [1, hash28] / [2] / [3] ; key, script, abstain, no confidence
 tx_in           = [transaction_id: hash32, index: uint .size 2]
-gov_action_id   = [transaction_id: hash32, index: uint .size 4]
+gov_action_id   = [transaction_id: hash32, index: uint .size 2]
 epoch           = uint
 slot            = uint
 coin            = uint
@@ -97,7 +100,7 @@ cert_pointer    = [slot, transaction_index: uint, certificate_index: uint] / nul
 
 ```cddl
 validate_request = {
-  0  : 1,                          ; abi_version
+  0  : 2,                          ; abi_version
   1  : mode,
   2  : bytes .cbor transaction,    ; [body, witnesses, is_valid, auxiliary_data], as received
   3  : network_magic: uint,        ; 764824073 mainnet, 1 preprod, 2 preview, anything else = testnet
@@ -118,7 +121,7 @@ validate_request = {
   18 : [* proposal],
 }
 
-mode = 0   ; phase_one: Amaru's phase-one rules only (no Plutus evaluation)
+mode = 0   ; phase_one: full validation, a phase-two verdict reported as ok (see "Modes")
      / 1   ; full: phase-one, then phase-two in Amaru's UPLC machine
 
 era_history = [stability_window: uint, [+ era]]
@@ -163,7 +166,7 @@ committee_member = [cold: credential,
 
 proposal = [gov_action_id, proposal_kind, valid_until: epoch]  ; valid_until = proposed epoch + lifetime
 proposal_kind = [0, any_in_security_group: bool]   ; parameter change
-              / [1, major: uint, minor: uint]      ; hard-fork initiation to that version
+              / [1, major: uint .size 4, minor: uint .size 4]  ; hard-fork initiation to that version
               / [2]                                ; no confidence / update committee
               / [3]                                ; new constitution
               / [4]                                ; treasury withdrawals
@@ -320,8 +323,8 @@ error   = { 0: 2, 7: message: tstr }  ; the request could not be processed: says
 bytes after it are an error:
 
 ```cddl
-keys_env = { ? 0: 1,                          ; abi_version
-             1: [major: uint, minor: uint] }  ; decode the tx under this protocol version
+keys_env = { ? 0: 2,                          ; abi_version
+             1: [major: uint .size 4, minor: uint .size 4] }  ; decode the tx under this protocol version
                                               ; (the one the validate request will carry)
 
 required_keys_response = {
@@ -343,35 +346,59 @@ required_keys_response = {
 
 ## Modes and ADR-057 open question 1
 
-Amaru's `rules::transaction::phase_one::execute` **is public** at
-`v10.11.20260925`, so `mode = phase_one` runs phase one alone. No upstream change
-or fork is needed.
+From `v10.11.20261105` Amaru's phase-one rules are crate-private
+(`phase_one::when_valid` / `when_invalid`, chosen by the transaction's `is_valid`
+flag); the public entry point is `rules::block::validate_transaction`, which runs
+phase one, then phase two. Both modes therefore call `validate_transaction`:
 
-**Limitation.** Amaru runs several phase-1 checks inside its phase-two
-preparation (`phase_two::execute`), which phase-one mode does not call. Phase-one
-mode therefore does not report:
-- `UTXOW.MalformedScriptWitnesses`: Plutus script witnesses that do not decode
-  (scenarios 00256–00258);
-- `UTXOS.CollectErrors` with `NoCostModel`: a script language with no cost model
-  (`PreparationError::MissingCostModel`). Haskell reports it before any script
-  runs;
-- `UTXOS.CollectErrors` with `BadTranslation`: `TxInfo` translation failures,
-  including Amaru's Plutus V3 check that spending and reference inputs are
-  disjoint (`phase_two/mod.rs`, the `NonDisjointRefInputs` preparation error). At
-  PV 10 the UTXO rule's `BabbageNonDisjointRefInputs` fires first, and phase-one
-  mode does report that.
+- `mode = full` returns its verdict;
+- `mode = phase_one` returns the same verdict, except that a phase-two verdict
+  (`UTXOS.ValidationTagMismatch`) becomes `ok`: phase one passed and the host's
+  phase-2 engine judges the scripts.
 
-Under `engine: amaru-scalus` (ADR-057 Phase B), the host's phase-2 engine must report
-all three with these names, as phase-1 failures, before running any script. In
-the scenario gate, phase-one mode matches full mode on every scenario, except
-where full mode's verdict came from that phase-two code.
+Amaru's Plutus evaluation therefore also runs in phase-one mode (the fallback
+ADR-057 open question 1 names; an isolated workaround in `src/engine.rs` until
+Amaru re-exports a public phase-one entry point). That is a cost regression:
+`amaru-scalus` now pays Amaru's script evaluation as well as the host's, p50
+15–44 ms and p99 170–250 ms per real preprod/preview Plutus transaction against
+3 ms and 7 ms before (ADR-057 Phase E re-run, 2026-11-07). Phase-one mode also
+reports the phase-1 checks Amaru makes while preparing script contexts
+(`PreparationError`), with the same names as full mode:
+- `UTXOW.MalformedScriptWitnesses`: Plutus script witnesses that do not decode;
+- `UTXOS.CollectErrors` with `NoCostModel`: a script language with no cost model;
+- `UTXOS.CollectErrors` with `BadTranslation`: `TxInfo` translation failures
+  (Byron addresses, inline datums or Conway fields in a Plutus V1/V2 context, and
+  Amaru's Plutus V3 check that spending and reference inputs are disjoint).
+
+Under `engine: amaru-scalus` (ADR-057 Phase B) the host's phase-2 engine still
+reports these too, for a transaction Amaru accepts. In the scenario gate,
+phase-one mode matches full mode on every scenario, except that a full-mode
+`ValidationTagMismatch` is `ok`.
+
+Up to `v10.11.20260925` phase-one mode called the then-public
+`phase_one::execute`: it ran no Plutus and did not report the checks above.
 
 ## Interface invariants for hosts
 
 1. **Conway only (ADR-057 invariant 6).** The host refuses protocol versions below
    10 before building a request. The module validates whatever Amaru accepts;
-   Amaru's corpus even includes a hard-fork proposal made at version 9.0.
+   18 of Amaru's 368 scenarios run at protocol version 9.0, and the native scenario
+   gate validates them all.
 2. **One snapshot per request.** Build each request from one ADR-056 canonical
    snapshot plus overlay (invariant 3).
 3. **Bumping `abi_version`.** Any change to these schemas bumps `abi_version`. An
    Amaru bump that leaves them intact does not.
+
+## Changes from version 1
+
+Version 2 narrows three fields to the types Amaru `v10.11.20261105` and Haskell
+use; a value outside them is a malformed request (or env), not a verdict:
+
+| Field | Version 1 | Version 2 | Follows |
+|---|---|---|---|
+| protocol version `major`, `minor` (`keys_env` key 1; `proposal_kind` `[1, major, minor]`) | `uint` (u64) | `uint .size 4` (u32) | Amaru's `ProtocolVersion` (`u32`); Conway CDDL `protocol_version = [major_protocol_version, uint .size 4]`, `major_protocol_version = 0 .. 12` |
+| `gov_action_id` index (proposal ids, `proposals_roots`, votes' targets) | `uint .size 4` (u32) | `uint .size 2` (u16) | Haskell's `GovActionIx` (`Word16`, Conway/Governance/Procedures.hs:162; Conway CDDL `gov_action_index : uint .size 2`) |
+
+Everything else is unchanged. A version 1 host is refused (`unsupported
+abi_version 1`), and the Java host refuses a module whose `abi_version` is not
+`AmaruTransactionValidator.SUPPORTED_ABI_VERSION`.

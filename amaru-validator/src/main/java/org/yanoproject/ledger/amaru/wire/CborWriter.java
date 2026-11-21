@@ -5,7 +5,7 @@ import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 
 /**
- * The CBOR subset the v1 interface uses, written exactly as the Rust reference encoder (minicbor)
+ * The CBOR subset the interface uses, written exactly as the Rust reference encoder (minicbor)
  * writes it: every head in its shortest form, definite lengths only.
  */
 public final class CborWriter {

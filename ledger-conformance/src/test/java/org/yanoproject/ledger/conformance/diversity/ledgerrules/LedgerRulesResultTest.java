@@ -33,14 +33,22 @@ class LedgerRulesResultTest {
 
     @Test
     void otherwiseTheFirstFailureUnderItsCorpusName() {
-        assertThat(result(new Expected.Pass(), Observation.rejected(List.of(failure("UTXOS", "CollectErrors")))))
-                .isEqualTo("OutsideForecast");
+        assertThat(result(new Expected.Pass(),
+                Observation.rejected(List.of(failure("GOV", "ZeroTreasuryWithdrawals")))))
+                .isEqualTo("TreasuryWithdrawalsAllZeros");
         assertThat(result(new Expected.Pass(),
                 Observation.rejected(List.of(failure("DELEG", "StakeKeyNotRegisteredDELEG")))))
                 .isEqualTo("StakeCredentialInvalidPoolDelegation");
         assertThat(result(new Expected.Pass(),
                 Observation.rejected(List.of(failure("GOV", "UnelectedCommitteeVoters")))))
                 .isEqualTo("VotersDoNotExist");
+    }
+
+    @Test
+    void aConstructorSeveralCorpusNamesShareWithoutACheckerDefaultIsReportedBare() {
+        // UTXOS.CollectErrors: MissingCostModel, OutsideForecast, ByronTxOutInContext, ... (Run.hs:495-502).
+        assertThat(result(new Expected.Pass(), Observation.rejected(List.of(failure("UTXOS", "CollectErrors")))))
+                .isEqualTo("CollectErrors");
     }
 
     @Test

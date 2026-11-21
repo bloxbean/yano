@@ -58,7 +58,7 @@ def main():
     version = bytes(memory.read(store, ptr + 4, ptr + 4 + length)).decode()
     exports["dealloc"](store, ptr, 4 + length)
     print(f"abi_version={abi}; {version.strip().replace(chr(10), '; ')}")
-    if abi != 1:
+    if abi != 2:
         raise SystemExit(f"unexpected abi_version {abi}")
 
     # required_keys on bytes that are not a transaction answers with an error document {0: 2, 8: msg}.

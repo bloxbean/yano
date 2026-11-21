@@ -18,7 +18,7 @@ import org.yanoproject.ledger.rules.view.model.GovActionId;
 import org.yanoproject.ledger.rules.view.model.PoolId;
 
 /**
- * Writes v1 request documents exactly as the Rust reference encoder does
+ * Writes request documents (interface version {@value #ABI_VERSION}) exactly as the Rust reference encoder does
  * ({@code amaru-validator-wasm/src/interface.rs}): a definite map with keys in ascending order, key 7
  * only when test constants are set, key 9 only when a guardrail script exists, and shortest-form heads
  * throughout. The golden tests compare the output with the reference encoder's bytes.
@@ -26,7 +26,7 @@ import org.yanoproject.ledger.rules.view.model.PoolId;
 public final class AmaruRequestEncoder {
 
     /** The interface version this host implements (INTERFACE.md, invariant 5). */
-    public static final int ABI_VERSION = 1;
+    public static final int ABI_VERSION = 2;
 
     private AmaruRequestEncoder() {
     }

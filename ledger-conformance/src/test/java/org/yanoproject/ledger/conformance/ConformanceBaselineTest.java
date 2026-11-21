@@ -28,9 +28,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * {@code conformanceReport}, to {@code ledger-conformance/docs/baseline-2026-09.md}).
  *
  * <p>The baseline is informational: engines are expected to fail cases. The test asserts that the runner answers
- * every case for every engine and, with the reference engine present, that Amaru still matches the corpus (275 of
- * 276, the remaining scenario being the PV 9 one it refuses by design) and every mutant. Without the corpus the
- * scenario half is left out of the report.</p>
+ * every case for every engine and, with the reference engine present, that Amaru still matches the corpus (every
+ * scenario except those at protocol version 9, which it refuses by design: 350 of 368) and every mutant. Without the
+ * corpus the scenario half is left out of the report.</p>
  */
 class ConformanceBaselineTest {
 
@@ -70,9 +70,10 @@ class ConformanceBaselineTest {
     private static void assertReference(EngineRun amaru) {
         List<CaseResult> misses = amaru.scenarios().stream().filter(r -> !r.constructorMatch()).toList();
         if (!amaru.scenarios().isEmpty()) {
+            // The 18 scenarios at protocol version 9 are refused (invariant 6).
             assertThat(amaru.scenarios().size() - misses.size()).as("amaru scenario matches")
-                    .isEqualTo(AmaruScenarioLoader.EXPECTED_SCENARIOS - 1);
-            assertThat(misses).singleElement().satisfies(miss -> {
+                    .isEqualTo(AmaruScenarioLoader.EXPECTED_SCENARIOS - 18);
+            assertThat(misses).allSatisfy(miss -> {
                 assertThat(miss.testCase().env().protocolMajor()).isLessThan(10);
                 assertThat(Observation.isEraNotSupported(miss.observation().first())).isTrue();
             });

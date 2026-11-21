@@ -27,8 +27,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>Rule {@code LEDGER} and origin {@code SYNC}: the corpus exercises the {@code LEDGER} rule, and one
  * scenario is a valid {@code is_valid = false} transaction, which only shadow sync admits (ADR-056 §6).
- * One scenario runs at protocol version 9; the engine refuses it with {@code ENGINE.EraNotSupported}
- * (invariant 6), which is the expected outcome here.</p>
+ * The scenarios at protocol version 9 are refused with {@code ENGINE.EraNotSupported} (invariant 6), which is
+ * the expected outcome here.</p>
  */
 class AmaruScenarioGateTest {
 
@@ -110,6 +110,27 @@ class AmaruScenarioGateTest {
                         + "p50 %.3f ms, p90 %.3f ms, p99 %.3f ms%n", nanos.length, nanos[nanos.length / 2] / 1e6,
                 nanos[(int) (nanos.length * 0.90)] / 1e6, nanos[(int) (nanos.length * 0.99)] / 1e6);
         assertThat(nanos[0]).isPositive();
+    }
+
+    /**
+     * {@code IncorrectDepositDRep} is resolved per scenario ({@code AmaruCorpusNames}): the refund scenario needs
+     * {@code ConwayDRepIncorrectRefund} and the deposit scenario {@code ConwayDRepIncorrectDeposit}; the swapped
+     * constructor is a mismatch.
+     */
+    @Test
+    void drepDepositAndRefundScenariosDoNotAcceptEachOthersConstructor() {
+        AmaruScenarioLoader loader = AmaruScenarioLoader.fromEnvironment();
+        AmaruScenario refund = loader.load("00305-fail-drep-deregistration-with-incorrect-refund.json");
+        AmaruScenario deposit = loader.load("00347-fail-drep-registration-with-an-incorrect-deposit.json");
+        assertThat(mismatch(refund, govCert("ConwayDRepIncorrectRefund"))).isNull();
+        assertThat(mismatch(refund, govCert("ConwayDRepIncorrectDeposit"))).isNotNull();
+        assertThat(mismatch(deposit, govCert("ConwayDRepIncorrectDeposit"))).isNull();
+        assertThat(mismatch(deposit, govCert("ConwayDRepIncorrectRefund"))).isNotNull();
+    }
+
+    private static TxValidationOutcome govCert(String constructor) {
+        return TxValidationOutcome.Invalid.of(new LedgerFailure(LedgerRuleName.GOVCERT, constructor,
+                LedgerFailure.Phase.PHASE_1, ""));
     }
 
     /** @return null when the outcome is the expected one, otherwise what differs */

@@ -26,7 +26,7 @@ the JVM. The design is in
 | Shadow-sync engine | `shadow-sync: true`, `shadow-sync-engines: java-julc,amaru-scalus` | Every transaction of every applied Conway block is re-validated against its pre-block state. Observe only. |
 | Test oracle | `:ledger-conformance:test -PwithAmaru=true …` | The reference engine for ADR-056's conformance harness (baseline, mutation matrices), engine `amaru` (Amaru runs the scripts too). |
 
-Amaru is Haskell-cross-checked (276 scenarios at the pinned tag). A Java-vs-Amaru disagreement is
+Amaru is Haskell-cross-checked (368 scenarios at the pinned tag). A Java-vs-Amaru disagreement is
 resolved against Haskell, not by copying Amaru.
 
 ## 1. Build the wasm module
@@ -43,7 +43,7 @@ full procedure. In short, you need:
 
 ```sh
 cd amaru-validator-wasm
-cargo test --locked                                # native: all 276 scenarios, both modes
+cargo test --locked                                # native: all 368 scenarios, both modes
 WASI_SDK_PATH=/opt/wasi-sdk scripts/build-wasm.sh  # or: ZIG=/path/to/zig scripts/build-wasm.sh
 # -> target/wasm-out/amaru_validator.wasm and amaru_validator.wasm.sha256
 #    (under $CARGO_TARGET_DIR/wasm-out when that is set)
@@ -192,25 +192,24 @@ identical at PV 10 and 11. The harness also takes `amaru`.
   - a pool registration whose VRF key hash another pool already uses, at PV 11 (Haskell:
     `POOL.VRFKeyHashAlreadyRegistered`). The request carries pool ids only.
 - **Rejected by both, under a different name:**
-  - A pool delegation from an unregistered credential (the Phase C divergence). Haskell reports
-    `DELEG.StakeKeyNotRegisteredDELEG`. Amaru accepts, and the adapter then cannot derive the
-    effects, so it fails closed with `ENGINE.AmaruEngineFailure`. `AmaruKnownDivergencesTest`
-    pins it.
-  - A DRep update of an unregistered DRep gives `ENGINE.AmaruEngineFailure` the same way.
-  - A pool metadata hash that is not 32 bytes gives `ENGINE.DecodingFailure`, where Haskell's
-    `POOL` rejects it.
   - Constructor names: scenario 00280 (`OutputTooBigUTxO` for Haskell's
     `OutputBootAddrAttrsTooBig`), non-ADA collateral (`ValueNotConservedUTxO` for
     `CollateralContainsNonADA`), and `VotersDoNotExist` for PV 11's `UnelectedCommitteeVoters`.
   - Amaru stops at its first failure, while Haskell lists all of them.
-- **`amaru-scalus` gaps are covered by the evaluator.** Amaru's phase-one mode does not report
-  `MalformedScriptWitnesses` or `CollectErrors`, so the engine calls the Scalus evaluator whenever
-  a transaction has redeemers or Plutus witness scripts, or spends an input carrying a reference
-  script.
+- **`amaru-scalus` phase two is Scalus, but Amaru evaluates the scripts too.** The engine calls
+  the Scalus evaluator whenever a transaction has redeemers or Plutus witness scripts, or spends an
+  input carrying a reference script. From Amaru `v10.11.20261105` the module's phase-one mode runs
+  Amaru's own Plutus evaluation as well and drops its verdict (Amaru keeps its phase-one rules
+  crate-private; `INTERFACE.md`, "Modes"). It reports `MalformedScriptWitnesses` and
+  `CollectErrors` itself, and re-application saves no Plutus time.
 - **CCL decoding is still needed** for the MEMPOOL step and for effects. A transaction Amaru
   accepts but CCL cannot decode fails closed.
-- **Speed.** Wasm runs about 15–20 times slower than native Amaru. That is fine for admission, but
-  not for bulk validation.
+- **Speed.** Wasm runs about 15–20 times slower than native Amaru. On the scenario corpus
+  (small test scripts) `amaru` takes p50 1.0 ms and p99 2.7 ms. On real preprod/preview Plutus
+  transactions both Amaru engines take p50 15–44 ms and p99 170–250 ms, because Amaru's script
+  evaluation is slow under Endive; `amaru-scalus` took 3 ms and 7 ms before Amaru
+  `v10.11.20261105` (ADR-057 Phase E re-run, 2026-11-07). The Java engines stay at p50 1–2.4 ms.
+  Prefer them for admission on public networks.
 
 ADR-056 (Phase 3a and 3b results) and `ledger-conformance/docs/baseline-2026-09.md` hold the full
 list and the Haskell references.
@@ -233,8 +232,8 @@ pick the tag, bump `Cargo.toml` and `AMARU_VERSION`, re-check `[patch]` sections
    - `:amaru-validator:test` with the corpus of the new tag: the scenario gate in both modes, the
      golden request encoding and request equivalence. The scenario count is pinned
      (`AmaruScenarioLoader.EXPECTED_SCENARIOS`).
-   - `AmaruDevnetParityTest` with `-PledgerRulesGate=true`. If a known divergence is fixed,
-     `AmaruKnownDivergencesTest` fails; shrink the allow-list.
+   - `AmaruDevnetParityTest` with `-PledgerRulesGate=true`: the same lines under both engines (no
+     divergence is recorded since Amaru `v10.11.20261105` fixed the unregistered-delegator one).
    - `:ledger-conformance:test`, then `conformanceReport` to regenerate the baseline, and the
      blueprint known-failure list (`amaru-known-failures.txt`) against the new checkout.
 4. Once a release carries the module, set `amaruWasmReleaseTag` and `amaruWasmSha256` to it.

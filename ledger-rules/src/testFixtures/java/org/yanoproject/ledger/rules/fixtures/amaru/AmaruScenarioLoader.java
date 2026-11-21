@@ -70,7 +70,7 @@ import java.util.stream.Stream;
 
 /**
  * Reads Amaru's implementation-generic transaction scenarios
- * ({@code crates/amaru-ledger/tests/data/transaction} at the tag ADR-057 pins, {@code v10.11.20260925};
+ * ({@code crates/amaru-ledger/tests/data/transaction} at the tag ADR-057 pins, {@code v10.11.20261105};
  * format in that directory's {@code README.md} and {@code schema.json}) into {@link AmaruScenario}s:
  * an {@link InMemoryLedgerView}, the transaction bytes, a {@link ValidationEnv} and the expected verdict
  * with its Haskell name.
@@ -110,7 +110,7 @@ public final class AmaruScenarioLoader {
     public static final String SCENARIOS_ENV = "AMARU_SCENARIOS_DIR";
 
     /** Scenario count at the pinned tag (same as {@code EXPECTED_SCENARIOS} in the Rust gate). */
-    public static final int EXPECTED_SCENARIOS = 276;
+    public static final int EXPECTED_SCENARIOS = 368;
 
     private static final String TRANSACTION_DATA = "crates/amaru-ledger/tests/data/transaction";
     private static final String COMMON = "common/";
@@ -171,7 +171,7 @@ public final class AmaruScenarioLoader {
         Optional<Path> dir = locateScenariosDir();
         Assumptions.assumeTrue(dir.isPresent(), () -> "Amaru scenarios not configured: set -D"
                 + SCENARIOS_PROPERTY + " or " + SCENARIOS_ENV + " to a clone of https://github.com/pragma-org/amaru"
-                + " at tag v10.11.20260925 (or its " + TRANSACTION_DATA + " directory)");
+                + " at tag v10.11.20261105 (or its " + TRANSACTION_DATA + " directory)");
         return dir.orElseThrow();
     }
 
@@ -236,6 +236,10 @@ public final class AmaruScenarioLoader {
         LedgerConstants constants = ledgerConstants(pp);
 
         JsonNode s = fixture.path("initial_state");
+        // Schema v10.11.20261105: `voting_state` would override dreps, committee and governance_activity below.
+        if (s.has("voting_state")) {
+            throw new IllegalStateException("initial_state.voting_state is not read by this loader");
+        }
         InMemoryLedgerView.Builder view = InMemoryLedgerView.builder().protocolParams(params);
 
         List<RawUtxo> utxo = new ArrayList<>();
@@ -339,7 +343,7 @@ public final class AmaruScenarioLoader {
                 slotConfig(eras, network.globalParameters()), new byte[32]);
 
         return new AmaruScenario(name, file, fixture.path("title").asText(name), hex(fixture.get("transaction")),
-                view.build(), env, params, expected(fixture.get("expected")), network, constants, state);
+                view.build(), env, params, expected(name, fixture.get("expected")), network, constants, state);
     }
 
     /** {@code $ref} to a shared document, with an optional shallow {@code $override}. */
@@ -361,7 +365,7 @@ public final class AmaruScenarioLoader {
         return document;
     }
 
-    private static Expected expected(JsonNode expected) {
+    private static Expected expected(String scenario, JsonNode expected) {
         if (expected.isTextual() && "Pass".equals(expected.asText())) {
             return new Expected.Pass();
         }
@@ -369,7 +373,7 @@ public final class AmaruScenarioLoader {
             return new Expected.DecodingFailure();
         }
         String predicate = expected.get("predicate").asText();
-        AmaruCorpusNames.HaskellName haskell = AmaruCorpusNames.haskellName(predicate)
+        AmaruCorpusNames.HaskellName haskell = AmaruCorpusNames.haskellName(scenario, predicate)
                 .orElseThrow(() -> new IllegalStateException("corpus predicate " + predicate
                         + " has no Haskell alias (AmaruCorpusNames)"));
         String description = expected.hasNonNull("description") ? expected.get("description").asText() : null;

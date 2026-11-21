@@ -24,16 +24,16 @@ use amaru_ledger::{
     context::{AccountState, CCMember, ProposalStateSlim},
     epoch_transition::GovernanceActivity,
 };
-use amaru_plutus::arena_pool::ArenaPool;
+use amaru_uplc::arena_pool::ArenaPool;
 use amaru_validator::{
     AMARU_VERSION, Mode, Request, RequiredKeys, Response,
     engine::{self, network_name},
-    interface::{EraHistoryWire, KeysEnv, LedgerConstants, Phase},
+    interface::{EraHistoryWire, Invalid, KeysEnv, LedgerConstants, Phase},
 };
 
 /// Number of scenarios at the pinned tag; a change means the corpus moved and this gate must be
 /// re-read.
-const EXPECTED_SCENARIOS: usize = 276;
+const EXPECTED_SCENARIOS: usize = 368;
 
 fn amaru_version_field(field: &str) -> String {
     AMARU_VERSION
@@ -72,7 +72,7 @@ fn fixtures_dir() -> PathBuf {
     );
 }
 
-// ------------------------------------------------------------------------ fixture → v1 request
+// --------------------------------------------------------------------------- fixture → request
 
 fn resolve(root: &Path, value: &Value) -> Value {
     let Some(reference) = value.get("$ref").and_then(Value::as_str) else {
@@ -112,7 +112,7 @@ fn network_magic(network: &str) -> u32 {
 
 /// The Haskell-hardcoded values Amaru's CBOR layout leaves out, when the fixture moves them.
 fn ledger_constants(parameters: &ProtocolParameters) -> LedgerConstants {
-    let defaults = (200 * 1024, 1024 * 1024, 25_600, RationalNumber { numerator: 12, denominator: 10 });
+    let defaults = (200 * 1024, 1024 * 1024, 25_600, RationalNumber::new(12, 10).expect("1.2"));
     LedgerConstants {
         max_ref_script_size_per_tx: (parameters.max_ref_script_size_per_tx != defaults.0)
             .then_some(parameters.max_ref_script_size_per_tx),
@@ -129,7 +129,13 @@ fn ledger_constants(parameters: &ProtocolParameters) -> LedgerConstants {
 enum Expected {
     Pass,
     DecodingFailure,
-    Predicate { name: String, description: Option<String> },
+    /// The corpus predicate `name` and the Haskell rule and constructor it stands for in this scenario.
+    Predicate {
+        name: String,
+        rule: &'static str,
+        constructor: &'static str,
+        description: Option<String>,
+    },
 }
 
 struct Scenario {
@@ -159,6 +165,8 @@ fn load_scenario(root: &Path, path: &Path) -> Scenario {
     let protocol_parameters: ProtocolParameters = typed(&resolve(root, &fixture["protocol_parameters"]));
 
     let state = &fixture["initial_state"];
+    // Schema v10.11.20261105: `voting_state` would override dreps, committee and governance_activity below.
+    assert!(state.get("voting_state").is_none(), "{name}: initial_state.voting_state is not read by this loader");
     let empty = Value::Array(Vec::new());
     let list = |field: &str| state.get(field).unwrap_or(&empty).as_array().expect("array").clone();
 
@@ -246,10 +254,16 @@ fn load_scenario(root: &Path, path: &Path) -> Scenario {
     let expected = match &fixture["expected"] {
         Value::String(pass) if pass == "Pass" => Expected::Pass,
         Value::Object(map) if map.contains_key("decoding_failure") => Expected::DecodingFailure,
-        Value::Object(map) => Expected::Predicate {
-            name: map["predicate"].as_str().expect("predicate").to_string(),
-            description: map.get("description").and_then(Value::as_str).map(str::to_string),
-        },
+        Value::Object(map) => {
+            let predicate = map["predicate"].as_str().expect("predicate").to_string();
+            let (rule, constructor) = scenario_haskell_name(&name, &predicate).unwrap_or_else(|e| panic!("{e}"));
+            Expected::Predicate {
+                name: predicate,
+                rule,
+                constructor,
+                description: map.get("description").and_then(Value::as_str).map(str::to_string),
+            }
+        }
         other => panic!("{name}: unexpected `expected` {other}"),
     };
 
@@ -298,64 +312,87 @@ fn run(label: &str, request: &Request) -> Response {
 
 /// Amaru's corpus predicate name → the Haskell (rule, constructor) at ADR-056's pinned
 /// `cardano-ledger` revision (`adr/reports/adr-056-haskell-pinned-revisions.md`, 3d-table), for
-/// the protocol versions the corpus uses (9 and 10). Written independently of `src/failure.rs`,
+/// the protocol versions the corpus uses (9 to 11). Written independently of `src/failure.rs`,
 /// so the two must agree.
 fn haskell_name(corpus: &str) -> Option<(&'static str, &'static str)> {
     Some(match corpus {
         "BabbageNonDisjointRefInputs" => ("UTXO", "BabbageNonDisjointRefInputs"),
         "BabbageOutputTooSmallUTxO" => ("UTXO", "BabbageOutputTooSmallUTxO"),
         "BadInputsUTxO" => ("UTXO", "BadInputsUTxO"),
+        // Plutus TxInfo translation failures: `CollectErrors [BadTranslation ..]` (Babbage/Conway TxInfo.hs).
+        "ByronTxOutInContext" => ("UTXOS", "CollectErrors"),
         "CommitteeHasPreviouslyResigned" => ("GOVCERT", "ConwayCommitteeHasPreviouslyResigned"),
         "CommitteeIsUnknown" => ("GOVCERT", "ConwayCommitteeIsUnknown"),
+        "ConflictingCommitteeUpdate" => ("GOV", "ConflictingCommitteeUpdate"),
         "ConflictingMetadataHash" => ("UTXOW", "ConflictingMetadataHash"),
         "ConwayTreasuryValueMismatch" => ("LEDGER", "ConwayTreasuryValueMismatch"),
         "ConwayTxRefScriptsSizeTooBig" => ("LEDGER", "ConwayTxRefScriptsSizeTooBig"),
         "ConwayWdrlNotDelegatedToDRep" => ("LEDGER", "ConwayWdrlNotDelegatedToDRep"),
+        "CurrentTreasuryFieldNotSupported" => ("UTXOS", "CollectErrors"),
         "DRepAlreadyRegistered" => ("GOVCERT", "ConwayDRepAlreadyRegistered"),
+        "DRepNotRegistered" => ("GOVCERT", "ConwayDRepNotRegistered"),
         "DelegateeDRepNotRegistered" => ("DELEG", "DelegateeDRepNotRegisteredDELEG"),
         "DelegateeStakePoolNotRegistered" => ("DELEG", "DelegateeStakePoolNotRegisteredDELEG"),
         "DisallowedVoters" => ("GOV", "DisallowedVoters"),
+        "ExUnitsTooBigUTxO" => ("UTXO", "ExUnitsTooBigUTxO"),
+        "ExpirationEpochTooSmall" => ("GOV", "ExpirationEpochTooSmall"),
+        "ExtraRedeemers" => ("UTXOW", "ExtraRedeemers"),
         "ExtraneousScriptWitnessesUTXOW" => ("UTXOW", "ExtraneousScriptWitnessesUTXOW"),
         "FeeTooSmallUTxO" => ("UTXO", "FeeTooSmallUTxO"),
         "GovActionsDoNotExist" => ("GOV", "GovActionsDoNotExist"),
         "IncorrectDepositDELEG" => ("DELEG", "IncorrectDepositDELEG"),
-        "IncorrectDepositDRep" => ("GOVCERT", "ConwayDRepIncorrectDeposit"),
         "IncorrectTotalCollateralField" => ("UTXO", "IncorrectTotalCollateralField"),
+        "InlineDatumsNotSupported" => ("UTXOS", "CollectErrors"),
         "InputSetEmptyUTxO" => ("UTXO", "InputSetEmptyUTxO"),
         "InsufficientCollateral" => ("UTXO", "InsufficientCollateral"),
         "InvalidGuardrailsScriptHash" => ("GOV", "InvalidGuardrailsScriptHash"),
         "InvalidPrevGovActionId" => ("GOV", "InvalidPrevGovActionId"),
         "InvalidWitnessesUTXOW" => ("UTXOW", "InvalidWitnessesUTXOW"),
+        "MalformedProposal" => ("GOV", "MalformedProposal"),
         "MalformedReferenceScripts" => ("UTXOW", "MalformedReferenceScripts"),
         "MalformedScriptWitnesses" => ("UTXOW", "MalformedScriptWitnesses"),
         "MaxTxSizeUTxO" => ("UTXO", "MaxTxSizeUTxO"),
+        // `CollectErrors [NoCostModel ..]` (Alonzo/Plutus/Evaluate.hs).
+        "MissingCostModel" => ("UTXOS", "CollectErrors"),
+        "MissingRedeemers" => ("UTXOW", "MissingRedeemers"),
+        "MissingRequiredDatums" => ("UTXOW", "MissingRequiredDatums"),
         "MissingScriptWitnessesUTXOW" => ("UTXOW", "MissingScriptWitnessesUTXOW"),
         "MissingTxBodyMetadataHash" => ("UTXOW", "MissingTxBodyMetadataHash"),
         "MissingTxMetadata" => ("UTXOW", "MissingTxMetadata"),
         "MissingVerificationKeyWitnessesUTXOW" => ("UTXOW", "MissingVKeyWitnessesUTXOW"),
         "NoCollateralInputs" => ("UTXO", "NoCollateralInputs"),
+        "NotAllowedSupplementalDatums" => ("UTXOW", "NotAllowedSupplementalDatums"),
         "OutputTooBigUTxO" => ("UTXO", "OutputTooBigUTxO"),
-        // Amaru's checker names `CollectErrors [BadTranslation TimeTranslationPastHorizon]` so (Run.hs:443-445).
+        // Amaru's checker names `CollectErrors [BadTranslation TimeTranslationPastHorizon]` so (Run.hs:500-502).
         "OutsideForecast" => ("UTXOS", "CollectErrors"),
         "OutsideValidityIntervalUTxO" => ("UTXO", "OutsideValidityIntervalUTxO"),
+        // The corpus names it at PV 9 only; from PV 11 Haskell's constructor is `ScriptIntegrityHashMismatch`.
+        "PPViewHashesDontMatch" => ("UTXOW", "PPViewHashesDontMatch"),
         "ProposalCantFollow" => ("GOV", "ProposalCantFollow"),
+        "ProposalDepositIncorrect" => ("GOV", "ProposalDepositIncorrect"),
         "ProposalProcedureNetworkIdMismatch" => ("GOV", "ProposalProcedureNetworkIdMismatch"),
+        "ProposalProceduresFieldNotSupported" => ("UTXOS", "CollectErrors"),
         "ProposalReturnAccountDoesNotExist" => ("GOV", "ProposalReturnAccountDoesNotExist"),
+        "ScriptWitnessNotValidatingUTXOW" => ("UTXOW", "ScriptWitnessNotValidatingUTXOW"),
         "ScriptsNotPaidUTxO" => ("UTXO", "ScriptsNotPaidUTxO"),
         "StakeCredentialInvalidPoolDelegation" => ("DELEG", "StakeKeyNotRegisteredDELEG"),
         "StakeCredentialInvalidVoteDelegation" => ("DELEG", "StakeKeyNotRegisteredDELEG"),
         "StakeKeyHasNonZeroAccountBalance" => ("DELEG", "StakeKeyHasNonZeroAccountBalanceDELEG"),
+        "StakeKeyNotRegistered" => ("DELEG", "StakeKeyNotRegisteredDELEG"),
         "StakeKeyRegistered" => ("DELEG", "StakeKeyRegisteredDELEG"),
         "StakePoolCostTooLowPOOL" => ("POOL", "StakePoolCostTooLowPOOL"),
         "StakePoolNotRegisteredOnKeyPOOL" => ("POOL", "StakePoolNotRegisteredOnKeyPOOL"),
         "StakePoolRetirementWrongEpochPOOL" => ("POOL", "StakePoolRetirementWrongEpochPOOL"),
         "TooManyCollateralInputs" => ("UTXO", "TooManyCollateralInputs"),
+        "TreasuryDonationFieldNotSupported" => ("UTXOS", "CollectErrors"),
         "TreasuryWithdrawalReturnAccountsDoNotExist" => ("GOV", "TreasuryWithdrawalReturnAccountsDoNotExist"),
         "TreasuryWithdrawalsAllZeros" => ("GOV", "ZeroTreasuryWithdrawals"),
+        "UnspendableUTxONoDatumHash" => ("UTXOW", "UnspendableUTxONoDatumHash"),
         "ValidationTagMismatch" => ("UTXOS", "ValidationTagMismatch"),
         "ValueNotConservedUTxO" => ("UTXO", "ValueNotConservedUTxO"),
         "VotersDoNotExist" => ("GOV", "VotersDoNotExist"),
         "VotingOnExpiredGovAction" => ("GOV", "VotingOnExpiredGovAction"),
+        "VotingProceduresFieldNotSupported" => ("UTXOS", "CollectErrors"),
         "WithdrawalsNotInRewardsCERTS" => ("CERTS", "WithdrawalsNotInRewardsCERTS"),
         "WrongNetworkInTxBody" => ("UTXO", "WrongNetworkInTxBody"),
         "WrongNetworkInTxOutput" => ("UTXO", "WrongNetwork"),
@@ -363,6 +400,26 @@ fn haskell_name(corpus: &str) -> Option<(&'static str, &'static str)> {
         "WrongNetworkWithdrawal" => ("UTXO", "WrongNetworkWithdrawal"),
         _ => return None,
     })
+}
+
+/// The Haskell (rule, constructor) a scenario's corpus predicate stands for. Amaru's Haskell checker spells some
+/// distinct Haskell failures alike; those corpus names are resolved per scenario, and a scenario using one that is not
+/// listed here fails. `normalizeGovCertFailure` (`ValidatePhaseOne/Run.hs:547-550`) names both
+/// `ConwayDRepIncorrectDeposit` and `ConwayDRepIncorrectRefund` `IncorrectDepositDRep` (Conway/Rules/GovCert.hs:
+/// 209-242 tells them apart). Same table as `AmaruCorpusNames.SCENARIO_NAMES` (Java).
+fn scenario_haskell_name(scenario: &str, corpus: &str) -> Result<(&'static str, &'static str), String> {
+    match (corpus, scenario) {
+        ("IncorrectDepositDRep", "00305-fail-drep-deregistration-with-incorrect-refund") => {
+            Ok(("GOVCERT", "ConwayDRepIncorrectRefund"))
+        }
+        ("IncorrectDepositDRep", "00347-fail-drep-registration-with-an-incorrect-deposit") => {
+            Ok(("GOVCERT", "ConwayDRepIncorrectDeposit"))
+        }
+        ("IncorrectDepositDRep", other) => {
+            Err(format!("{other}: IncorrectDepositDRep is a wrong DRep deposit or refund; resolve it per scenario"))
+        }
+        _ => haskell_name(corpus).ok_or_else(|| format!("{scenario}: corpus predicate {corpus} has no Haskell alias")),
+    }
 }
 
 /// Phase, rule, constructor (and tag-mismatch description) all have to match.
@@ -374,13 +431,11 @@ fn verdict_matches(expected: &Expected, response: &Response) -> Result<(), Strin
         {
             Ok(())
         }
-        (Expected::Predicate { name, description }, Response::Invalid(invalid)) => {
-            let (rule, constructor) =
-                haskell_name(name).ok_or_else(|| format!("corpus predicate {name} has no Haskell alias"))?;
+        (Expected::Predicate { name, rule, constructor, description }, Response::Invalid(invalid)) => {
             let phase = if name == "ValidationTagMismatch" { Phase::PhaseTwo } else { Phase::PhaseOne };
             if invalid.phase == phase
-                && invalid.rule == rule
-                && invalid.constructor.as_deref() == Some(constructor)
+                && invalid.rule == *rule
+                && invalid.constructor.as_deref() == Some(*constructor)
                 && (description.is_none() || invalid.tag_mismatch == *description)
             {
                 Ok(())
@@ -479,12 +534,11 @@ fn check(root: &Path, path: &Path) -> Result<(Expected, bool), String> {
         return Err(format!("{name}: restricted to required_keys gave {reduced:?}, full state gave {full:?}"));
     }
 
-    // Phase-one mode: same verdict, except where the full verdict came from Amaru's phase-two code
-    // (script evaluation or script-context preparation), which phase-one mode does not run.
+    // Phase-one mode: same verdict, except that a phase-two verdict (ValidationTagMismatch) is left to
+    // the host's phase-2 engine.
     let phase_one = run(&format!("{name}.phase_one"), &Request { mode: Mode::PhaseOne, ..scenario.request.clone() });
-    let from_phase_two_code = matches!(&full, Response::Invalid(invalid)
-        if invalid.amaru_error.starts_with("PhaseTwo") || invalid.amaru_error.starts_with("PhaseOne.ScriptPreparation"));
-    let expected_phase_one = if from_phase_two_code { Response::Ok } else { full.clone() };
+    let phase_two_verdict = matches!(&full, Response::Invalid(invalid) if invalid.phase == Phase::PhaseTwo);
+    let expected_phase_one = if phase_two_verdict { Response::Ok } else { full.clone() };
     if phase_one != expected_phase_one {
         return Err(format!("{name}: phase_one mode gave {phase_one:?}, expected {expected_phase_one:?}"));
     }
@@ -537,6 +591,32 @@ fn every_amaru_scenario_matches_its_expected_verdict() {
         .expect("scenario run panicked");
 }
 
+/// The `src/engine.rs` phase-one WORKAROUND exists because Amaru keeps its phase-one rules crate-private
+/// (upstream request: re-export a public phase-one entry point). Fails once the pinned Amaru declares one again, as
+/// `pub fn execute` did up to `v10.11.20260925`. Reads the checkout the scenario gate uses (`fixtures_dir`).
+#[test]
+fn amaru_phase_one_entry_point_is_still_crate_private() {
+    let phase_one = fixtures_dir().join("../../../src/rules/transaction/phase_one/mod.rs");
+    let source = fs::read_to_string(&phase_one)
+        .unwrap_or_else(|e| panic!("cannot read {} (an Amaru checkout is needed): {e}", phase_one.display()));
+    let public: Vec<&str> = source
+        .lines()
+        .map(str::trim_start)
+        .filter(|line| {
+            ["execute", "when_valid", "when_invalid"].iter().any(|name| {
+                line.strip_prefix("pub fn ")
+                    .and_then(|rest| rest.strip_prefix(name))
+                    .is_some_and(|rest| rest.starts_with('<') || rest.starts_with('('))
+            })
+        })
+        .collect();
+    assert!(
+        public.is_empty(),
+        "Amaru declares a public phase-one entry point ({public:?}) in {}: remove the engine.rs workaround",
+        phase_one.display()
+    );
+}
+
 #[test]
 fn amaru_version_matches_cargo_manifest_and_lockfile() {
     let tag = amaru_version_field("tag");
@@ -547,7 +627,7 @@ fn amaru_version_matches_cargo_manifest_and_lockfile() {
 
     assert!(manifest.contains(&format!("tag = \"{tag}\"")), "Cargo.toml does not pin {tag}");
     let pinned = format!("git+https://github.com/pragma-org/amaru?tag={tag}#{commit}");
-    for krate in ["amaru-kernel", "amaru-ledger", "amaru-plutus"] {
+    for krate in ["amaru-kernel", "amaru-ledger", "amaru-uplc"] {
         let block = lockfile
             .split("[[package]]")
             .find(|block| block.contains(&format!("name = \"{krate}\"\n")))
@@ -562,11 +642,12 @@ fn amaru_version_matches_cargo_manifest_and_lockfile() {
 
 #[test]
 fn unsupported_abi_version_is_rejected() {
+    // A version 1 host (wider protocol-version and governance-action-index fields) is refused.
     let mut buffer = Vec::new();
     let mut e = cbor::Encoder::new(&mut buffer);
-    e.map(1).unwrap().u8(0).unwrap().u32(2).unwrap();
+    e.map(1).unwrap().u8(0).unwrap().u32(1).unwrap();
     match engine::validate(&buffer) {
-        Response::Error(message) => assert!(message.contains("abi_version"), "{message}"),
+        Response::Error(message) => assert!(message.contains("unsupported abi_version 1"), "{message}"),
         other => panic!("expected an error, got {other:?}"),
     }
 }
@@ -669,4 +750,27 @@ fn required_keys_env_must_name_the_protocol_version_and_have_no_trailing_bytes()
             other => panic!("expected an env error for {env:02x?}, got {other:?}"),
         }
     }
+}
+
+/// `IncorrectDepositDRep` is resolved per scenario: the refund scenario needs the refund constructor and the deposit
+/// scenario the deposit one; the swapped constructor is a mismatch in both.
+#[test]
+fn drep_deposit_and_refund_scenarios_do_not_accept_each_others_constructor() {
+    let invalid = |constructor: &str| {
+        Response::Invalid(Invalid {
+            phase: Phase::PhaseOne,
+            rule: "GOVCERT".to_string(),
+            constructor: Some(constructor.to_string()),
+            amaru_error: String::new(),
+            detail: String::new(),
+            tag_mismatch: None,
+        })
+    };
+    let refund = scenario("00305-fail-drep-deregistration-with-incorrect-refund.json").expected;
+    let deposit = scenario("00347-fail-drep-registration-with-an-incorrect-deposit.json").expected;
+    assert!(verdict_matches(&refund, &invalid("ConwayDRepIncorrectRefund")).is_ok());
+    assert!(verdict_matches(&refund, &invalid("ConwayDRepIncorrectDeposit")).is_err());
+    assert!(verdict_matches(&deposit, &invalid("ConwayDRepIncorrectDeposit")).is_ok());
+    assert!(verdict_matches(&deposit, &invalid("ConwayDRepIncorrectRefund")).is_err());
+    assert!(scenario_haskell_name("00999-fail-some-other-drep-deposit", "IncorrectDepositDRep").is_err());
 }

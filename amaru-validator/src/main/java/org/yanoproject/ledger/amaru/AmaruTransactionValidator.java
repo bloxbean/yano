@@ -61,7 +61,7 @@ import java.util.function.Supplier;
 
 /**
  * The Amaru admission engine (ADR-057): Pragma's Amaru Conway rules, compiled to WebAssembly
- * ({@code amaru-validator-wasm}, interface v1) and run in the JVM by Endive's build-time AOT code. Engine ids follow
+ * ({@code amaru-validator-wasm}, interface version 2) and run in the JVM by Endive's build-time AOT code. Engine ids follow
  * {@code <rules>-<evaluator>}: {@code amaru} runs both phases on Amaru; {@code amaru-scalus} runs Amaru phase one and
  * then the node's Scalus {@link ScriptPhaseEvaluator}.
  *
@@ -302,7 +302,8 @@ public final class AmaruTransactionValidator implements LedgerValidationEngine, 
             return TxValidationOutcome.Invalid.of(LedgerFailure.ledgerStateUnavailable(resolution.unavailable()));
         }
         // Re-application (ADR-056 §6): with a reusable previous verdict, Amaru runs in phase-one mode (its static
-        // checks cannot be skipped inside the module) and no phase-2 evaluation runs.
+        // checks cannot be skipped inside the module) and the host's phase-2 evaluator does not run. From Amaru
+        // v10.11.20261105 phase-one mode still evaluates the scripts inside the module (INTERFACE.md, "Modes").
         byte[] resolvedDigest = tx != null
                 ? ReapplyPolicy.resolvedInputsDigest(ReapplyPolicy.allInputs(tx.getBody()), resolvedInputs) : null;
         ValidatedTx previous = request.previous();
@@ -415,10 +416,10 @@ public final class AmaruTransactionValidator implements LedgerValidationEngine, 
 
     /**
      * Whether the {@link ScriptPhaseEvaluator} must see the transaction: it has redeemers, Plutus script
-     * witnesses, or a resolved input carrying a reference script. Phase-one mode does not check Plutus
-     * script witnesses and reference scripts for well-formedness ({@code MalformedScriptWitnesses},
-     * {@code MalformedReferenceScripts}), so a transaction carrying any of them goes to the evaluator even
-     * without a redeemer.
+     * witnesses, or a resolved input carrying a reference script. A transaction carrying any of them goes to the
+     * evaluator even without a redeemer, which also checks them for well-formedness
+     * ({@code MalformedScriptWitnesses}, {@code MalformedReferenceScripts}); from Amaru {@code v10.11.20261105}
+     * phase-one mode reports those first (INTERFACE.md, "Modes").
      */
     static boolean needsScriptPhase(Transaction tx, Map<Outpoint, UtxoEntry> resolvedInputs) {
         TransactionWitnessSet witnesses = tx.getWitnessSet();

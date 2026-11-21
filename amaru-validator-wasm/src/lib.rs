@@ -4,7 +4,7 @@
 //! On `wasm32-wasip1` its only imports are WASI preview-1 functions (clock, random, fd_write for
 //! panics, proc_exit) and it needs no file system, network or environment access.
 //!
-//! # Exports (interface version 1)
+//! # Exports (interface version 2)
 //!
 //! | Export | Returns |
 //! |---|---|
@@ -129,7 +129,7 @@ mod tests {
         let text = String::from_utf8(read_host_buffer(amaru_version())).unwrap();
         assert!(text.starts_with("tag=v"), "{text}");
         assert!(text.ends_with(&format!("crate={CRATE_VERSION}\n")), "{text}");
-        assert_eq!(abi_version(), 1);
+        assert_eq!(abi_version(), 2);
     }
 
     #[test]

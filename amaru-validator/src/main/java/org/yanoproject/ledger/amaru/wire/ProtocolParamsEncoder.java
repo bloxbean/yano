@@ -18,9 +18,10 @@ import java.util.Objects;
  *
  * <ul>
  *   <li>Rationals are {@code #6.30([numerator, denominator])}. Yano holds them as {@link BigDecimal}, so
- *       each is sent as its shortest decimal fraction ({@code 0.0577} → {@code 577/10000},
- *       {@code 1.2} → {@code 12/10}, {@code 15} → {@code 15/1}). Amaru compares parameters by value
- *       and never hashes them, so the representation does not change a verdict.
+ *       each is sent as its exact fraction in lowest terms, as Haskell's {@code Ratio} and Amaru's
+ *       {@code RationalNumber} hold it ({@code 0.0577} → {@code 577/10000}, {@code 1.2} → {@code 6/5},
+ *       {@code 15} → {@code 15/1}). Amaru compares parameters by value and never hashes them, so the
+ *       representation does not change a verdict.
  *       <b>Precondition:</b> the {@link BigDecimal} must be the exact value. Every on-chain rational
  *       parameter so far has a power-of-ten denominator, so a decimal is exact; a non-terminating one
  *       (1/3) cannot be held exactly in Yano's {@code ProtocolParams} and would already be rounded
@@ -127,7 +128,7 @@ public final class ProtocolParamsEncoder {
         }
     }
 
-    /** {@code #6.30([numerator, denominator])} for a non-negative decimal, as its shortest fraction. */
+    /** {@code #6.30([numerator, denominator])} for a non-negative decimal, as its fraction in lowest terms. */
     static void rational(CborWriter w, String field, BigDecimal value) {
         if (value == null) {
             throw new IllegalArgumentException("protocol parameter " + field + " is missing");
@@ -142,8 +143,11 @@ public final class ProtocolParamsEncoder {
             numerator = stripped.toBigIntegerExact();
             denominator = BigInteger.ONE;
         } else {
-            numerator = stripped.unscaledValue();
-            denominator = BigInteger.TEN.pow(stripped.scale());
+            BigInteger unscaled = stripped.unscaledValue();
+            BigInteger powerOfTen = BigInteger.TEN.pow(stripped.scale());
+            BigInteger gcd = unscaled.gcd(powerOfTen);
+            numerator = unscaled.divide(gcd);
+            denominator = powerOfTen.divide(gcd);
         }
         if (numerator.compareTo(U64_MAX) > 0 || denominator.compareTo(U64_MAX) > 0) {
             throw new IllegalArgumentException("protocol parameter " + field + " does not fit a u64 rational: "

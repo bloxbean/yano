@@ -29,8 +29,10 @@ multiple-versions = "allow"
 wildcards = "allow"
 
 [sources]
-# crates.io, plus Amaru itself from its GitHub repository (pinned by tag and Cargo.lock).
+# crates.io, plus Amaru itself from its GitHub repository (pinned by tag and Cargo.lock), plus the
+# parking_lot revision Amaru's workspace pins by git (`parking_lot = { git, rev = "43d5007a252d" }` in
+# Amaru's root Cargo.toml since v10.11.20261105, reached through amaru-ouroboros-traits; Cargo.lock pins it).
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = ["https://github.com/pragma-org/amaru"]
+allow-git = ["https://github.com/pragma-org/amaru", "https://github.com/Amanieu/parking_lot"]

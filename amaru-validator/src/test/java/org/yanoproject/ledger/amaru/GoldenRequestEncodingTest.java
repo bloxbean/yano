@@ -25,7 +25,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * Golden interface tests: the Java encoder ({@link AmaruRequestEncoder} with
  * {@link org.yanoproject.ledger.amaru.wire.ProtocolParamsEncoder}), given a scenario's inputs through the
  * shared scenario loader, must write byte for byte the request the Rust reference encoder wrote for the
- * same scenario. This pins the whole v1 request layout, including Amaru's 31-element parameter layout
+ * same scenario. This pins the whole request layout, including Amaru's 31-element parameter layout
  * and the test-only ledger constants, so an interface drift on either side fails here.
  *
  * <p>The committed subset ({@code src/test/resources/golden}) always runs when the scenarios are

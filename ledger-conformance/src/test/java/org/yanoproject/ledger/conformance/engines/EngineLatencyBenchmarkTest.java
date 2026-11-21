@@ -54,7 +54,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * ADR-057 Phase E latency benchmark: warm per-transaction validation latency of {@code java-julc}, {@code java-scalus}
  * and (in {@code -PwithAmaru=true} builds) {@code amaru} on the same fixed corpus, the Amaru scenarios at protocol
- * version 10 and later (the one PV 9 scenario is left out: Amaru refuses it without validating), and a second corpus
+ * version 10 and later (the PV 9 scenarios are left out: Amaru refuses them without validating), and a second corpus
  * of real preprod and preview transactions: the replay bundles of {@link PublicNetworkTransactions} (each transaction
  * with the ledger state it was validated against, {@code ShadowDumpBundle.replayRequest()}). That corpus is small and
  * biased toward unusual Plutus transactions (each was once an engine finding): a real-network Plutus-heavy sample, not

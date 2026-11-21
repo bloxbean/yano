@@ -24,7 +24,7 @@ import java.util.stream.Stream;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * The ADR-056 Phase 5 gate: the Java engine ({@code java-julc}, every rule family) against <em>all</em> 276 Amaru
+ * The ADR-056 Phase 5 gate: the Java engine ({@code java-julc}, every rule family) against <em>all</em> 368 Amaru
  * scenarios. Each must match (verdict and constructor: the first failure, any constructor of Haskell's list where
  * Haskell reports several, or a constructor Amaru's checker reports under the same corpus name), or be a recorded
  * divergence with the engine reporting what Haskell reports.
@@ -42,7 +42,25 @@ import static org.assertj.core.api.Assertions.assertThat;
 class JavaEnginePhase5GateTest {
 
     /** The corpus's protocol version 9 scenarios: validated by the Java engine since Phase 5b, refused by Amaru. */
-    static final Set<String> BOOTSTRAP_SCENARIOS = Set.of("00203-fail-gov-hardfork-initiation-chains-two-majors");
+    static final Set<String> BOOTSTRAP_SCENARIOS = Set.of(
+            "00203-fail-gov-hardfork-initiation-chains-two-majors",
+            "00315-fail-ppview-hashes-mismatch",
+            "00316-fail-ppview-hash-missing",
+            "00317-fail-missing-phase-two-script-witness",
+            "00318-fail-missing-collateral-vkey-witness",
+            "00319-fail-missing-redeemer",
+            "00320-fail-missing-required-datum",
+            "00321-fail-supplemental-datum-not-allowed",
+            "00322-fail-redeemer-with-incorrect-purpose",
+            "00323-fail-unspendable-script-input-without-datum-hash",
+            "00324-fail-certificate-script-does-not-validate",
+            "00325-fail-mint-script-does-not-validate",
+            "00326-fail-spending-script-does-not-validate",
+            "00327-fail-withdrawal-script-does-not-validate",
+            "00328-fail-phase-one-script-witness",
+            "00329-fail-extraneous-redeemer",
+            "00374-pass-plutus-v3-script-spending-a-script-locked-utxo-without-a-datum",
+            "00376-pass-zero-coins-per-utxo-byte-in-protocol-parameter-update-during-bootstrap");
 
     /**
      * The gate's tally at one protocol version.
@@ -60,9 +78,9 @@ class JavaEnginePhase5GateTest {
      * cannot be masked by the others, and a scenario that moves between versions or categories changes a count.
      */
     static final Map<Integer, Tally> PER_VERSION = Map.of(
-            9, new Tally(1, 0, 0, 1),
-            10, new Tally(273, 272, 1, 0),
-            11, new Tally(2, 2, 0, 0));
+            9, new Tally(18, 0, 0, 18),
+            10, new Tally(347, 346, 1, 0),
+            11, new Tally(3, 3, 0, 0));
 
     /** One scenario's gate verdict. */
     private record Verdict(int protocolVersion, String family, String category, String miss) {
