@@ -175,7 +175,8 @@ class ScalusLedgerValidationEngineTest {
                 Rule.MEMPOOL, Origin.LOCAL, null));
 
         assertThat(first(outcome).qualifiedName()).isEqualTo("ENGINE." + ScalusLedgerValidationEngine.DECODING_FAILURE);
-        assertThat(first(outcome).detail()).contains("Scalus accepted").contains("unknown witness set key 8");
+        assertThat(first(outcome).detail()).contains("Scalus accepted")
+                .contains("unknown transaction_witness_set key 08");
     }
 
     // ------------------------------------------------------------------ fixtures
