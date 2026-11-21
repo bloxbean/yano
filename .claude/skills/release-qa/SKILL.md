@@ -1,27 +1,26 @@
 ---
 name: release-qa
-description: Release QA orchestrator. Builds Yano once, runs the regression tests one at a time (L1 devnet, Haskell sync, past time travel, sparse backfill; app chain; e2e endpoints; SDK compatibility; Docker Compose distribution), triages failures, and publishes a shareable report. Arguments are passed to qa/release-qa.sh, for example --quick, --categories l1,e2e, --only haskell-sync-jvm, --build.
+description: Release QA orchestrator. Builds Yano once, runs the regression tests one at a time (L1 devnet, Haskell sync, past time travel, sparse backfill; e2e endpoints; SDK compatibility; Docker Compose distribution), triages failures, and publishes a shareable report. Arguments are passed to qa/release-qa.sh, for example --quick, --categories l1,e2e, --only haskell-sync-jvm, --build.
 ---
 
 # Release QA
 
 Runs the release regression suite through `qa/release-qa.sh`, then turns the results
 into a shareable report. The individual test skills (`test-haskell-sync`,
-`test-app-chain-cluster` and the rest) run single tests through the same script.
+`test-docker-distribution` and the rest) run single tests through the same script.
 
 ## Categories
 
 | Category | Tests (ids from `qa/release-qa.sh --list`) | Time |
 |---|---|---|
 | `l1` | `epoch-crossing-{jvm,native}`, `haskell-sync-{jvm,native}`, `past-time-travel-{jvm,native}`, `sparse-backfill` | ~60-90 min |
-| `appchain` | `appchain-cluster`, `appchain-extensions`, `appchain-rotation-governance`, `appchain-script-anchor` | ~20-30 min |
 | `e2e` | `e2e-{jvm,native}`: endpoint smoke + devnet functional + time travel | ~15-20 min |
 | `compat` | `compat-{jvm,native}`: CCL, Mesh and Evolution compat cases on a fresh node | ~20-30 min |
 | `load` (opt-in) | `load-jvm`: SDK load and chained transactions | ~30-60 min |
 | `docker` | `docker-dist`: Compose bundle on devnet (launcher, mounts, API, snapshots, profiles, ownership, upgrade) | ~10-15 min |
 | `docker-public` (opt-in) | `docker-public`: Compose bundle syncing preprod, preview and mainnet a few epochs | ~45-60 min |
 
-Default is `l1,appchain,e2e,compat,docker`, roughly 1 hour on the JVM and more with the native build. `--quick`
+Default is `l1,e2e,compat,docker`, roughly 1 hour on the JVM and more with the native build. `--quick`
 skips native variants (well under an hour for `--quick --categories l1,e2e`).
 
 ## Steps

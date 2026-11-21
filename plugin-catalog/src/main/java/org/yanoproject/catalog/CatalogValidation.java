@@ -28,9 +28,7 @@ final class CatalogValidation {
     }
 
     static String contributionName(ContributionKind kind, String value, String field) {
-        if (kind == ContributionKind.DOMAIN_API
-                || kind == ContributionKind.HEALTH
-                || kind == ContributionKind.METRICS) {
+        if (kind.nameIsBundleId()) {
             return bundleId(value, field);
         }
         if (value == null || value.length() > MAX_NAME_LENGTH
@@ -38,14 +36,11 @@ final class CatalogValidation {
             throw new IllegalArgumentException(field
                     + " must be a 1-128 character ASCII selector without whitespace");
         }
-        if ((kind == ContributionKind.EFFECT_EXECUTOR
-                || kind == ContributionKind.FINALIZED_SINK) && value.indexOf('.') >= 0) {
-            throw new IllegalArgumentException(field + " for " + kind.manifestKey()
-                    + " must not contain '.' because it is a configuration namespace selector");
-        }
-        if (kind == ContributionKind.SIGNER_PROVIDER && value.indexOf(':') >= 0) {
-            throw new IllegalArgumentException(field + " for signer-provider must not contain ':'"
-                    + " because ':' separates the key reference");
+        for (char forbidden : kind.forbiddenNameChars().toCharArray()) {
+            if (value.indexOf(forbidden) >= 0) {
+                throw new IllegalArgumentException(field + " for " + kind.manifestKey()
+                        + " must not contain '" + forbidden + "'");
+            }
         }
         return value;
     }

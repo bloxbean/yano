@@ -24,7 +24,7 @@ CHECK_LINE = re.compile(r"^\s+(PASS|FAIL)\s{2}(.*)$")
 # sparse-backfill prints "| case-check | PASS | detail |" rows
 TABLE_CHECK = re.compile(r"^\|\s*([^|]+?)\s*\|\s*(PASS|FAIL|BLOCKED)\s*\|")
 REPO_ROOT = str(Path(__file__).resolve().parents[2])
-CATEGORY_NAMES = {"l1": "L1 node", "appchain": "App chain", "e2e": "Endpoints (e2e)",
+CATEGORY_NAMES = {"l1": "L1 node", "e2e": "Endpoints (e2e)",
                   "compat": "SDK compatibility", "load": "SDK load"}
 GOOD = {"PASS", "KNOWN"}
 

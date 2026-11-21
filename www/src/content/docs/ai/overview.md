@@ -36,6 +36,6 @@ Get `/q/openapi?format=json` from the actual node you will call. The static rout
 
 ## Keep the trust boundaries
 
-Yano is pre-release. Do not describe it as a fully validating production replacement. Yano's built-in app state machine is `ordered-log`; additional stock extensions belong to Yano X. Submission acceptance, member finality, and Cardano confirmation are different events. AI-generated code should preserve these distinctions.
+Yano is pre-release. Do not describe it as a fully validating production replacement. Yano does not host application ledgers (app chains); those are built on Yano by [Yano X](https://github.com/bloxbean/yano-x), a separate product. Transaction submission acceptance and on-chain confirmation are different events. AI-generated code should preserve these distinctions.
 
 These are static context artifacts. The documentation site does not offer a live node, remote signing, or an MCP server.

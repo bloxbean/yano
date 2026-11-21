@@ -63,6 +63,55 @@ class PluginManagerTest {
     }
 
     @Test
+    void failedInitializationDrainsHostServicesBeforeClosingPlugins() {
+        List<String> events = new ArrayList<>();
+        RecordingPlugin first = plugin("first", events);
+        RecordingPlugin failing = plugin("failing", events, "first");
+        failing.onInit = context -> { throw new IllegalStateException("init failed"); };
+        PluginManager manager = manager(options(), List.of(first, failing));
+        assertThatThrownBy(() -> manager.discoverAndInit(() -> events.add("host-close")))
+                .hasStackTraceContaining("init failed");
+        assertThat(events).containsExactly("init:first", "init:failing", "host-close",
+                "close:failing", "close:first");
+        manager.close();
+        assertThat(events).hasSize(5);
+    }
+
+    @Test
+    void failedStartDrainsInitializedHostServicesBeforePluginTeardown() {
+        List<String> events = new ArrayList<>();
+        RecordingPlugin plugin = plugin("failing", events);
+        plugin.failStart = true;
+        PluginManager manager = manager(options(), List.of(plugin));
+        manager.discoverAndInit(() -> events.add("host-close"));
+        events.add("host-init"); // Kernel initializes registered services before starting plugins.
+        assertThatThrownBy(manager::startAll).hasStackTraceContaining("start failure");
+        assertThat(events).containsExactly("init:failing", "host-init", "start:failing",
+                "host-close", "stop:failing", "close:failing");
+        manager.close();
+        assertThat(events).hasSize(6);
+    }
+
+    @Test
+    void hostServicesAreAvailableAtInitAndCannotBeReplacedAfterDiscovery() {
+        RecordingPlugin plugin = plugin("reader", new ArrayList<>());
+        plugin.onInit = context -> assertThat(context.getService("test.host", String.class)).contains("stable");
+        PluginManager manager = manager(options(), List.of(plugin));
+        manager.registerHostService("test.host", "stable");
+        assertThatThrownBy(() -> manager.registerHostService("test.host", "replacement"))
+                .isInstanceOf(IllegalStateException.class);
+        manager.discoverAndInit();
+        assertThatThrownBy(() -> manager.registerHostService("late", "service"))
+                .isInstanceOf(IllegalStateException.class);
+        manager.startAll();
+        manager.stopAll();
+        manager.startAll();
+        assertThat(plugin.context.getService("test.host", String.class)).contains("stable");
+        manager.close();
+        assertThat(plugin.context.getService("test.host", String.class)).isEmpty();
+    }
+
+    @Test
     void dependencyOrder_sharedServices_reverseLifecycle_andRestartAreDeterministic() {
         List<String> events = new ArrayList<>();
         RecordingPlugin a = plugin("a", events);
@@ -999,6 +1048,10 @@ class PluginManagerTest {
                 "start:a", "start:b",
                 "stop:b", "stop:a",
                 "close:c", "close:b", "close:a");
+        assertThatThrownBy(manager::startAll)
+                .isInstanceOf(IllegalStateException.class)
+                .hasMessage("Cannot start plugins from state FAILED");
+        assertThat(events).hasSize(10);
         manager.close();
     }
 

@@ -2,7 +2,7 @@
 # Release QA orchestrator: builds Yano once, runs the selected regression tests one
 # at a time on isolated ports, and writes results plus a shareable report.
 #
-#   qa/release-qa.sh                         # l1, appchain, e2e, compat, docker (JVM + native)
+#   qa/release-qa.sh                         # l1, e2e, compat, docker (JVM + native)
 #   qa/release-qa.sh --quick                 # JVM variants only
 #   qa/release-qa.sh --categories l1,e2e
 #   qa/release-qa.sh --only haskell-sync-jvm,compat-jvm
@@ -26,10 +26,6 @@ haskell-sync-native|l1|native|Haskell node sync, 2 epochs|25|qa/harness/haskell-
 past-time-travel-jvm|l1|jvm|Past time travel + Haskell sync from slot 0|25|qa/harness/past-time-travel.sh jvm
 past-time-travel-native|l1|native|Past time travel + Haskell sync from slot 0|25|qa/harness/past-time-travel.sh native
 sparse-backfill|l1|jvm|Sparse backfill matrix + Haskell sync|60|scripts/sparse-backfill/run-sparse-backfill-test.sh --skip-build --run-dir "$OUT/runs/sparse-backfill"
-appchain-cluster|appchain|jvm|Two-node cluster, proofs, L1 anchor, L1 rollbacks with the follower up and down|25|qa/harness/appchain-cluster.sh
-appchain-extensions|appchain|jvm|Multi-chain, query, SSE, admin, rotation, snapshot|25|qa/harness/appchain-extensions.sh
-appchain-rotation-governance|appchain|jvm|Rotating sequencer + governed membership|20|qa/harness/appchain-rotation-governance.sh
-appchain-script-anchor|appchain|jvm|Script anchors + L1 deposit observations|25|qa/harness/appchain-script-anchor.sh
 e2e-jvm|e2e|jvm|Endpoint smoke + devnet functional + time travel|25|qa/harness/e2e.sh jvm
 e2e-native|e2e|native|Endpoint smoke + devnet functional + time travel|25|qa/harness/e2e.sh native
 compat-jvm|compat|jvm|SDK compatibility: CCL, Mesh, Evolution|40|qa/harness/compat.sh jvm "qa-$RUN_ID-compat-jvm" --compat-only
@@ -38,15 +34,15 @@ load-jvm|load|jvm|SDK load and chained transactions|60|qa/harness/compat.sh jvm 
 docker-dist|docker|jvm|Docker Compose bundle on devnet: launcher, mounts, API, snapshots, upgrade|30|qa/harness/docker-dist.sh
 docker-public|docker-public|jvm|Docker Compose bundle on preprod, preview and mainnet|75|qa/harness/docker-public.sh
 ledger-rules-native|ledger-rules|native|Validation engines: JVM vs native parity (java-julc, java-scalus, scalus; PV 9-11)|90|qa/harness/ledger-rules-native-parity.sh'
-DEFAULT_CATEGORIES=l1,appchain,e2e,compat,docker
-HARNESS_PORTS="7171 7172 13441 13442 3103 12889 12899 7181 13451 7191 13461 9199 7281 7282 7283 13551 13552 13553"
+DEFAULT_CATEGORIES=l1,e2e,compat,docker
+HARNESS_PORTS="7171 7172 13441 13442 3103 12889 12899 7181 13451 7191 13461 7281 7282 7283 13551 13552 13553"
 
 usage() {
   cat <<'USAGE'
 Usage: qa/release-qa.sh [options]
 
-  --categories LIST  comma-separated: l1, appchain, e2e, compat, docker, load,
-                     docker-public, ledger-rules (default: l1,appchain,e2e,compat,docker;
+  --categories LIST  comma-separated: l1, e2e, compat, docker, load,
+                     docker-public, ledger-rules (default: l1,e2e,compat,docker;
                      load, docker-public and ledger-rules are opt-in)
   --only IDS         run exactly these test ids (see --list); overrides --categories
   --quick            skip native variants

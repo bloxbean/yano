@@ -140,7 +140,7 @@ asserts a 4xx/5xx response whose body names the forecast window and the limit.
 Verified against the implementation (`runtime/.../blockproducer/BackfillPolicy.java`,
 `DevnetBlockProducer.java`, `producer/DevnetProducerFactory.java`,
 `producer/ProducerStartupCoordinator.java`, `devnet/DevnetCatchUpService.java`,
-`devnet/DevnetGenesisShiftService.java`, `core-api/.../YanoConfig.java`). Everything in the
+`devnet/DevnetGenesisShiftService.java`, `node-api/.../YanoConfig.java`). Everything in the
 matrix matches; these details differ from a naive reading and are handled by the runner:
 
 1. **Genesis is authoritative for slot duration.** Epoch shift and producer timing
@@ -231,7 +231,7 @@ slots are accepted through the matching-prefix proof from a fresh Haskell databa
 
 ## Isolation and cleanup
 
-- Per case: its own genesis copy, chainstate, history archive, app-chain store, Haskell
+- Per case: its own genesis copy, chainstate, history archive, Haskell
   database + socket + config + topology, logs, and probed ports (never 7070 / 13337 /
   3002 / 32000 / 12788 / 12798).
 - Only PIDs this run started are ever signalled — recorded in `<run-dir>/started-pids`, no

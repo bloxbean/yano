@@ -20,6 +20,13 @@ import com.bloxbean.cardano.yaci.helper.*;
 import com.bloxbean.cardano.yaci.helper.listener.BlockChainDataListener;
 import org.rocksdb.RocksDB;
 import org.yanoproject.api.ChainQuery;
+import org.yanoproject.api.host.HostApi;
+import org.yanoproject.api.CardanoHostServices;
+import org.yanoproject.api.EpochSnapshotReader;
+import org.yanoproject.runtime.host.DefaultHostApi;
+import org.yanoproject.runtime.host.DefaultHostLifecycleRegistry;
+import org.yanoproject.runtime.host.DefaultN2NExtensionRegistry;
+import org.yanoproject.runtime.ledger.DefaultEpochSnapshotReader;
 import org.yanoproject.api.BlockBodyRetentionBoundary;
 import org.yanoproject.api.EpochParamProvider;
 import org.yanoproject.api.LedgerQuery;
@@ -30,8 +37,6 @@ import org.yanoproject.api.TxEvaluationGateway;
 import org.yanoproject.api.MempoolQueryGateway;
 import org.yanoproject.api.MempoolAdminGateway;
 import org.yanoproject.api.TxGateway;
-import org.yanoproject.api.appchain.AppChainConfig;
-import org.yanoproject.appchain.config.AppChainConfigParser;
 import org.yanoproject.api.config.RuntimeOptions;
 import org.yanoproject.api.config.UpstreamPeerConfig;
 import org.yanoproject.api.config.YanoConfig;
@@ -88,8 +93,8 @@ import org.yanoproject.runtime.producer.SlotLeaderKeyMaterial;
 import org.yanoproject.runtime.producer.SlotLeaderProducerFactory;
 import org.yanoproject.runtime.producer.SlotLeaderSigningComponents;
 import org.yanoproject.runtime.producer.StakeDataProviderFactory;
+import org.yanoproject.runtime.plugins.PluginLoaderHandle;
 import org.yanoproject.runtime.plugins.PluginManager;
-import org.yanoproject.runtime.plugins.DomainApiRegistry;
 import org.yanoproject.runtime.plugins.PluginRuntimeEnvironment;
 import org.yanoproject.runtime.plugins.PluginOperationsRegistry;
 import org.yanoproject.api.account.AccountStateReadStore;
@@ -170,6 +175,7 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.Deque;
 import java.util.LinkedHashMap;
@@ -178,6 +184,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -207,13 +214,9 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
 
     // Server components (for serving other clients)
     private final ServeSubsystem serveSubsystem;
-    private final org.yanoproject.runtime.appchain.AppChainManager appChainManager;
-    private final DomainApiRegistry domainApiRegistry;
-    private final org.yanoproject.runtime.plugins.LocalReadModelRegistry
-            localReadModels;
-    private final org.yanoproject.runtime.plugins.LocalReadModelContributionRegistry
-            localReadModelContributions;
     private final PluginOperationsRegistry pluginOperationsRegistry;
+    // Wired at the ledger-state construction point; empty for plugins before then.
+    private volatile EpochSnapshotReader epochSnapshotReader;
     private final RelayConnectionManager relayConnectionManager;
     private final int serverPort;
 
@@ -250,7 +253,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
 
         void closePluginManager();
 
-        void closeDomainApis();
+        void closeIndexContributors();
 
         default void closePluginOperations() {
         }
@@ -296,6 +299,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     private final org.yanoproject.runtime.events.L1EventFanout l1EventFanout;
     private final PluginRuntimeEnvironment pluginEnvironment;
     private PluginManager pluginManager;
+    private final DefaultHostLifecycleRegistry hostLifecycle;
     private final UtxoSubsystem utxoSubsystem;
     private final LedgerStateSubsystem ledgerStateSubsystem;
     private final SyncSubsystem syncSubsystem;
@@ -437,11 +441,13 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                 relayConnectionManager,
                 log);
 
+        Set<String> requiredPlugins = PluginRuntimeEnvironment.requiredBundles(this.runtimeOptions.globals());
         try {
             this.pluginEnvironment = pluginEnvironment != null
                     ? pluginEnvironment
-                    : PluginRuntimeEnvironment.classpath(this.runtimeOptions.plugins(),
-                            Thread.currentThread().getContextClassLoader());
+                    : PluginRuntimeEnvironment.open(this.runtimeOptions.plugins(),
+                            PluginLoaderHandle.classpath(Thread.currentThread().getContextClassLoader()),
+                            requiredPlugins);
         } catch (Throwable failure) {
             Throwable outcome = failure;
             outcome = closeConstructionResource(
@@ -463,45 +469,34 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         constructionCleanup.addLast(txSubsystem::close);
         constructionCleanup.addLast(serveSubsystem::close);
         try {
+            DefaultN2NExtensionRegistry n2n = new DefaultN2NExtensionRegistry();
             this.pluginOperationsRegistry = new PluginOperationsRegistry(
                     this.pluginEnvironment, log);
             constructionCleanup.addLast(pluginOperationsRegistry::close);
+            this.hostLifecycle = new DefaultHostLifecycleRegistry(
+                    DefaultHostLifecycleRegistry.Callers.of(this.pluginEnvironment),
+                    pluginOperationsRegistry.recorder());
             // Discover/init plugins before sync assembly so validation customizers can
             // participate in header-validator construction. startAll() still runs at startup.
-            if (this.runtimeOptions.plugins().enabled()) {
+            if (this.runtimeOptions.plugins().enabled() || !requiredPlugins.isEmpty()) {
                 pluginManager = this.pluginEnvironment.createNodePluginManager(
                         eventBus, scheduler, pluginOperationsRegistry);
                 constructionCleanup.addLast(pluginManager::close);
-                pluginManager.discoverAndInit();
+                constructionCleanup.addLast(hostLifecycle::close);
+                pluginManager.registerHostService(HostApi.SERVICE_KEY,
+                        new DefaultHostApi(n2n, this.pluginEnvironment.providers(), hostLifecycle,
+                                config, this.runtimeOptions, this::runtimeNetwork,
+                                this.pluginEnvironment::bundleConfig));
+                pluginManager.registerHostService(CardanoHostServices.SERVICE_KEY,
+                        new CardanoHostServices(this::submitTransaction, this::getUtxoState, this,
+                                chainStorage::registerBlockBodyRetention, this,
+                                this::anchorProtocolParameters, this::anchorCclProtocolParams,
+                                () -> Optional.ofNullable(epochSnapshotReader)));
+                pluginManager.discoverAndInit(hostLifecycle::close);
+            } else {
+                constructionCleanup.addLast(hostLifecycle::close);
             }
-
-            this.appChainManager = buildAppChainManager();
-            if (appChainManager != null) {
-                constructionCleanup.addLast(appChainManager::stop);
-                serveSubsystem.enableAppLayer(appChainManager.serverAgentFactories());
-            }
-            this.localReadModels =
-                    new org.yanoproject.runtime.plugins.LocalReadModelRegistry();
-            constructionCleanup.addLast(localReadModels::close);
-            this.localReadModelContributions =
-                    new org.yanoproject.runtime.plugins
-                            .LocalReadModelContributionRegistry(
-                            this.pluginEnvironment, runtimeNetwork(),
-                            appChainGateways(), localReadModels);
-            constructionCleanup.addLast(localReadModelContributions::close);
-            this.domainApiRegistry = new DomainApiRegistry(
-                    this.pluginEnvironment,
-                    appChainGateways(),
-                    log,
-                    localReadModels,
-                    new org.yanoproject.runtime.appchain.hostbridge
-                            .DefaultL1TransactionBuilderService(
-                            this::getUtxoState,
-                            this::anchorCclProtocolParams,
-                            () -> chainState.getTip() == null
-                                    ? 0 : chainState.getTip().getSlot()),
-                    pluginOperationsRegistry);
-            constructionCleanup.addLast(domainApiRegistry::close);
+            hostLifecycle.runAssemblies(this.pluginEnvironment.classLoader());
 
             // Register default consensus listener (accept-all placeholder).
             var consensusListener = new DefaultConsensusListener();
@@ -535,31 +530,21 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                     this::resolveGenesisHash,
                     inMemoryDevnetGenesis);
             constructionCleanup.addLast(ledgerStateSubsystem::close);
-            if (appChainManager != null) {
-                getDefaultAccountStateStore().ifPresent(store -> {
-                    EpochParamProvider params = getEpochParamProvider();
-                    if (params != null) {
-                        appChainManager.wireL1EpochState(
-                                new org.yanoproject.runtime.appchain.hostbridge
-                                        .DefaultL1EpochStateProvider(store, chainState, params));
-                    }
-                });
-            }
+            getDefaultAccountStateStore().ifPresent(store -> {
+                EpochParamProvider params = getEpochParamProvider();
+                if (params != null) {
+                    epochSnapshotReader = new DefaultEpochSnapshotReader(store, chainState, params);
+                }
+            });
             this.chronologySubsystem = new ChronologySubsystem(
                     new ChronologyService(this.chainState),
                     eventBus,
                     ledgerStateSubsystem);
             PeerClientFactory peerClientFactory = relayConnectionManager.wrapPeerClientFactory(
                     createPeerClientFactory());
-            if (appChainManager != null && config.isClientEnabled()) {
-                // Shared app transport (ADR 005 M1 unification): when the L1
-                // upstream is also an app-group peer, app protocols ride its
-                // session instead of a second dedicated connection.
-                String appTransportMode = stringOf(this.runtimeOptions.globals()
-                        .get(YanoPropertyKeys.AppChain.TRANSPORT_MODE), "shared");
-                peerClientFactory = appChainManager.wrapPeerClientFactory(
-                        peerClientFactory, appTransportMode, remoteCardanoHost, remoteCardanoPort);
-            }
+            n2n.seal();
+            serveSubsystem.enableAppLayer(n2n.inboundFactories());
+            peerClientFactory = n2n.outboundFactory(peerClientFactory);
             this.syncSubsystem = new SyncSubsystem(
                     config,
                     chainState,
@@ -859,105 +844,8 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     }
 
     private List<Subsystem> runtimeKernelSubsystems() {
-        List<Subsystem> prePublication = appChainManager == null
-                ? List.of()
-                : List.of(appChainManager, localReadModelSubsystem());
-        return RuntimeKernelStages.create(runtimeKernelActions(), prePublication);
-    }
-
-    /**
-     * Starts derived read models only after every app-chain gateway is live.
-     * Reverse kernel shutdown then seals the read models before their source
-     * gateways stop, preserving both startup discovery and teardown ordering.
-     */
-    private Subsystem localReadModelSubsystem() {
-        return new Subsystem() {
-            private static final String NAME = "local-read-models";
-
-            @Override
-            public String name() {
-                return NAME;
-            }
-
-            @Override
-            public void start() {
-                localReadModelContributions.resume();
-            }
-
-            @Override
-            public void stop() {
-                localReadModelContributions.sealAndAwait();
-            }
-
-            @Override
-            public void close() {
-                // RuntimeNode owns and closes the registry with runtime resources.
-            }
-
-            @Override
-            public SubsystemHealth health() {
-                return SubsystemHealth.up(NAME);
-            }
-        };
-    }
-
-    /**
-     * Builds the app-chain manager from runtime globals when enabled
-     * (adr/app-layer/005; multi-chain per adr/app-layer/006 E5.2).
-     * Chains come from the indexed list (yano.app-chain.chains) when present,
-     * otherwise from the flat yano.app-chain.* keys (single chain).
-     * Returns null when disabled.
-     */
-    private org.yanoproject.runtime.appchain.AppChainManager buildAppChainManager() {
-        Map<String, Object> globals = this.runtimeOptions.globals();
-        if (!resolveBoolean(globals, YanoPropertyKeys.AppChain.ENABLED, false)) {
-            return null;
-        }
-
-        // Each chain: (suffix getter, prefix collector for plugin sub-maps like sinks.*)
-        List<java.util.function.Function<String, Object>> chainLookups = new java.util.ArrayList<>();
-        List<java.util.function.Function<String, Map<String, String>>> chainCollectors =
-                new java.util.ArrayList<>();
-        Object chainList = globals.get(YanoPropertyKeys.AppChain.CHAINS);
-        if (chainList instanceof List<?> entries && !entries.isEmpty()) {
-            for (Object entry : entries) {
-                if (entry instanceof Map<?, ?> chainMap) {
-                    chainLookups.add(suffix -> chainMap.get(suffix));
-                    chainCollectors.add(prefix -> collectPrefixed(chainMap, "", prefix));
-                }
-            }
-        } else {
-            // Flat single-chain config: full keys are "yano.app-chain." + suffix
-            chainLookups.add(suffix -> globals.get("yano.app-chain." + suffix));
-            chainCollectors.add(prefix -> collectPrefixed(globals, "yano.app-chain.", prefix));
-        }
-
-        String rocksPath = config.getRocksDBPath() != null ? config.getRocksDBPath() : "./chainstate";
-        Path appChainStoragePath = AppChainStoragePaths.resolve(
-                rocksPath, config.getAppChainStoragePath());
-        log.info("App-chain storage root: {}", appChainStoragePath);
-        boolean strictValidation = resolveBoolean(
-                globals, YanoPropertyKeys.AppChain.VALIDATION_STRICT, false);
-        List<org.yanoproject.runtime.appchain.AppChainSubsystem> subsystems =
-                new java.util.ArrayList<>();
-        for (int i = 0; i < chainLookups.size(); i++) {
-            var appChainConfig = buildAppChainConfig(
-                    chainLookups.get(i), chainCollectors.get(i), strictValidation);
-            log.info("App chain enabled: {} ({} members, {} peers, sequencing: {}, anchoring: {})",
-                    appChainConfig.chainId(), appChainConfig.memberKeysHex().size(),
-                    appChainConfig.peers().size(), appChainConfig.sequencingEnabled(),
-                    appChainConfig.anchoringEnabled());
-            var subsystem = new org.yanoproject.runtime.appchain.AppChainSubsystem(
-                    appChainConfig, protocolMagic, eventBus, null, appChainStoragePath.toString(),
-                    pluginEnvironment.classLoader(), pluginEnvironment.providers(), log);
-            subsystem.wireL1(this::submitTransaction, this::getUtxoState);
-            subsystem.wireL1Chain(this, chainStorage.registerBlockBodyRetention(java.util.OptionalLong.of(0)));
-            subsystem.wireTxEvaluation(this);
-            subsystem.wireAnchorFees(this::anchorFeeParams);
-            subsystem.wireAnchorProtocolParams(this::anchorCclProtocolParams);
-            subsystems.add(subsystem);
-        }
-        return new org.yanoproject.runtime.appchain.AppChainManager(subsystems, log);
+        hostLifecycle.seal();
+        return RuntimeKernelStages.create(runtimeKernelActions(), hostLifecycle.subsystems());
     }
 
     private String runtimeNetwork() {
@@ -973,66 +861,10 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         return config.isDevMode() ? "devnet" : "custom-" + protocolMagic;
     }
 
-    /** Collect config entries whose full key starts with base+prefix, keyed by (key minus base). */
-    private static Map<String, String> collectPrefixed(Map<?, ?> source, String base, String prefix) {
-        Map<String, String> result = new java.util.LinkedHashMap<>();
-        String full = base + prefix;
-        for (Map.Entry<?, ?> entry : source.entrySet()) {
-            String key = String.valueOf(entry.getKey());
-            if (key.startsWith(full) && entry.getValue() != null) {
-                result.put(key.substring(base.length()), String.valueOf(entry.getValue()));
-            }
-        }
-        return result;
-    }
-
-    /** Builds one chain's config from suffix-keyed lookups (e.g. "chain-id", "sequencer.proposer"). */
-    private org.yanoproject.api.appchain.AppChainConfig buildAppChainConfig(
-            java.util.function.Function<String, Object> get,
-            java.util.function.Function<String, Map<String, String>> collectPrefixed,
-            boolean strictValidation) {
-        Map<String, Object> settings = new java.util.LinkedHashMap<>();
-        for (String suffix : AppChainConfigParser.frameworkSuffixes()) {
-            Object value = get.apply(suffix);
-            if (value != null) {
-                settings.put(suffix, value);
-            }
-        }
-        for (String prefix : AppChainConfigParser.dynamicPrefixes()) {
-            settings.putAll(collectPrefixed.apply(prefix));
-        }
-        if (strictValidation) {
-            AppChainConfigParser.validateStrict(settings);
-        }
-        return AppChainConfigParser.parse(settings);
-    }
-
-    /**
-     * Current linear-fee protocol params for anchor tx pricing (ADR 008.1
-     * I1.5); null when unavailable (the anchor falls back to its configured
-     * fee). Resolves the ledger-tracked params for the current epoch, or the
-     * static/genesis params on nodes without epoch-param tracking.
-     */
-    private org.yanoproject.runtime.appchain.AppChainSubsystem.AnchorFeeParams anchorFeeParams() {
-        try {
-            int epoch = epochNonceState != null ? epochNonceState.getCurrentEpoch() : 0;
-            var params = getProtocolParameters(Math.max(epoch, 0)).orElse(null);
-            if (params != null && params.minFeeA() != null && params.minFeeB() != null) {
-                // Script-anchor pricing (008.4): ex-unit prices + PlutusV3 cost
-                // model; null fields fall back to Conway defaults in the anchor
-                long[] costModelV3 = null;
-                if (params.costModelsRaw() != null && params.costModelsRaw().get("PlutusV3") != null) {
-                    costModelV3 = params.costModelsRaw().get("PlutusV3").stream()
-                            .mapToLong(Long::longValue).toArray();
-                }
-                return new org.yanoproject.runtime.appchain.AppChainSubsystem.AnchorFeeParams(
-                        params.minFeeA(), params.minFeeB(),
-                        params.priceMem(), params.priceStep(), costModelV3);
-            }
-        } catch (Exception e) {
-            log.debug("Anchor fee params unavailable: {}", e.toString());
-        }
-        return null;
+    /** Live tracked/static snapshot; the Cardano adapter retains the legacy fee fallback policy. */
+    private ProtocolParamsSnapshot anchorProtocolParameters() {
+        int epoch = epochNonceState != null ? epochNonceState.getCurrentEpoch() : 0;
+        return getProtocolParameters(Math.max(epoch, 0)).orElse(null);
     }
 
     /** Memoized parse of the configured static protocol-param.json for the anchor fallback. */
@@ -1041,7 +873,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
 
     /**
      * Current protocol parameters as the cardano-client-lib model, for
-     * QuickTx-based anchor tx construction (Iteration 4). Tracked / L1-derived
+     * plugin transaction construction ({@link CardanoHostServices#pricingParameters()}). Tracked / L1-derived
      * params for the current epoch are primary; when those are unavailable
      * (epoch-param tracking disabled or not yet resolved), fall back to the
      * configured static {@code protocol-param.json}
@@ -1087,40 +919,10 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         return result;
     }
 
-    /** All extension namespaces copied into {@link AppChainConfig#pluginSettings()}. */
-    static Map<String, String> appChainPluginSettings(
-            java.util.function.Function<String, Map<String, String>> collectPrefixed) {
-        Map<String, Object> settings = new java.util.LinkedHashMap<>();
-        for (String prefix : AppChainConfigParser.dynamicPrefixes()) {
-            settings.putAll(collectPrefixed.apply(prefix));
-        }
-        return AppChainConfigParser.pluginSettings(settings);
-    }
-
-    private static String stringOf(Object value, String def) {
-        return value != null && !String.valueOf(value).isBlank() ? String.valueOf(value).trim() : def;
-    }
-
-    /** Single app-chain gateway (back-compat), or null when disabled or multiple chains. */
-    public org.yanoproject.api.appchain.AppChainGateway appChainGateway() {
-        return appChainManager != null ? appChainManager.single().orElse(null) : null;
-    }
-
-    /** All hosted app chains; empty registry when disabled. */
-    public org.yanoproject.api.appchain.AppChainGateways appChainGateways() {
-        return appChainManager != null
-                ? appChainManager
-                : org.yanoproject.api.appchain.AppChainGateways.empty();
-    }
-
-    /** Constrained ADR-011.3 domain API dispatcher. */
-    public org.yanoproject.api.plugin.domain.DomainApiGateway domainApis() {
-        return domainApiRegistry;
-    }
-
-    public org.yanoproject.api.plugin.domain.LocalReadModelHost
-            localReadModels() {
-        return localReadModels;
+    /** A service of the currently initialized plugin generation, resolved on every call. */
+    public <T> Optional<T> pluginService(String key, Class<T> type) {
+        PluginManager manager = pluginManager;
+        return manager != null ? manager.pluginService(key, type) : Optional.empty();
     }
 
     /** Cached ADR-011.4 operations view; reading it never invokes plugin code. */
@@ -1642,29 +1444,31 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         pluginEnvironment.resumeContributionCallbacks();
         boolean pluginsStarted = false;
         try {
-            if (pluginManager != null && runtimeOptions.plugins().enabled()) {
+            // The catalog already applies optional-plugin policy. A manager can
+            // still own required framework plugins when optional plugins are disabled.
+            if (pluginManager != null) {
                 pluginManager.startAll();
                 pluginsStarted = true;
             }
-            domainApiRegistry.resume();
+            hostLifecycle.resumePluginProducts();
             utxoSubsystem.initializeFilterChain(
                     pluginManager != null ? pluginManager.getStorageFilters() : List.of(),
                     projectionFilterPreflight);
             utxoSubsystem.startIndexContributors(pluginEnvironment.providers());
             // Health and metrics may depend on services contributed by the
             // ordinary plugin planes, so construct telemetry only after both
-            // NodePlugin and domain products are active.
+            // NodePlugin and plugin products are active.
             pluginOperationsRegistry.activateTelemetry();
             pluginOperationsRegistry.startSampling();
         } catch (Throwable failure) {
             boolean stopNodePlugins = pluginsStarted;
-            Runnable stopPlugins = () -> stopDomainAndNodePlugins(stopNodePlugins);
+            Runnable stopPlugins = () -> stopPluginProductsAndNodePlugins(stopNodePlugins);
             throw rollbackPluginStartup(failure, stopPlugins,
                     pluginEnvironment::sealContributionCallbacks);
         }
     }
 
-    private void stopDomainAndNodePlugins(boolean stopNodePlugins) {
+    private void stopPluginProductsAndNodePlugins(boolean stopNodePlugins) {
         Throwable failure = null;
         try {
             utxoSubsystem.stopIndexContributors();
@@ -1677,14 +1481,9 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
             failure = recordPluginCleanupFailure(failure, operationsFailure);
         }
         try {
-            domainApiRegistry.sealAndAwait();
-        } catch (Throwable domainFailure) {
-            failure = recordPluginCleanupFailure(failure, domainFailure);
-        }
-        try {
-            localReadModelContributions.sealAndAwait();
-        } catch (Throwable readModelFailure) {
-            failure = recordPluginCleanupFailure(failure, readModelFailure);
+            hostLifecycle.sealPluginProducts();
+        } catch (Throwable productFailure) {
+            failure = recordPluginCleanupFailure(failure, productFailure);
         }
         if (stopNodePlugins) {
             try {
@@ -1784,7 +1583,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
         requirePluginTeardownAllowed("start the runtime");
         requireSafeRestart(unsafeLedgerApplyShutdown);
         try {
-            kernel.start();
+            kernel.start(hostLifecycle::restartReady);
         } catch (KernelLifecycleException e) {
             throw unwrapKernelStartupFailure(e);
         }
@@ -3923,19 +3722,8 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
     /** Called only after the kernel has stopped sync/apply stages. */
     private void stopPluginsAfterRuntimeDrain() {
         requirePluginTeardownAllowed("stop runtime plugins");
-        // Domain request admission is independent of ledger apply ownership
-        // and must close on every shutdown path, including an unsafe ledger
-        // drain where broader provider teardown is deliberately skipped.
-        Throwable failure = attemptRuntimeCleanup(
-                null, "plugin telemetry products", pluginOperationsRegistry::sealAndAwait);
-        failure = attemptRuntimeCleanup(
-                failure, "domain API products", domainApiRegistry::sealAndAwait);
-        if (unsafeLedgerApplyShutdown) {
-            failure = recordPluginCleanupFailure(failure, new IllegalStateException(
-                    "Cannot stop plugins safely because a ledger apply worker did not stop or drain"));
-            rethrowRuntimeCleanup(failure, "Runtime plugin stop failed");
-            return;
-        }
+        Throwable failure = sealPluginProductsForStop(unsafeLedgerApplyShutdown,
+                pluginOperationsRegistry::sealAndAwait, hostLifecycle::sealPluginProducts);
         failure = attemptRuntimeCleanup(
                 failure, "UTxO index contributors", utxoSubsystem::stopIndexContributors);
         // Close callback admission only after every runtime subsystem has
@@ -3965,6 +3753,28 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
                     failure, "plugin manager", pluginManager::stopAll);
         }
         rethrowRuntimeCleanup(failure, "Runtime plugin stop failed");
+    }
+
+    /**
+     * The head of every runtime plugin stop. Plugin product admission is independent of ledger apply ownership
+     * and must close on every shutdown path, so telemetry and products always seal first; after an unsafe
+     * ledger drain the stop then fails here, deliberately skipping broader provider teardown.
+     *
+     * @return the seal failures so far, for a safe drain
+     */
+    static Throwable sealPluginProductsForStop(
+            boolean unsafeLedgerApplyShutdown,
+            Runnable sealTelemetry,
+            Runnable sealProducts
+    ) {
+        Throwable failure = attemptRuntimeCleanup(null, "plugin telemetry products", sealTelemetry);
+        failure = attemptRuntimeCleanup(failure, "plugin products", sealProducts);
+        if (unsafeLedgerApplyShutdown) {
+            failure = recordPluginCleanupFailure(failure, new IllegalStateException(
+                    "Cannot stop plugins safely because a ledger apply worker did not stop or drain"));
+            rethrowRuntimeCleanup(failure, "Runtime plugin stop failed");
+        }
+        return failure;
     }
 
     private void closeRuntimeResources(boolean unsafeLedgerApplyWorker) {
@@ -4014,32 +3824,17 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
 
             @Override
             public void closePluginManager() {
-                if (pluginManager != null) {
-                    pluginManager.close();
-                }
+                Throwable failure = null;
+                try { hostLifecycle.close(); }
+                catch (Throwable cleanup) { failure = cleanup; }
+                try { if (pluginManager != null) pluginManager.close(); }
+                catch (Throwable cleanup) { failure = LifecycleFailures.merge(failure, cleanup); }
+                rethrowRuntimeCleanup(failure, "Host extension close failed");
             }
 
             @Override
-            public void closeDomainApis() {
-                Throwable failure = null;
-                try {
-                    utxoSubsystem.stopIndexContributors();
-                } catch (Throwable indexFailure) {
-                    failure = recordPluginCleanupFailure(failure, indexFailure);
-                }
-                try {
-                    domainApiRegistry.close();
-                } catch (Throwable domainFailure) {
-                    failure = domainFailure;
-                }
-                try {
-                    localReadModelContributions.close();
-                } catch (Throwable readModelFailure) {
-                    failure = recordPluginCleanupFailure(failure, readModelFailure);
-                }
-                if (failure != null) {
-                    throw propagatePluginCleanupFailure(failure);
-                }
+            public void closeIndexContributors() {
+                utxoSubsystem.stopIndexContributors();
             }
 
             @Override
@@ -4143,7 +3938,7 @@ public class RuntimeNode implements NodeLifecycle, ChainQuery, LedgerQuery, TxGa
             // workers are stopped/drained. Closing shared state first can make a queued async
             // listener fail while applying an accepted block event.
             cleanupFailure = attemptRuntimeCleanup(
-                    cleanupFailure, "domain API registry", actions::closeDomainApis);
+                    cleanupFailure, "UTxO index contributors", actions::closeIndexContributors);
             cleanupFailure = attemptRuntimeCleanup(
                     cleanupFailure, "plugin manager", actions::closePluginManager);
             cleanupFailure = attemptRuntimeCleanup(

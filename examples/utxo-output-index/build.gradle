@@ -3,5 +3,5 @@ plugins {
 }
 
 dependencies {
-    compileOnly project(':core-api')
+    compileOnly project(':cardano-api')
 }

@@ -28,7 +28,7 @@ ensure_docker_build() {
   (cd "$REPO" && ./gradlew :app:prepareYanoDockerJvmContext :app:yanoDockerDistZip \
       -PyanoDockerImageTag=$QA_IMAGE_TAG -PskipSigning=true -Dquarkus.native.container-build=true) \
       > "$SP/runs/docker-build.log" 2>&1 || { log "gradle build failed (runs/docker-build.log)"; return 1; }
-  docker build -q --build-arg JVM_BASE_IMAGE=eclipse-temurin:25-jre -t "$QA_IMAGE" \
+  docker build -q -t "$QA_IMAGE" \
       "$REPO/app/build/docker/jvm/context" >> "$SP/runs/docker-build.log" 2>&1 \
       || { log "docker build failed (runs/docker-build.log)"; return 1; }
   cp "$(ls -t "$REPO"/app/build/distributions/yano-docker-*.zip | head -1)" "$DOCKER_ZIP" || return 1
