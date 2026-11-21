@@ -2,6 +2,7 @@ package org.yanoproject.api.util;
 
 import com.bloxbean.cardano.client.crypto.CryptoException;
 import com.bloxbean.cardano.client.crypto.api.SigningProvider;
+import com.bloxbean.cardano.client.crypto.api.impl.BouncyCastleEd25519Verifier;
 import com.bloxbean.cardano.client.crypto.api.impl.EdDSASigningProvider;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 
@@ -46,11 +47,13 @@ public final class StrictEd25519 {
             HexUtil.decodeHexString("eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f")};
 
     /**
-     * The cofactorless equation check, pinned to CCL's {@link EdDSASigningProvider} (which recomputes {@code R}
-     * and compares it bytewise, like libsodium) rather than the replaceable global provider, so a differently
-     * configured provider can never change which signatures verify (ADR app-layer/039 I20).
+     * The cofactorless equation check, pinned to CCL's {@link EdDSASigningProvider} with an explicit
+     * {@link BouncyCastleEd25519Verifier} (which recomputes {@code R} and compares it bytewise, like libsodium)
+     * rather than the replaceable global provider or verifier of {@code CryptoConfiguration}, so a differently
+     * configured one can never change which signatures verify (ADR app-layer/039 I20). Since CCL 0.8.0-pre8,
+     * {@code new EdDSASigningProvider()} reads the global verifier on every call.
      */
-    private static final SigningProvider EQUATION = new EdDSASigningProvider();
+    private static final SigningProvider EQUATION = new EdDSASigningProvider(new BouncyCastleEd25519Verifier());
 
     private StrictEd25519() {
     }

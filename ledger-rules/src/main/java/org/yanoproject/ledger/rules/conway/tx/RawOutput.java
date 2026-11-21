@@ -153,7 +153,7 @@ public record RawOutput(int index, CborSpan span, byte[] address, LedgerValue va
         if (item.tag() != 24) {
             throw new TxDecodingException("a script reference is wrapped in tag 24");
         }
-        return RawScript.readScript(StrictCbor.span(StrictCbor.definiteBytes(item.untag())));
+        return RawScript.readScript(StrictCbor.span(StrictCbor.definiteBytes(item.untag()))).requireConwayTypes();
     }
 
     /**

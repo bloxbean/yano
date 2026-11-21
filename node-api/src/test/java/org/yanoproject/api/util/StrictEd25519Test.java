@@ -1,5 +1,7 @@
 package org.yanoproject.api.util;
 
+import com.bloxbean.cardano.client.crypto.api.Ed25519Verifier;
+import com.bloxbean.cardano.client.crypto.config.CryptoConfiguration;
 import com.bloxbean.cardano.client.util.HexUtil;
 import org.junit.jupiter.api.Test;
 
@@ -30,6 +32,20 @@ class StrictEd25519Test {
         assertThat(StrictEd25519.verify(otherKey, SIGNATURE, MESSAGE)).isFalse();
         assertThat(StrictEd25519.verify(PUBLIC_KEY, Arrays.copyOf(SIGNATURE, 63), MESSAGE)).isFalse();
         assertThat(StrictEd25519.verify(null, SIGNATURE, MESSAGE)).isFalse();
+    }
+
+    /** The global CCL verifier is replaceable; it must not change which signatures verify. */
+    @Test
+    void aReplacedGlobalVerifierDoesNotChangeTheResult() {
+        Ed25519Verifier original = CryptoConfiguration.INSTANCE.getEd25519Verifier();
+        try {
+            CryptoConfiguration.INSTANCE.setEd25519Verifier((signature, message, publicKey) -> false);
+            assertThat(StrictEd25519.verify(PUBLIC_KEY, SIGNATURE, MESSAGE)).isTrue();
+            CryptoConfiguration.INSTANCE.setEd25519Verifier((signature, message, publicKey) -> true);
+            assertThat(StrictEd25519.verify(PUBLIC_KEY, SIGNATURE, new byte[] {1})).isFalse();
+        } finally {
+            CryptoConfiguration.INSTANCE.setEd25519Verifier(original);
+        }
     }
 
     /** {@code sc25519_is_canonical}: {@code S + L} is the same scalar mod L but not canonical. */

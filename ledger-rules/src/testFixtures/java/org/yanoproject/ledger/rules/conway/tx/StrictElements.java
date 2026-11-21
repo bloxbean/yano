@@ -38,12 +38,12 @@ public final class StrictElements {
 
     /** {@code native_script} */
     public static void nativeScript(byte[] cbor) {
-        RawScript.of(RawScript.NATIVE, StrictCbor.span(cbor));
+        RawScript.of(RawScript.NATIVE, StrictCbor.span(cbor)).requireConwayTypes();
     }
 
     /** {@code script}, {@code [language, script]} (no tag-24 wrapper) */
     public static void script(byte[] cbor) {
-        RawScript.readScript(StrictCbor.span(cbor));
+        RawScript.readScript(StrictCbor.span(cbor)).requireConwayTypes();
     }
 
     /** {@code plutus_data} */

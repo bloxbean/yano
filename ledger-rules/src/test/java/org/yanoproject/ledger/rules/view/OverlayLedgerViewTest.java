@@ -244,7 +244,7 @@ class OverlayLedgerViewTest {
     void proposalThenVoteVisibleAcrossTransactions() {
         GovActionId gaid = new GovActionId(TX1, 0);
         UpdateCommittee update = new UpdateCommittee(null, Set.of(),
-                Map.of(Credential.fromKey(HexUtil.decodeHexString(hash28(0x33))), 150),
+                Map.of(Credential.fromKey(HexUtil.decodeHexString(hash28(0x33))), 150L),
                 new UnitInterval(BigInteger.ONE, BigInteger.TWO));
         ProposalState proposal = new ProposalState(gaid, GovActionType.UPDATE_COMMITTEE, update, null, 100, 106,
                 Fixtures.GOV_ACTION_DEPOSIT, Fixtures.rewardAddressHex(1));
