@@ -347,6 +347,35 @@ class HaskellPolicyTest {
                 "duplicate key hash");
     }
 
+    /**
+     * A rational is the value {@code n % d} ({@code decodeRationalWithTag}, Decoder.hs:514-526): a margin written in
+     * bignums, or with a negative numerator and denominator, is the pool's own margin, so {@code decodeOSet} finds the
+     * two registrations equal.
+     */
+    @Test
+    void twoPoolsDifferingOnlyInHowTheirMarginIsWrittenAreOne() {
+        String pool = "8a03" + HASH28 + HASH32 + "0000" + "%s" + "581de0" + "44".repeat(28) + "80" + "80" + "f6";
+        String certificates = "a4" + INPUTS + OUTPUTS + FEE + "0482";
+        bothReject(certificates + pool.formatted("d81e820102") + pool.formatted("d81e82c24101c24102"), "a0",
+                "duplicate certificate");
+        bothReject(certificates + pool.formatted("d81e820102") + pool.formatted("d81e822021"), "a0",
+                "duplicate certificate");
+        bothReject(certificates + pool.formatted("d81e820102") + pool.formatted("d81e820204"), "a0",
+                "duplicate certificate");
+        bothAccept(certificates + pool.formatted("d81e820102") + pool.formatted("d81e820103"), "a0");
+    }
+
+    @Test
+    void twoCommitteeUpdatesDifferingOnlyInHowTheirQuorumIsWrittenAreOne() {
+        String update = "8400" + ACCOUNT + "8504f6" + "80" + "a0" + "%s" + ANCHOR;
+        String proposals = "a4" + INPUTS + OUTPUTS + FEE + "1482";
+        bothReject(proposals + update.formatted("d81e820102") + update.formatted("d81e822021"), "a0",
+                "duplicate proposal_procedure");
+        bothReject(proposals + update.formatted("d81e820102") + update.formatted("d81e82c24101c24102"), "a0",
+                "duplicate proposal_procedure");
+        bothAccept(proposals + update.formatted("d81e820102") + update.formatted("d81e820103"), "a0");
+    }
+
     @Test
     void anItemOfASetTooDeepForARecursiveReaderIsRejected() {
         String deep = "81".repeat(200_000) + "00";

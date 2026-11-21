@@ -17,9 +17,9 @@ import java.util.List;
  * <ul>
  *   <li>{@code Url} and {@code DnsName}: UTF-8 text (each chunk valid, {@code decodeString}) of at most 128 bytes
  *       ({@code textDecCBOR 128}, BaseTypes.hs:678-697).</li>
- *   <li>{@code UnitInterval}: tag 30, two integers (bignums tagged 2/3 too), a non-zero denominator, the reduced ratio in [0, 1] with
- *       numerator and denominator in {@code Word64} ({@code decodeRationalWithTag}, Plain.hs:159-167;
- *       {@code boundRational}, BaseTypes.hs:386-402).</li>
+ *   <li>{@code UnitInterval}: tag 30, two integers (bignums tagged 2/3 too), a non-zero denominator, the reduced
+ *       ratio in [0, 1] with numerator and denominator in {@code Word64} ({@code decodeRationalWithTag},
+ *       Decoder.hs:514-526; {@code boundRational}, BaseTypes.hs:386-402).</li>
  * </ul>
  */
 final class BoundedFields {
@@ -56,13 +56,29 @@ final class BoundedFields {
     }
 
     /**
-     * Reads a {@code UnitInterval} ({@code unit}) or a {@code NonNegativeInterval}: tag 30, two integers, a non-zero
-     * denominator, the reduced ratio in [0, 1] or [0, 2^64 - 1] with numerator and denominator in {@code Word64}
-     * ({@code decodeRationalWithTag}, Plain.hs:159-167; {@code fromRationalBoundedRatio}, BaseTypes.hs:346-376).
+     * Reads a {@code UnitInterval} ({@code unit}) or a {@code NonNegativeInterval}: a {@link #ratio}, in [0, 1] or
+     * [0, 2^64 - 1] with numerator and denominator in {@code Word64} ({@code fromRationalBoundedRatio},
+     * BaseTypes.hs:346-376).
+     */
+    static void boundedRational(CborSpan item, String what, boolean unit) {
+        BigInteger[] ratio = ratio(item, what);
+        BigInteger numerator = ratio[0];
+        BigInteger denominator = ratio[1];
+        boolean outOfRange = numerator.signum() < 0 || denominator.compareTo(WORD64_MAX) > 0
+                || (unit ? numerator.compareTo(denominator) > 0 : numerator.compareTo(WORD64_MAX) > 0);
+        if (outOfRange) {
+            throw new TxDecodingException(what + " " + numerator + "/" + denominator + (unit ? " is not in [0, 1]"
+                    : " is not a non-negative Word64 ratio"));
+        }
+    }
+
+    /**
+     * A tag-30 rational as {@code decodeRationalWithTag} reads it (Decoder.hs:514-526): two integers ({@link #integer})
+     * in an array, a non-zero denominator, and the value {@code n % d}, reduced with the denominator positive.
      *
      * @return the reduced numerator and denominator
      */
-    static BigInteger[] boundedRational(CborSpan item, String what, boolean unit) {
+    static BigInteger[] ratio(CborSpan item, String what) {
         if (item.tag() != 30) {
             throw new TxDecodingException(what + " is not a tag-30 rational");
         }
@@ -75,21 +91,8 @@ final class BoundedFields {
         if (d.signum() == 0) {
             throw new TxDecodingException(what + ": denominator cannot be zero");
         }
-        // n % d: reduced, denominator positive
-        BigInteger gcd = n.gcd(d);
-        BigInteger numerator = n.divide(gcd);
-        BigInteger denominator = d.divide(gcd);
-        if (denominator.signum() < 0) {
-            numerator = numerator.negate();
-            denominator = denominator.negate();
-        }
-        boolean outOfRange = numerator.signum() < 0 || denominator.compareTo(WORD64_MAX) > 0
-                || (unit ? numerator.compareTo(denominator) > 0 : numerator.compareTo(WORD64_MAX) > 0);
-        if (outOfRange) {
-            throw new TxDecodingException(what + " " + n + "/" + d + (unit ? " is not in [0, 1]"
-                    : " is not a non-negative Word64 ratio"));
-        }
-        return new BigInteger[]{numerator, denominator};
+        BigInteger gcd = d.signum() < 0 ? n.gcd(d).negate() : n.gcd(d);
+        return new BigInteger[]{n.divide(gcd), d.divide(gcd)};
     }
 
     /**

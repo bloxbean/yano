@@ -1,7 +1,6 @@
 package org.yanoproject.ledger.rules.conway.tx;
 
 import com.bloxbean.cardano.client.common.cbor.CborSpan;
-import com.bloxbean.cardano.client.spec.UnitInterval;
 import com.bloxbean.cardano.client.transaction.raw.RawGovAction;
 import com.bloxbean.cardano.client.transaction.raw.RawGovActionId;
 import com.bloxbean.cardano.client.transaction.raw.RawProtocolParamUpdate;
@@ -54,6 +53,9 @@ public final class RawProposal {
     public static final int UPDATE_COMMITTEE = 4;
     public static final int NEW_CONSTITUTION = 5;
     public static final int INFO = 6;
+
+    /** An update committee's quorum, the action's last item. */
+    private static final int QUORUM = 4;
 
     /** {@code MaxVersion} (cardano-ledger-binary Version.hs:63): {@code succVersion} of it is {@code Nothing}. */
     public static final int MAX_VERSION = 13;
@@ -224,7 +226,10 @@ public final class RawProposal {
         return committeeAdditions;
     }
 
-    /** @return an {@code UpdateCommittee}'s quorum, the reduced {@code [numerator, denominator]}; else null */
+    /**
+     * @return an {@code UpdateCommittee}'s quorum, the {@code [numerator, denominator]} reduced with the denominator
+     *         positive, as Haskell decodes it ({@link BoundedFields#ratio}); else null
+     */
     public BigInteger[] quorum() {
         return quorum != null ? quorum.clone() : null;
     }
@@ -269,9 +274,7 @@ public final class RawProposal {
                 action.membersToRemove().forEach(member -> b.committeeRemovals.add(RawCredential.of(member)));
                 action.membersToAdd().forEach(member -> b.committeeAdditions.put(RawCredential.of(member.getKey()),
                         new BigInteger(Long.toUnsignedString(member.getValue()))));
-                UnitInterval quorum = action.quorum();
-                BigInteger gcd = quorum.getNumerator().gcd(quorum.getDenominator());
-                b.quorum = new BigInteger[]{quorum.getNumerator().divide(gcd), quorum.getDenominator().divide(gcd)};
+                b.quorum = BoundedFields.ratio(action.span().get(QUORUM), "quorum");
             }
             case NEW_CONSTITUTION -> {
                 b.prevActionId = previous(action);

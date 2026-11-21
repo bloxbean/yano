@@ -13,7 +13,8 @@ import java.util.Set;
  * A canonical re-encoding of a CBOR item, used as the equality key of decoded values: two encodings Haskell decodes
  * to equal values give the same key. Definite lengths, shortest heads, byte and text strings with their chunks
  * joined, map entries sorted by key, a tag-258 set's elements sorted (the tag dropped), and a tag-30 rational reduced
- * (Haskell keeps {@code BoundedRatio} normalised). An untagged set is sorted where the caller says one is.
+ * with its denominator positive (Haskell keeps {@code BoundedRatio} normalised). An untagged set is sorted where the
+ * caller says one is.
  */
 final class CborCanonical {
 
@@ -27,10 +28,6 @@ final class CborCanonical {
     private final Set<Integer> sets;
     private int pos;
     private int depth;
-
-    private CborCanonical(byte[] data, int pos) {
-        this(data, pos, Set.of());
-    }
 
     private CborCanonical(byte[] data, int pos, Set<Integer> sets) {
         this.data = data;
@@ -152,6 +149,7 @@ final class CborCanonical {
                 });
             }
             case 6 -> {
+                int tagged = pos;
                 pos++;
                 BigInteger tag = argument(info);
                 if (tag.equals(BigInteger.valueOf(258))) {
@@ -159,7 +157,7 @@ final class CborCanonical {
                 }
                 head(out, 6, tag);
                 if (tag.equals(BigInteger.valueOf(30))) {
-                    out.writeBytes(rational());
+                    out.writeBytes(rational(tagged));
                 } else {
                     out.writeBytes(item());
                 }
@@ -176,30 +174,29 @@ final class CborCanonical {
         return out.toByteArray();
     }
 
-    /** A {@code [numerator, denominator]} reduced by their greatest common divisor. */
-    private byte[] rational() {
-        int start = pos;
-        List<byte[]> items = array();
-        if (items.size() == 2 && (items.get(0)[0] & 0xe0) == 0 && (items.get(1)[0] & 0xe0) == 0) {
-            BigInteger n = new CborCanonical(items.get(0), 0).argumentOf();
-            BigInteger d = new CborCanonical(items.get(1), 0).argumentOf();
-            BigInteger g = n.gcd(d);
-            if (g.signum() > 0) {
-                ByteArrayOutputStream out = new ByteArrayOutputStream();
-                head(out, 4, BigInteger.TWO);
-                head(out, 0, n.divide(g));
-                head(out, 0, d.divide(g));
-                return out.toByteArray();
-            }
+    /**
+     * A rational's {@code [numerator, denominator]} as Haskell keeps the value, {@link BoundedFields#ratio}: reduced,
+     * the denominator positive, each part an unsigned integer however it was written (a bignum, or both negative). One
+     * that is not a ratio in {@code Word64}s, which the walk rejects, is its own key.
+     *
+     * @param tagged the offset of the rational's tag
+     */
+    private byte[] rational(int tagged) {
+        byte[] parts = item();
+        BigInteger[] ratio;
+        try {
+            ratio = BoundedFields.ratio(CborSpan.at(data, tagged), "rational");
+        } catch (RuntimeException rejected) {
+            return parts;
         }
-        pos = start;
-        return item();
-    }
-
-    private BigInteger argumentOf() {
-        int head = peek();
-        pos++;
-        return argument(head & 0x1f);
+        if (ratio[0].signum() < 0 || ratio[0].bitLength() > Long.SIZE || ratio[1].bitLength() > Long.SIZE) {
+            return parts;
+        }
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        head(out, 4, BigInteger.TWO);
+        head(out, 0, ratio[0]);
+        head(out, 0, ratio[1]);
+        return out.toByteArray();
     }
 
     private byte[] sortedArray() {

@@ -184,6 +184,11 @@ class RawProposalTest {
                 + "22".repeat(28) + "1b" + "ffffffffffffffff" + "d81e820102");
         assertThat(committee.committeeRemovals()).hasSize(1);
         assertThat(committee.committeeAdditions().values()).containsExactly(new BigInteger("18446744073709551615"));
+        // The quorum Haskell decodes, n % d: reduced, the denominator positive, however the integers are written.
+        for (String quorum : new String[]{"d81e820102", "d81e820204", "d81e822021", "d81e82c24101c24102"}) {
+            assertThat(proposal("85" + "04" + "f6" + "80" + "a0" + quorum).quorum()).as(quorum)
+                    .containsExactly(BigInteger.ONE, BigInteger.TWO);
+        }
 
         RawProposal parameterChange = proposal("84" + "00" + "f6" + "a1" + "0301" + "581c" + "33".repeat(28));
         assertThat(parameterChange.paramUpdate().keys()).containsExactly(3);
