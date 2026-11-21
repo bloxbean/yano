@@ -16,7 +16,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * {@link HaskellPolicy}: M1's keyed-record proof (ADR 0003 I13), where the walk and {@link RawTransaction}'s reader
- * must agree, and the rules the decoder version decides.
+ * must agree, and the rules of Conway's decoder version.
  */
 class HaskellPolicyTest {
 
@@ -222,34 +222,28 @@ class HaskellPolicyTest {
         bothReject("a4" + INPUTS + OUTPUTS + FEE + "0481" + "8200" + deep, "a0", "");
     }
 
-    private static void certificate(HaskellPolicy policy, String certificate) {
-        policy.walk(CertKind.RECORD, StrictCbor.span(HexUtil.decodeHexString(certificate)));
+    private static void certificate(String certificate) {
+        HaskellPolicy.CONWAY.walk(CertKind.RECORD, StrictCbor.span(HexUtil.decodeHexString(certificate)));
     }
 
     @Test
-    void definiteByteStringsAndAnchorsEndBelowDecoderVersion12() {
+    void byteStringsAndAnchorsAreDefinite() {
         String chunked = "5f" + "5801" + "11" + "581b" + "11".repeat(27) + "ff";
         String keyDelegation = "8302" + CRED;
-        HaskellPolicy eleven = new HaskellPolicy(11);
-        HaskellPolicy twelve = new HaskellPolicy(12);
-
-        assertThatThrownBy(() -> certificate(eleven, keyDelegation + chunked))
+        assertThatThrownBy(() -> certificate(keyDelegation + chunked))
                 .isInstanceOf(TxDecodingException.class).hasMessageContaining("indefinite-length byte string");
-        assertThatCode(() -> certificate(twelve, keyDelegation + chunked)).doesNotThrowAnyException();
 
         String update = "8312" + CRED;
-        assertThatCode(() -> certificate(eleven, update + ANCHOR)).doesNotThrowAnyException();
-        assertThatThrownBy(() -> certificate(eleven, update + "9f" + "60" + HASH32 + "ff"))
+        assertThatCode(() -> certificate(update + ANCHOR)).doesNotThrowAnyException();
+        assertThatThrownBy(() -> certificate(update + "9f" + "60" + HASH32 + "ff"))
                 .isInstanceOf(TxDecodingException.class).hasMessageContaining("indefinite-length array");
-        assertThatCode(() -> certificate(twelve, update + "9f" + "60" + HASH32 + "ff")).doesNotThrowAnyException();
     }
 
     @Test
-    void aMarginOfBignumsEndsAtDecoderVersion12() {
+    void aMarginMayBeWrittenInBignums() {
         String pool = "8a03" + HASH28 + HASH32 + "0000" + "d81e82" + "c24101" + "02" + "581de0" + "44".repeat(28)
                 + "80" + "80" + "f6";
-        assertThatCode(() -> certificate(new HaskellPolicy(11), pool)).doesNotThrowAnyException();
-        assertThatThrownBy(() -> certificate(new HaskellPolicy(12), pool)).isInstanceOf(TxDecodingException.class);
+        assertThatCode(() -> certificate(pool)).doesNotThrowAnyException();
     }
 
     private static final String KEY = "5820" + "55".repeat(32);
@@ -433,34 +427,18 @@ class HaskellPolicyTest {
 
     /**
      * Haskell decodes a Conway transaction at {@code eraProtVerLow ConwayEra}, 9, at every Conway protocol version, so
-     * auxiliary data {@code [metadata, scripts]} ({@code RecD}, Alonzo/TxAuxData.hs:220, 246-252) must be definite; it
-     * may be indefinite only from 12 ({@code decodeDijkstra}).
+     * auxiliary data {@code [metadata, scripts]} ({@code RecD}, Alonzo/TxAuxData.hs:220, 246-252) must be definite.
      */
     @Test
     void aConwayTransactionDecodesAtItsEraVersionWhereAuxDataIsDefinite() {
-        HaskellPolicy conway = HaskellPolicy.forEra(Era.Conway);
-        assertThat(conway).isSameAs(HaskellPolicy.CONWAY);
-
         CborSpan definite = StrictCbor.span(HexUtil.decodeHexString("82" + "a0" + "80"));
         CborSpan indefinite = StrictCbor.span(HexUtil.decodeHexString("9f" + "a0" + "80" + "ff"));
-        assertThatCode(() -> conway.walk(FieldType.OPTIONAL_AUXILIARY_DATA, definite)).doesNotThrowAnyException();
-        assertThatThrownBy(() -> conway.walk(FieldType.OPTIONAL_AUXILIARY_DATA, indefinite))
-                .isInstanceOf(TxDecodingException.class).hasMessageContaining("auxiliary data [metadata, scripts]");
-        assertThatCode(() -> new HaskellPolicy(12).walk(FieldType.OPTIONAL_AUXILIARY_DATA, indefinite))
+        assertThatCode(() -> HaskellPolicy.CONWAY.walk(FieldType.OPTIONAL_AUXILIARY_DATA, definite))
                 .doesNotThrowAnyException();
+        assertThatThrownBy(() -> HaskellPolicy.CONWAY.walk(FieldType.OPTIONAL_AUXILIARY_DATA, indefinite))
+                .isInstanceOf(TxDecodingException.class).hasMessageContaining("auxiliary data [metadata, scripts]");
 
         byte[] tx = HexUtil.decodeHexString("84" + BODY + "a0" + "f5" + "9f" + "a0" + "80" + "ff");
         assertThatThrownBy(() -> RawTransaction.parse(tx, null)).isInstanceOf(TxDecodingException.class);
-    }
-
-    @Test
-    void anEraWithoutRulesIsRefusedNotReadAsConway() {
-        assertThatThrownBy(() -> HaskellPolicy.forEra(Era.Babbage)).isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("Babbage");
-    }
-
-    @Test
-    void decoderVersionsBelowConwayAreNotKnown() {
-        assertThatThrownBy(() -> new HaskellPolicy(8)).isInstanceOf(IllegalArgumentException.class);
     }
 }

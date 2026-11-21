@@ -392,7 +392,7 @@ public final class RawTransaction {
 
     /** Parser state. */
     private static final class Builder {
-        /** The era the transaction is read in: its decoder ({@link HaskellPolicy#forEra}) and CCL's views. */
+        /** The era the transaction is read in: its decoder ({@link HaskellPolicy#CONWAY}) and CCL's views. */
         private static final Era ERA = Era.Conway;
 
         private final byte[] txCbor;
@@ -438,7 +438,7 @@ public final class RawTransaction {
                 throw new TxDecodingException("empty transaction bytes");
             }
             tx = RawTx.of(txCbor);
-            HaskellPolicy.forEra(ERA).walk(tx);
+            HaskellPolicy.CONWAY.walk(tx);
             readBody();
             readWitnessSet();
             tx.auxData(ERA).ifPresent(auxData -> auxData.scripts()

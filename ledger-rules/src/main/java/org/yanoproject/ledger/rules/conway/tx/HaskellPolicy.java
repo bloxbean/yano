@@ -27,29 +27,24 @@ import java.util.Set;
  * field is, and this policy decides by the record's shape, the field's row and the value's type, never by a key number
  * or a position. Anything rejected is a {@link TxDecodingException} ({@code ENGINE.DecodingFailure}).
  *
- * <p>The decoder version decides three rules (cardano-ledger {@code f649f975}). Below 12 a byte string is definite
+ * <p>The rules are those of Conway's decoder version, 9 (cardano-ledger {@code f649f975}): a byte string is definite
  * ({@code decodeBytes}, Decoder.hs:355-361) and a {@code RecD} record or a tuple, such as an anchor, a value's pair,
  * ex units, a redeemer's value, prices, a proposal, a vote, a governance action id or a constitution, is a
  * definite-length array (BaseTypes.hs:996-1004, Value.hs:298-310, ExUnits.hs:208-216, 235-243, DecCBOR.hs:288-300,
- * Procedures.hs:181-190, 487-497, 559-570, 1036-1046); from 12 a rational's numbers are {@code Word64}s and no longer
- * bignums ({@code decodeIntegralRational}, BaseTypes.hs:417-428). Below 9 a text has at most 64 bytes and a set no
- * tag or rule against duplicates, which this class does not hold.
- *
- * <p>The decoder version comes from the era, not the ledger's current protocol version: Haskell decodes an era's blocks,
- * headers and transactions with {@code eraDecoder}, at the era's lowest major version ({@code eraProtVerLow},
- * cardano-ledger Core/Era.hs:259-260; ouroboros-consensus Shelley/Ledger/Block.hs:352, Mempool.hs:294). So a Conway
- * transaction decodes at 9 at protocol versions 9 to 11; {@link #forEra} picks the policy.
+ * Procedures.hs:181-190, 487-497, 559-570, 1036-1046). Haskell decodes an era's blocks, headers and transactions with
+ * {@code eraDecoder}, at the era's lowest major version ({@code eraProtVerLow}, cardano-ledger Core/Era.hs:259-260;
+ * ouroboros-consensus Shelley/Ledger/Block.hs:352, Mempool.hs:294), not at the ledger's current protocol version, so a
+ * Conway transaction decodes at 9 at protocol versions 9 to 11. A later era's decoder version (Dijkstra's 12) needs its
+ * own policy.
  *
  * <p>A type this class does not name has no rule yet: its values are read by {@link RawTransaction}. Its rules stand
- * for a transaction at Conway's decoder version and for a block header of any era, which no version below 12 changes.
+ * for a Conway transaction and for a block header of any era, which no version below 12 changes.
  */
 public final class HaskellPolicy implements FormatPolicy {
 
     /** Conway's decoder version: {@code eraProtVerLow ConwayEra} (Era.hs:132). */
-    public static final HaskellPolicy CONWAY = new HaskellPolicy(9);
+    public static final HaskellPolicy CONWAY = new HaskellPolicy();
 
-    private static final int FIRST_KNOWN_VERSION = 9;
-    private static final int VERSION_12 = 12;
     private static final int KEY_HASH_LENGTH = 28;
     private static final int HASH32_LENGTH = 32;
     private static final int IPV4_LENGTH = 4;
@@ -95,26 +90,7 @@ public final class HaskellPolicy implements FormatPolicy {
     /** A map's head with an 8-byte length, which cborg reports as {@code TypeMapLen64}. */
     private static final int MAP_HEAD_8_BYTES = 0xbb;
 
-    private final int decoderVersion;
-
-    HaskellPolicy(int decoderVersion) {
-        if (decoderVersion < FIRST_KNOWN_VERSION) {
-            throw new IllegalArgumentException("no rules for decoder version " + decoderVersion);
-        }
-        this.decoderVersion = decoderVersion;
-    }
-
-    /**
-     * The policy Haskell decodes an era's transactions with: the era's {@code eraDecoder}. Only Conway has rules; an era
-     * added later (Dijkstra decodes at 12, where a {@code RecD} record may be indefinite) needs its own entry here.
-     *
-     * @throws IllegalArgumentException for an era without rules
-     */
-    public static HaskellPolicy forEra(Era era) {
-        if (era == Era.Conway) {
-            return CONWAY;
-        }
-        throw new IllegalArgumentException("no decoding rules for era " + era);
+    private HaskellPolicy() {
     }
 
     /** Walks a Conway transaction with this policy: its array, body, witness set, validity flag and aux data. */
@@ -179,7 +155,7 @@ public final class HaskellPolicy implements FormatPolicy {
     @Override
     public void enter(RecordSpec record, CborSpan container, Era era) {
         if (record == PROPOSAL) {
-            recD(container, record.name());
+            definite(container, record.name() + " is a RecD record");
         }
         if (isMultiAsset(record)) {
             smallEnoughToCompact(container);
@@ -315,19 +291,15 @@ public final class HaskellPolicy implements FormatPolicy {
             case SIGNATURE -> sized(value, SIGNATURE_LENGTH, "signature");
             case KES_SIGNATURE -> sized(value, KES_SIGNATURE_LENGTH, "KES signature");
             case VRF_PROOF -> sized(value, VRF_PROOF_LENGTH, "VRF proof");
-            case VRF_CERT -> {
-                if (decoderVersion < VERSION_12) {
-                    definite(value, "a VRF result (enforceSize)");
-                }
-            }
-            case ADDRESS -> AddressBytes.validate(bytes(value));
+            case VRF_CERT -> definite(value, "a VRF result (enforceSize)");
+            case ADDRESS -> AddressBytes.validate(StrictCbor.definiteBytes(value));
             case VALUE -> {
-                if (decoderVersion < VERSION_12 && StrictCbor.major(value) == MAJOR_ARRAY) {
+                if (StrictCbor.major(value) == MAJOR_ARRAY) {
                     definite(value, "a multi-asset value (decodeValuePair)");
                 }
             }
             case ASSET_NAME -> {
-                int found = length(value);
+                int found = StrictCbor.definiteLength(value);
                 if (found > MAX_ASSET_NAME_LENGTH) {
                     throw new TxDecodingException("asset name of " + found + " bytes");
                 }
@@ -339,15 +311,15 @@ public final class HaskellPolicy implements FormatPolicy {
                 }
             }
             case DATA -> PlutusData.validate(embedded(value, "an inline datum"));
-            // Conway's native scripts have no guard (RawScript.requireConwayTypes); a Dijkstra policy allows it
+            // Conway's native scripts have no guard (RawScript.requireConwayTypes)
             case SCRIPT_REF -> RawScript.readScript(StrictCbor.span(embedded(value, "a script reference")))
                     .requireConwayTypes();
             case PLUTUS_DATA -> PlutusData.validate(value);
             case NATIVE_SCRIPT -> RawScript.of(RawScript.NATIVE, value).requireConwayTypes();
-            case PLUTUS_SCRIPT, BYTES -> length(value);
+            case PLUTUS_SCRIPT, BYTES -> StrictCbor.definiteLength(value);
             case METADATA -> Metadata.validate(value);
             case OPTIONAL_AUXILIARY_DATA -> {
-                if (decoderVersion < VERSION_12 && !value.isNull() && StrictCbor.major(value) == MAJOR_ARRAY) {
+                if (!value.isNull() && StrictCbor.major(value) == MAJOR_ARRAY) {
                     definite(value, "auxiliary data [metadata, scripts] (RecD)");
                 }
             }
@@ -366,7 +338,7 @@ public final class HaskellPolicy implements FormatPolicy {
             case REDEEMER_VALUE, EX_UNITS, EX_UNIT_PRICES, ANCHOR, OPTIONAL_ANCHOR, GOV_ACTION_ID,
                  OPTIONAL_GOV_ACTION_ID, VOTING_PROCEDURE, CONSTITUTION -> {
                 if (!value.isNull()) {
-                    recD(value, type.name());
+                    definite(value, type.name() + " is a RecD record");
                 }
             }
             // ExUnits' decNat: at most maxBound :: Int64
@@ -399,29 +371,14 @@ public final class HaskellPolicy implements FormatPolicy {
         }
     }
 
-    private byte[] bytes(CborSpan value) {
-        return decoderVersion < VERSION_12 ? StrictCbor.definiteBytes(value) : StrictCbor.bytes(value);
-    }
-
-    private int length(CborSpan value) {
-        return decoderVersion < VERSION_12 ? StrictCbor.definiteLength(value) : StrictCbor.bytes(value).length;
-    }
-
-    private void sized(CborSpan value, int length, String what) {
-        int found = length(value);
+    private static void sized(CborSpan value, int length, String what) {
+        int found = StrictCbor.definiteLength(value);
         if (found != length) {
             throw new TxDecodingException(what + " of " + found + " bytes, expected " + length);
         }
     }
 
-    /** A {@code RecD} record or a tuple: a definite-length array below version 12, either from 12. */
-    private void recD(CborSpan value, String what) {
-        if (decoderVersion < VERSION_12) {
-            definite(value, what + " is a RecD record below decoder version 12");
-        }
-    }
-
-    /** A definite-length array, as {@code decodeListLen} reads one. */
+    /** A definite-length array, as {@code decodeListLen} reads one: a {@code RecD} record or a tuple. */
     private static void definite(CborSpan value, String what) {
         if (value.isIndefinite()) {
             throw new TxDecodingException("an indefinite-length array at " + value.offset() + " (" + what + ")");
@@ -448,41 +405,38 @@ public final class HaskellPolicy implements FormatPolicy {
     }
 
     /** {@code decodeNestedCborBytes}: tag 24 on a byte string (Decoding.hs:238-239). */
-    private byte[] embedded(CborSpan value, String what) {
+    private static byte[] embedded(CborSpan value, String what) {
         if (value.tag() != TAG_EMBEDDED) {
             throw new TxDecodingException(what + " at " + value.offset() + " is wrapped in tag 24");
         }
-        return bytes(value.untag());
+        return StrictCbor.definiteBytes(value.untag());
     }
 
-    private void sizedOrNull(CborSpan value, int length, String what) {
+    private static void sizedOrNull(CborSpan value, int length, String what) {
         if (!value.isNull()) {
             sized(value, length, what);
         }
     }
 
     /** {@code decodeAccountAddressT} (Address.hs:938-955): header {@code & 0xEE == 0xE0}, then a 28-byte hash. */
-    private void rewardAccount(CborSpan value) {
-        byte[] account = bytes(value);
+    private static void rewardAccount(CborSpan value) {
+        byte[] account = StrictCbor.definiteBytes(value);
         if (account.length != REWARD_ACCOUNT_LENGTH || (account[0] & 0xee) != 0xe0) {
             throw new TxDecodingException("reward account is not an account address");
         }
     }
 
     /** A {@code UnitInterval} or a {@code NonNegativeInterval} ({@link BoundedFields#boundedRational}). */
-    private void rational(CborSpan value, boolean unit) {
+    private static void rational(CborSpan value, boolean unit) {
         BoundedFields.boundedRational(value, unit ? "unit interval" : "non-negative interval", unit);
-        if (decoderVersion >= VERSION_12) {
-            StrictCbor.array(value.untag()).forEach(StrictCbor::unsigned);
-        }
     }
 
     /** A set of key hashes: {@code decodeSet} rejects a repeated one from version 9 (Decoder.hs:952-962). */
-    private void keyHashes(CborSpan value) {
+    private static void keyHashes(CborSpan value) {
         Set<ByteBuffer> seen = new HashSet<>();
         for (CborSpan hash : StrictCbor.set(value)) {
             sized(hash, KEY_HASH_LENGTH, "key hash");
-            if (!seen.add(ByteBuffer.wrap(bytes(hash)))) {
+            if (!seen.add(ByteBuffer.wrap(StrictCbor.definiteBytes(hash)))) {
                 throw new TxDecodingException("duplicate key hash at " + hash.offset());
             }
         }
