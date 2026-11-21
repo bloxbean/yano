@@ -1,0 +1,1 @@
+This file is clean; its tracked path carries the product token.

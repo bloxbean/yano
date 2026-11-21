@@ -63,8 +63,8 @@ runtime arguments.
 
 The shared Compose file still mounts `plugins/` for the JVM flavor. A native
 image cannot load JARs from that mount; any JARs there are reported as ignored.
-Native Yano embeds only retained core providers. Run the Yano X JVM distribution
-when optional state machines, connectors, or product plugins are required.
+Native Yano embeds only retained core providers. Use the JVM flavor when
+directory plugins are required.
 
 To inspect the resolved compose file for a network:
 
@@ -110,8 +110,6 @@ data-preprod/
   chainstate/            L1 database                          -> /app/data/chainstate
   runtime-data/          snapshots, epoch checkpoints,        -> /app/data
                          peer store, projection history/
-  appchain-chainstate/   authoritative app-chain state        -> /app/appchain-chainstate
-  appchain-indexers/     rebuildable app-chain read indexes   -> /app/appchain-indexers
 data-mainnet/
   ...
 ```
@@ -123,8 +121,7 @@ installation still uses folders from the earlier layout, back up every resolved
 path instead: `./yano.sh config:<network>` lists them as volume `source` entries.
 
 Each folder can be placed elsewhere with its own variable in `compose/.env` or for one
-command: `YANO_CHAINSTATE_PATH`, `YANO_RUNTIME_DATA_PATH`, `YANO_APPCHAIN_STATE_PATH`
-and `YANO_APPCHAIN_INDEXER_PATH`. Relative paths are resolved from `compose/`, and
+command: `YANO_CHAINSTATE_PATH` and `YANO_RUNTIME_DATA_PATH`. Relative paths are resolved from `compose/`, and
 values in `compose/.env` may reference other variables defined there, such as
 `YANO_CHAINSTATE_PATH=${DATA_ROOT}/chainstate`.
 
@@ -132,13 +129,11 @@ values in `compose/.env` may reference other variables defined there, such as
 YANO_CHAINSTATE_PATH=/data/yano-mainnet ./yano.sh start:mainnet
 ```
 
-Do not place the app-chain index folder below either authoritative state folder.
 The Compose file sets `YANO_STORAGE_PATH` and `YANO_HISTORY_DIR` to the container
 paths above, overriding any older values in `config/env`.
 
 Installations from earlier bundles kept these folders directly beside `compose/`
-(`chainstate-<network>/`, `runtime-data-<network>/`, `appchain-chainstate-<network>/`,
-`appchain-indexers-<network>/`). When such a folder exists and its variable is not
+(`chainstate-<network>/`, `runtime-data-<network>/`). When such a folder exists and its variable is not
 set, the launcher keeps using it and prints a note, so an upgrade never starts from an
 empty database. To adopt the new layout, stop Yano and move each folder into
 `data-<network>/` under its new name, for example
@@ -162,8 +157,8 @@ Bundles without a Compose project name ran every instance as project
 the old container; run `./yano.sh stop` or `./yano.sh restart` to remove it and
 continue under the new project name. If the old container was started from a
 different directory, stop it from that directory.
-If you customize data paths, give each instance its own `YANO_CHAINSTATE_PATH`,
-`YANO_RUNTIME_DATA_PATH`, `YANO_APPCHAIN_STATE_PATH`, and `YANO_APPCHAIN_INDEXER_PATH`.
+If you customize data paths, give each instance its own `YANO_CHAINSTATE_PATH` and
+`YANO_RUNTIME_DATA_PATH`.
 
 The container runs as UID/GID from `YANO_UID` and `YANO_GID`, defaulting to `1000:1000`. On Linux hosts with a different user ID, set these values in `compose/.env` to match the user that owns `data-*`, `logs/`, `plugins/`, and `config/network`.
 

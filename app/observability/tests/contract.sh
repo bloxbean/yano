@@ -39,7 +39,6 @@ SH
 chmod +x "$FAKE"
 
 run() {
-  YANO_CLUSTER_DIR="${YANO_CLUSTER_DIR:-$TMP/no-cluster}" \
   YANO_OBSERVABILITY_DIR="$STATE" YANO_OBSERVABILITY_DOCKER="$FAKE" \
   FAKE_DOCKER_LOG="$LOG" FAKE_DOCKER_VOLUME="$VOLUME_FLAG" FAKE_STATE_DIR="$STATE" \
     "$SCRIPT" "$@"
@@ -51,17 +50,6 @@ run() {
 run start > "$TMP/fallback.out"
 grep -q 'host.docker.internal:7070' "$STATE/prometheus.yml"
 grep -q 'Console:    http://127.0.0.1:7070/ui/observability/' "$TMP/fallback.out"
-
-# A maintained cluster contributes every live node using its configured base
-# port. The current test shell is a stable live PID; no child process is needed.
-CLUSTER="$TMP/cluster"
-mkdir -p "$CLUSTER"
-printf 'HTTP_BASE=7100\n' > "$CLUSTER/cluster.env"
-printf '%s\n' "$$" > "$CLUSTER/node0.pid"
-printf '%s\n' "$$" > "$CLUSTER/node2.pid"
-YANO_CLUSTER_DIR="$CLUSTER" run start > "$TMP/discovered.out"
-grep -q 'host.docker.internal:7100' "$STATE/prometheus.yml"
-grep -q 'host.docker.internal:7102' "$STATE/prometheus.yml"
 
 run start --target http://127.0.0.1:7070 --target https://node.example:7443 \
   --retention 24h --retention-size 512MB > "$TMP/start.out"

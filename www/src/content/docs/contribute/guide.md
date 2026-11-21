@@ -13,14 +13,15 @@ To run Yano, [download a release](/start/installation/). To change the node itse
 
 | Area | Responsibility |
 | --- | --- |
-| `core-api` | Public contracts, role interfaces, plugin SPI |
+| `node-api` | Shared node/configuration contracts and plugin SPI |
+| `cardano-api` | Cardano chain, ledger, and query contracts |
+| `host-api` | Independently versioned framework hosting capabilities |
 | `runtime` | Node assembly and runtime implementation |
 | `ledger-state`, `ledger-rules` | Ledger state, validation API and Conway ledger rules |
 | `script-evaluators`, `scalus-bridge` | Plutus script evaluators and the Scalus bridge |
 | `p2p`, `consensus` | Networking and consensus components |
 | `devnet-toolkit`, `testkit`, `testkit-ccl` | Local development and Java testing |
 | `app` | Quarkus API and runnable distribution |
-| `appchain/` | Retained app-chain configuration, test, and proof modules |
 | `archive-modules/` | Optional history projection and DuckLake backend |
 | `www/` | This documentation site |
 
@@ -28,7 +29,7 @@ Yano owns `org.yanoproject.*`. Use domain names for new top-level packages; prod
 
 ## Extension contributions
 
-Put additional stock app-chain machines, connectors, products, and JVM tooling in [Yano X](https://github.com/bloxbean/yano-x). Extend the public SPI without coupling the host to product-specific source paths or dependencies.
+Application ledger (app chain) code, connectors, products, and their tooling belong in [Yano X](https://github.com/bloxbean/yano-x). Yano X depends on Yano; Yano never depends on Yano X. Extend the public SPI without coupling the host to product-specific source paths or dependencies.
 
 ## Documentation contributions
 

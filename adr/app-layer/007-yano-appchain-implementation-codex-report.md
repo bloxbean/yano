@@ -17,17 +17,17 @@ Historical review report — findings superseded by later ADRs and delivery work
 
 ## Reviewed Implementation Areas
 - Runtime app-chain subsystem:
-  - `runtime/src/main/java/org/yanoproject/runtime/appchain/AppChainSubsystem.java`
-  - `runtime/src/main/java/org/yanoproject/runtime/appchain/AppChainEngine.java`
-  - `runtime/src/main/java/org/yanoproject/runtime/appchain/AppLedgerStore.java`
-  - `runtime/src/main/java/org/yanoproject/runtime/appchain/AnchorService.java`
-  - `runtime/src/main/java/org/yanoproject/runtime/appchain/AppPeerClient.java`
-  - `runtime/src/main/java/org/yanoproject/runtime/appchain/AppChainManager.java`
-  - `runtime/src/main/java/org/yanoproject/runtime/appchain/MemberGroup.java`
+  - `runtime/src/main/java/org/yanoproject/x/framework/cardano/AppChainSubsystem.java`
+  - `runtime/src/main/java/org/yanoproject/x/framework/runtime/appchain/AppChainEngine.java`
+  - `runtime/src/main/java/org/yanoproject/x/framework/runtime/appchain/AppLedgerStore.java`
+  - `runtime/src/main/java/org/yanoproject/x/framework/cardano/AnchorService.java`
+  - `runtime/src/main/java/org/yanoproject/x/framework/runtime/appchain/AppPeerClient.java`
+  - `runtime/src/main/java/org/yanoproject/x/framework/cardano/AppChainManager.java`
+  - `runtime/src/main/java/org/yanoproject/x/framework/runtime/appchain/MemberGroup.java`
 - Core API, codec, evidence, proof APIs:
   - `core-api/src/main/java/org/yanoproject/api/appchain/`
-  - `core-api/src/main/java/org/yanoproject/api/appchain/evidence/EvidenceVerifier.java`
-  - `core-api/src/main/java/org/yanoproject/api/appchain/codec/AppBlockCodec.java`
+  - `core-api/src/main/java/org/yanoproject/x/framework/api/appchain/evidence/EvidenceVerifier.java`
+  - `core-api/src/main/java/org/yanoproject/x/framework/api/appchain/codec/AppBlockCodec.java`
 - REST/API layer:
   - `app/src/main/java/org/yanoproject/app/api/appchain/AppChainResource.java`
   - `app/src/main/java/org/yanoproject/app/api/appchain/AppChainApiKeyFilter.java`

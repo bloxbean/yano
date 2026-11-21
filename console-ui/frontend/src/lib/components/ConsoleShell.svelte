@@ -16,7 +16,6 @@
   let hostBound = $state(false);
   let metricsBase = $state('');
   let metricsBearer = $state('');
-  let hasCardanoHistory = $state(false);
 
   onMount(async () => {
     hostBound = location.pathname.startsWith('/ui/plugins/');
@@ -28,17 +27,6 @@
       persistKey = !hostBound && hasPersistedApiKey(apiBase);
       const api = new YanoApi(apiBase, key);
       [config, status] = await Promise.all([api.config(), api.status()]);
-      if (!hostBound) {
-        const chains = await api.chains().catch(() => []);
-        for (const chain of chains) {
-          const chainStatus = await api.chainStatus(chain.chainId).catch(() => null);
-          if (chainStatus?.capabilityManifest?.components.some(
-            (component) => component.id === 'l1-epoch-params-v1')) {
-            hasCardanoHistory = true;
-            break;
-          }
-        }
-      }
     } catch (error) {
       identityError = apiFailureMessage(error, 'Node unavailable');
     }
@@ -71,12 +59,6 @@
       <nav class="hidden items-center gap-1 md:flex" aria-label="Console">
         <a class="rounded-lg px-3 py-2 text-xs text-slate-400 hover:bg-slate-800 hover:text-white"
            href={`${base}/status/`}>Node</a>
-        <a class="rounded-lg px-3 py-2 text-xs text-slate-400 hover:bg-slate-800 hover:text-white"
-           href={`${base}/app-chain/`}>App ledgers</a>
-        {#if hasCardanoHistory}
-          <a class="rounded-lg px-3 py-2 text-xs text-slate-400 hover:bg-slate-800 hover:text-white"
-             href={`${base}/app-chain/cardano-history/`}>Cardano history</a>
-        {/if}
         <a class="rounded-lg px-3 py-2 text-xs text-slate-400 hover:bg-slate-800 hover:text-white"
            href={`${base}/plugins/`}>Plugins</a>
         <a class="rounded-lg px-3 py-2 text-xs text-slate-400 hover:bg-slate-800 hover:text-white"

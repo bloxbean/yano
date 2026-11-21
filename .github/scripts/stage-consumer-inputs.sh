@@ -20,23 +20,22 @@ if [[ -e "$staged_directory" ]]; then
   exit 1
 fi
 mkdir -p "$staged_directory/maven"
-./gradlew publishAllPublicationsToStagingRepository :app:yanoDistZip \
-  :app:packagedJvmPluginCatalogSmoke \
-  "-PstagingRepository=$staged_directory/maven" "-Pversion=$staged_version" \
-  -PskipSigning=true --no-parallel
+./gradlew publishAllPublicationsToStagingRepository :app:yanoDistZip :app:packagedJvmPluginCatalogSmoke \
+  :app:packagedJvmAppLedgerSmoke \
+  "-PstagingRepository=$staged_directory/maven" "-Pversion=$staged_version" -PskipSigning=true --no-parallel
 cp "app/build/distributions/yano-$staged_version.zip" "$staged_directory/"
 jq -n --arg commit "$commit" --arg version "$staged_version" \
   '{schemaVersion:1,repository:"bloxbean/yano",commit:$commit,version:$version,
-    distribution:("yano-"+$version+".zip"),mavenDirectory:"maven"}' \
+    mavenDirectory:"maven",distribution:("yano-"+$version+".zip")}' \
   > "$staged_directory/yano-inputs.json"
 (
   cd "$staged_directory"
-  # Inventory only regular packaged outputs; no credentials or source checkout.
   if [[ -z "$(find maven -type f -print -quit)" ]]; then
     echo 'Staging produced no Maven artifacts; refusing an empty inventory' >&2
     exit 1
   fi
   find maven -type f -print0 | sort -z | xargs -0 sha256sum
-  sha256sum "yano-$staged_version.zip" yano-inputs.json
+  sha256sum "yano-$staged_version.zip"
+  sha256sum yano-inputs.json
 ) > "$staged_directory/SHA256SUMS"
 printf 'directory=%s\nversion=%s\n' "$staged_directory" "$staged_version" >> "$GITHUB_OUTPUT"

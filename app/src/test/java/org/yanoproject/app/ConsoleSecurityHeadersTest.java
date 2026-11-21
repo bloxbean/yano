@@ -21,8 +21,7 @@ class ConsoleSecurityHeadersTest {
         for (String page : new String[] {
                 "/ui/index.html",
                 "/ui/status/index.html",
-                "/ui/app-chain/index.html",
-                "/ui/app-chain/eutxo/index.html"}) {
+                "/ui/observability/index.html"}) {
             given().when().get(page).then().statusCode(200)
                     .header("X-Frame-Options", "DENY")
                     .header("X-Content-Type-Options", "nosniff")

@@ -16,7 +16,7 @@ class PluginIndexCodecTest {
     private static final String DIGEST_A = "sha256:" + "a".repeat(64);
     private static final String DIGEST_B = "sha256:" + "b".repeat(64);
 
-    private final PluginIndexCodec codec = new PluginIndexCodec();
+    private final PluginIndexCodec codec = new PluginIndexCodec(TestKinds.REGISTRY);
 
     @Test
     void canonicalRoundTripSortsEveryRepeatedField() throws Exception {
@@ -30,7 +30,7 @@ class PluginIndexCodecTest {
                         new BundleDependency("com.example.alpha", null, SemVersion.parse("3.0.0"))),
                 List.of(
                         new BundleContribution(
-                                ContributionKind.DOMAIN_API,
+                                TestKinds.DOMAIN,
                                 "com.example.bundle",
                                 "com.example.BundleDomainApiProvider"),
                         new BundleContribution(
@@ -42,14 +42,14 @@ class PluginIndexCodecTest {
                                 "com.example.bundle",
                                 "com.example.BundleMetricsProvider"),
                         new BundleContribution(
-                                ContributionKind.FINALIZED_SINK, "zeta", "com.example.ZetaProvider"),
+                                TestKinds.SINK, "zeta", "com.example.ZetaProvider"),
                         new BundleContribution(
-                                ContributionKind.APP_STATE_MACHINE, "alpha", "com.example.AlphaProvider")));
+                                ContributionKind.NODE_PLUGIN, "alpha", "com.example.AlphaProvider")));
         PluginIndex index = new PluginIndex(
                 1,
                 List.of(new IndexedBundle(manifest, DIGEST_A, PluginDigestMode.JAR)),
                 List.of(new IndexedLegacyProvider(
-                        ContributionKind.SIGNER_PROVIDER,
+                        TestKinds.SINK,
                         "com.example.LegacySigner",
                         DIGEST_B,
                         PluginDigestMode.LEGACY_CLASS)));
@@ -119,7 +119,7 @@ class PluginIndexCodecTest {
                   "schemaVersion":1,
                   "bundles":[],
                   "legacyProviders":[{
-                    "kind":"finalized-sink",
+                    "kind":"fixture-sink",
                     "provider":"com.example.Provider",
                     "digest":"%s",
                     "digestMode":"WEAK"
@@ -150,7 +150,7 @@ class PluginIndexCodecTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("must be JAR");
         assertThatThrownBy(() -> new IndexedLegacyProvider(
-                        ContributionKind.FINALIZED_SINK,
+                        TestKinds.SINK,
                         "com.example.LegacyProvider",
                         DIGEST_A,
                         PluginDigestMode.ARTIFACT_CLOSURE))
@@ -159,21 +159,21 @@ class PluginIndexCodecTest {
     }
 
     @Test
-    void domainApiCannotBeEncodedOrDecodedAsALegacyProvider() {
+    void manifestOnlyKindCannotBeEncodedOrDecodedAsALegacyProvider() {
         assertThatThrownBy(() -> new IndexedLegacyProvider(
-                ContributionKind.DOMAIN_API,
+                TestKinds.DOMAIN,
                 "com.example.LegacyDomainApiProvider",
                 DIGEST_A,
                 PluginDigestMode.JAR))
                 .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("domain-api providers require a bundle manifest");
+                .hasMessageContaining("fixture-domain providers require a bundle manifest");
 
         String raw = """
                 {
                   "schemaVersion":1,
                   "bundles":[],
                   "legacyProviders":[{
-                    "kind":"domain-api",
+                    "kind":"fixture-domain",
                     "provider":"com.example.LegacyDomainApiProvider",
                     "digest":"%s",
                     "digestMode":"JAR"
@@ -182,7 +182,7 @@ class PluginIndexCodecTest {
                 """.formatted(DIGEST_A);
         assertThatThrownBy(() -> codec.read(raw.getBytes(StandardCharsets.UTF_8)))
                 .isInstanceOf(PluginCatalogException.class)
-                .hasMessageContaining("domain-api providers require a bundle manifest");
+                .hasMessageContaining("fixture-domain providers require a bundle manifest");
     }
 
     @Test
@@ -211,7 +211,7 @@ class PluginIndexCodecTest {
         for (int i = 0; i < CatalogValidation.MAX_CONTRIBUTIONS; i++) {
             String provider = "com.example.P" + i + "x".repeat(470);
             contributions.add(new BundleContribution(
-                    ContributionKind.FINALIZED_SINK, "sink" + i, provider));
+                    TestKinds.SINK, "sink" + i, provider));
         }
         BundleManifest oversized = new BundleManifest(
                 1,
@@ -233,9 +233,9 @@ class PluginIndexCodecTest {
     @Test
     void rejectsOneProviderClassAttributedToDifferentArtifacts() {
         BundleManifest first = manifestWithProvider(
-                "com.example.first", ContributionKind.FINALIZED_SINK, "sink");
+                "com.example.first", TestKinds.SINK, "sink");
         BundleManifest second = manifestWithProvider(
-                "com.example.second", ContributionKind.L1_OBSERVER, "observer");
+                "com.example.second", ContributionKind.NODE_PLUGIN, "observer");
 
         assertThatThrownBy(() -> new PluginIndex(
                         1,
@@ -255,7 +255,7 @@ class PluginIndexCodecTest {
                 contributions.append(',');
             }
             contributions.append("""
-                    {"kind":"finalized-sink","name":"sink%s","provider":"com.example.Provider%s"}
+                    {"kind":"fixture-sink","name":"sink%s","provider":"com.example.Provider%s"}
                     """.formatted(i, i).trim());
         }
         String json = """

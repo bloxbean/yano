@@ -7,10 +7,16 @@ pluginManagement {
 
 rootProject.name = 'yano'
 
-// Yano owns the Cardano data node, the app-chain host framework, OrderedLog,
-// and the retained plugin/test contracts. JVM extensions are built in yano-x.
+// ADR-064 D11: the dependency-direction guardrail (task verifyNoYanoXDependency, part of check).
+// Applied here so that it also covers plugin requests and the root buildscript.
+apply from: 'gradle/no-yano-x.gradle'
+
+// Yano owns the Cardano data node, the stable host contracts and its distributions.
+// Application-ledger products are built downstream and are never a dependency (ADR-064).
 def yanoModules = [
-        'core-api'                    : 'core-api',
+        'node-api'                    : 'node-api',
+        'cardano-api'                 : 'cardano-api',
+        'host-api'                    : 'host-api',
         'plugin-catalog'              : 'plugin-catalog',
         'consensus'                   : 'consensus',
         'p2p'                         : 'p2p',
@@ -22,6 +28,7 @@ def yanoModules = [
         'tx-services'                 : 'tx-services',
         'bootstrap-providers'         : 'bootstrap-providers',
         'app'                         : 'app',
+        'app-core'                    : 'app-core',
         'app-e2e-testkit'             : 'app-e2e-testkit',
         'ledger-rules'                : 'ledger-rules',
         'ledger-state'                : 'ledger-state',
@@ -30,12 +37,7 @@ def yanoModules = [
         // ADR-056 §8: the test-only conformance harness (never published; see its build.gradle).
         'ledger-conformance'          : 'ledger-conformance',
         'yano-bom'                    : 'bom',
-        'appchain-config'             : 'appchain/appchain-config',
-        'console-ui'                  : 'console-ui',
-        'appchain-testkit'            : 'appchain/appchain-testkit',
-        'appchain-proof-verifier'     : 'appchain/appchain-proof-verifier',
-        'appchain-anchor-onchain'     : 'appchain/onchain/appchain-anchor-onchain',
-        'appchain-plugin-conformance' : 'appchain/fixtures/appchain-plugin-conformance'
+        'console-ui'                  : 'console-ui'
 ]
 
 yanoModules.each { projectName, projectDirectory ->

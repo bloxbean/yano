@@ -20,7 +20,7 @@ jobs:
           java-version: '25'
           distribution: 'temurin'
           cache: 'gradle'
-      - name: Stage exact publications and ordinary JVM ZIP
+      - name: Stage every Yano publication and the JVM ZIP
         id: stage
         run: bash .github/scripts/stage-consumer-inputs.sh
       - name: Retain qualification inputs (not a public release)
@@ -29,4 +29,4 @@ jobs:
           name: yano-inputs-${{ github.sha }}
           path: ${{ steps.stage.outputs.directory }}
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 90

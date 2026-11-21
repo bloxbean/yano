@@ -96,7 +96,7 @@ W=/abs/path/amaru_validator.wasm
 
 ## 3. Enable it at runtime
 
-The properties live under `yano.validation` in `app/src/main/resources/application.yml`. You can
+The properties live under `yano.validation` in `app-core/src/main/resources/application.yml`. You can
 also pass them as `-D` system properties, for example `-Dyano.validation.engine=amaru-scalus`.
 
 ```yaml

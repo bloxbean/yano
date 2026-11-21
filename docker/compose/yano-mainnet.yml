@@ -6,5 +6,3 @@ services:
     volumes:
       - ${YANO_RUNTIME_DATA_PATH:-../data-mainnet/runtime-data}:/app/data
       - ${YANO_CHAINSTATE_PATH:-../data-mainnet/chainstate}:/app/data/chainstate
-      - ${YANO_APPCHAIN_STATE_PATH:-../data-mainnet/appchain-chainstate}:/app/appchain-chainstate
-      - ${YANO_APPCHAIN_INDEXER_PATH:-../data-mainnet/appchain-indexers}:/app/appchain-indexers

@@ -88,9 +88,8 @@ class PluginCatalogNativeImageMetadataTest {
     @Test
     void runtimeResourceConfigExactlyRetainsIndexAndSupportedServiceDescriptors()
             throws Exception {
-        Set<String> expectedPatterns = Arrays.stream(ContributionKind.values())
-                .map(ContributionKind::serviceType)
-                .map(Class::getName)
+        Set<String> expectedPatterns = ContributionKindRegistry.builtIns().kinds().stream()
+                .map(ContributionKind::serviceInterface)
                 .map(name -> "\\QMETA-INF/services/" + name + "\\E")
                 .collect(Collectors.toCollection(TreeSet::new));
         expectedPatterns.add("\\Q" + PluginIndex.RESOURCE_PATH + "\\E");

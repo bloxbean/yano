@@ -4,8 +4,8 @@ import com.bloxbean.cardano.yaci.core.model.governance.GovActionId;
 import com.bloxbean.cardano.yaci.core.model.governance.GovActionType;
 import com.bloxbean.cardano.yaci.core.model.governance.actions.TreasuryWithdrawalsAction;
 import org.yanoproject.api.EpochParamProvider;
-import org.yanoproject.api.appchain.l1view.GovernanceProposalStatus;
-import org.yanoproject.api.appchain.l1view.GovernanceProposalStatusReason;
+import org.yanoproject.api.governance.GovernanceProposalStatus;
+import org.yanoproject.api.governance.GovernanceProposalStatusReason;
 import org.yanoproject.api.era.EraProvider;
 import org.yanoproject.ledgerstate.AdaPotTracker;
 import org.yanoproject.ledgerstate.DefaultAccountStateStore;
@@ -948,28 +948,8 @@ public class GovernanceEpochProcessor {
             GovActionRecord proposal,
             GovernanceProposalStatus status,
             GovernanceProposalStatusReason reason) {
-        return new ProposalLifecycleRecord(actionType(proposal.actionType()), status, reason,
+        return new ProposalLifecycleRecord(proposal.actionType(), status, reason,
                 proposal.proposedInEpoch(), proposal.expiresAfterEpoch());
-    }
-
-    private static org.yanoproject.api.appchain.l1view.GovernanceActionType actionType(
-            GovActionType type) {
-        return switch (type) {
-            case PARAMETER_CHANGE_ACTION ->
-                    org.yanoproject.api.appchain.l1view.GovernanceActionType.PARAMETER_CHANGE;
-            case HARD_FORK_INITIATION_ACTION ->
-                    org.yanoproject.api.appchain.l1view.GovernanceActionType.HARD_FORK_INITIATION;
-            case TREASURY_WITHDRAWALS_ACTION ->
-                    org.yanoproject.api.appchain.l1view.GovernanceActionType.TREASURY_WITHDRAWALS;
-            case NO_CONFIDENCE ->
-                    org.yanoproject.api.appchain.l1view.GovernanceActionType.NO_CONFIDENCE;
-            case UPDATE_COMMITTEE ->
-                    org.yanoproject.api.appchain.l1view.GovernanceActionType.UPDATE_COMMITTEE;
-            case NEW_CONSTITUTION ->
-                    org.yanoproject.api.appchain.l1view.GovernanceActionType.NEW_CONSTITUTION;
-            case INFO_ACTION ->
-                    org.yanoproject.api.appchain.l1view.GovernanceActionType.INFO_ACTION;
-        };
     }
 
     // ===== Active DRep Keys =====
