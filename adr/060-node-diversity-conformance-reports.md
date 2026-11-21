@@ -128,8 +128,9 @@ verifies them. Each report records the corpus it ran on where the schema allows 
   value is 5 bytes against `max_value_size` 5,000, so `validateOutputTooBigUTxO` (`Alonzo/Rules/Utxo.hs`) cannot fire.
   Haskell before cardano-ledger `c0f8975c0c` (2026-09-07, `cardano-ledger-conway` 1.24.0.0) renamed that failure to
   `OutputTooBigUTxO` on its way into Conway (`shelleyToAllegraUtxoPredFailure`), and the corpus's checker is built
-  against `cardano-ledger-conway` 1.22.1.0. A temporary alias in `AmaruCorpusNames` therefore lets
-  `OutputBootAddrAttrsTooBig` match the fixture's name. Yano's rule is unchanged. The alias goes once the fixture
+  against `cardano-ledger-conway` 1.22.1.0. A temporary alias in `AmaruCorpusNames`, for this one scenario, therefore
+  lets `OutputBootAddrAttrsTooBig` match the fixture's name; any other scenario expecting `OutputTooBigUTxO`, such as
+  00087, still needs that constructor. Yano's rule is unchanged. The alias goes once the fixture
   names `OutputBootAddrAttrsTooBig` upstream.
 
 ### 4. uplc-conformance: julc, as phase 2 runs it
@@ -291,8 +292,8 @@ Findings, none of them masked in the harness except the temporary 00280 alias (i
    plain lovelace and `max_value_size` is 5,000, so `OutputTooBigUTxO` cannot fire, yet pragma's cardano-node and
    Amaru reports both give `OutputTooBigUTxO`. The cause is a Haskell naming bug fixed in cardano-ledger
    `c0f8975c0c` (2026-09-07), which the corpus's checker (`cardano-ledger-conway` 1.22.1.0) predates. A temporary
-   alias matches Yano's `OutputBootAddrAttrsTooBig` to the fixture's name (section 3); the fixture goes to the
-   corpus maintainers, and the alias is removed once it is updated.
+   alias, for that scenario alone, matches Yano's `OutputBootAddrAttrsTooBig` to the fixture's name (section 3); the
+   fixture goes to the corpus maintainers, and the alias is removed once it is updated.
 2. **julc text parser.** Six `value` constant vectors (unordered, duplicate, zero or empty entries) are accepted where
    Haskell rejects them (plutus `conValue` requires canonical form, plutus #7816): bloxbean/julc#260, fixed by
    bloxbean/julc#262 (julc 0.1.0-pre20). Text-only: a `value` constant has no Flat form, and chain data is not affected.

@@ -2,6 +2,7 @@ package org.yanoproject.ledger.rules.fixtures.amaru;
 
 import org.yanoproject.ledger.rules.LedgerRuleName;
 
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -129,15 +130,11 @@ public final class AmaruCorpusNames {
      * predicate, Conway/Rules/Gov.hs:478-481) is normalised to {@code "VotersDoNotExist"} (Run.hs:603-604), so scenario
      * 00171 names {@code VotersDoNotExist} although Haskell reports {@code UnelectedCommitteeVoters}.
      *
-     * <p>Temporary: {@code OutputTooBigUTxO} also covers {@code UTXO.OutputBootAddrAttrsTooBig}. Before cardano-ledger
-     * {@code c0f8975c0c} ("Fix shelleyToAllegraUtxoPredFailure mapping", cardano-ledger-allegra 1.10.2.0, first in
-     * cardano-node 11.2.0) Haskell injected Shelley's {@code OutputBootAddrAttrsTooBig} as {@code OutputTooBigUTxO}, so
-     * cardano-node 11.1.3, both pins ({@code f649f975}, {@code 6176e413}) and scenario 00280 name an oversized Byron
-     * attribute so. Yano reports the fixed name. Remove this alias once 00280 expects {@code OutputBootAddrAttrsTooBig}.
+     * <p>A scenario of {@link #SCENARIO_NAMES} that is not resolved per scenario ({@link #PER_SCENARIO}) is satisfied by
+     * the constructor it names there too.
      */
     private static final Map<String, Set<String>> ALIASES = Map.of(
-            "VotersDoNotExist", Set.of("GOV.UnelectedCommitteeVoters"),
-            "OutputTooBigUTxO", Set.of("UTXO.OutputBootAddrAttrsTooBig"));
+            "VotersDoNotExist", Set.of("GOV.UnelectedCommitteeVoters"));
 
     /**
      * The corpus names that share {@code UTXOS.CollectErrors}, with the {@code CollectError} each stands for. Amaru's
@@ -176,6 +173,14 @@ public final class AmaruCorpusNames {
      * Haskell tells apart (Conway/Rules/GovCert.hs:209-242). Keyed by the scenario's description, its name without the
      * number: the node-diversity fixtures are copies of Amaru's scenarios numbered differently (fixture
      * {@code 00298-fail-drep-registration-with-an-incorrect-deposit} is Amaru's scenario 00347).
+     *
+     * <p>Temporary: scenario 00280 also takes {@code UTXO.OutputBootAddrAttrsTooBig} for its {@code OutputTooBigUTxO}.
+     * At both pins ({@code f649f975}, {@code 6176e413}) Haskell injects Shelley's {@code OutputBootAddrAttrsTooBig} as
+     * Allegra's {@code OutputTooBigUTxO} ({@code shelleyToAllegraUtxoPredFailure}, Allegra/Rules/Utxo.hs:387), so
+     * cardano-node 11.1.3 and the scenario name an oversized Byron attribute so; cardano-ledger {@code c0f8975c0c}
+     * ("Fix shelleyToAllegraUtxoPredFailure mapping", cardano-ledger-allegra 1.10.2.0, first in cardano-node 11.2.0)
+     * keeps the name, which Yano reports. Only that scenario: an output too big for its value, such as 00087's, is
+     * still {@code OutputTooBigUTxO} alone. Remove the entry once 00280 expects {@code OutputBootAddrAttrsTooBig}.
      */
     private static final Set<String> PER_SCENARIO = Set.of("IncorrectDepositDRep");
 
@@ -183,17 +188,31 @@ public final class AmaruCorpusNames {
             "fail-drep-deregistration-with-incorrect-refund",
             new ScenarioName("IncorrectDepositDRep", name(LedgerRuleName.GOVCERT, "ConwayDRepIncorrectRefund")),
             "fail-drep-registration-with-an-incorrect-deposit",
-            new ScenarioName("IncorrectDepositDRep", name(LedgerRuleName.GOVCERT, "ConwayDRepIncorrectDeposit")));
+            new ScenarioName("IncorrectDepositDRep", name(LedgerRuleName.GOVCERT, "ConwayDRepIncorrectDeposit")),
+            "fail-output-to-a-byron-address-with-oversized-attributes",
+            new ScenarioName("OutputTooBigUTxO", name(LedgerRuleName.UTXO, "OutputBootAddrAttrsTooBig")));
 
     private AmaruCorpusNames() {
     }
 
     /**
-     * @return the other Haskell {@code RULE.Constructor}s Amaru's checker reports under this corpus name (empty for
-     *         most names)
+     * @param scenario   the scenario's name (its file name without {@code .json})
+     * @param corpusName the scenario's expected corpus predicate
+     * @return the other Haskell {@code RULE.Constructor}s Amaru's checker reports under this corpus name in this
+     *         scenario (empty for most)
      */
-    public static Set<String> aliases(String corpusName) {
-        return ALIASES.getOrDefault(corpusName, Set.of());
+    public static Set<String> aliases(String scenario, String corpusName) {
+        Set<String> aliases = new HashSet<>(ALIASES.getOrDefault(corpusName, Set.of()));
+        ScenarioName named = SCENARIO_NAMES.get(description(scenario));
+        if (named != null && named.corpusName().equals(corpusName) && !PER_SCENARIO.contains(corpusName)) {
+            aliases.add(qualified(named.haskell()));
+        }
+        return aliases;
+    }
+
+    // A scenario's name without its number, which differs between Amaru and the node-diversity fixtures.
+    private static String description(String scenario) {
+        return scenario.replaceFirst("^\\d+-", "");
     }
 
     private static HaskellName name(LedgerRuleName rule, String constructor) {
@@ -209,7 +228,7 @@ public final class AmaruCorpusNames {
      */
     public static Optional<HaskellName> haskellName(String scenario, String corpusName) {
         if (PER_SCENARIO.contains(corpusName)) {
-            ScenarioName resolved = SCENARIO_NAMES.get(scenario.replaceFirst("^\\d+-", ""));
+            ScenarioName resolved = SCENARIO_NAMES.get(description(scenario));
             if (resolved == null || !resolved.corpusName().equals(corpusName)) {
                 throw new IllegalStateException(scenario + ": " + corpusName + " names more than one Haskell "
                         + "constructor; resolve it per scenario (AmaruCorpusNames.SCENARIO_NAMES)");
@@ -240,7 +259,7 @@ public final class AmaruCorpusNames {
         List<String> names = Stream.concat(
                         NAMES.entrySet().stream()
                                 .filter(e -> qualified(e.getValue()).equals(qualifiedName)
-                                        || aliases(e.getKey()).contains(qualifiedName))
+                                        || ALIASES.getOrDefault(e.getKey(), Set.of()).contains(qualifiedName))
                                 .filter(e -> detailMatches(e.getKey(), detail))
                                 .map(Map.Entry::getKey),
                         SCENARIO_NAMES.values().stream()

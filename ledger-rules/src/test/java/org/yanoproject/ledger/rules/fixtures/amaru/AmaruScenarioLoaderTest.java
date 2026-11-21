@@ -105,4 +105,17 @@ class AmaruScenarioLoaderTest {
         assertThat(Set.of(AmaruScenarioLoader.eraTag("Conway"), AmaruScenarioLoader.eraTag("Byron")))
                 .containsExactlyInAnyOrder(7, 1);
     }
+
+    /** The 00280 alias holds for that scenario only, whatever its number; 00087's output is too big for its value. */
+    @Test
+    void anOversizedByronAttributeIsAnAliasOfOneScenarioOnly() {
+        assertThat(AmaruCorpusNames.aliases("00280-fail-output-to-a-byron-address-with-oversized-attributes",
+                "OutputTooBigUTxO")).containsExactly("UTXO.OutputBootAddrAttrsTooBig");
+        assertThat(AmaruCorpusNames.aliases("00087-fail-output-value-larger-than-max-value-size", "OutputTooBigUTxO"))
+                .isEmpty();
+        assertThat(AmaruCorpusNames.haskellName("00087-fail-output-value-larger-than-max-value-size",
+                "OutputTooBigUTxO").orElseThrow().constructor()).isEqualTo("OutputTooBigUTxO");
+        assertThat(AmaruCorpusNames.aliases("00171-any", "VotersDoNotExist"))
+                .containsExactly("GOV.UnelectedCommitteeVoters");
+    }
 }
