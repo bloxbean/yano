@@ -54,8 +54,12 @@ engine_opts() { # <config> <dir> <producer|follower>
             -Dyano.validation.shadow-engines=scalus -Dyano.validation.shadow-dump-dir=$2/shadow-dumps"
           echo "$sync -Dyano.validation.shadow-sync-engines=java-scalus" ;;
     scalus) echo "-Dyano.validation.engine=scalus" ;;
+    *) echo "unsupported config: $1" >&2; exit 2 ;;
   esac
 }
+# engine_opts runs in a command substitution when a node starts, where its exit cannot stop the run: check every
+# requested configuration before any node starts.
+for c in $CONFIGS; do engine_opts "$c" "$OUT" producer > /dev/null; done
 
 stop_node() { # <pid> <dir>: SIGTERM and wait, keeping the exit code
   kill "$1" 2>/dev/null; wait "$1" 2>/dev/null; echo $? > "$2/exit-code"
