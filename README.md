@@ -47,7 +47,7 @@ Yano's initial goal is to fill three roles:
 - **Past-time-travel mode** — start a fresh devnet "in the past", produce blocks deterministically
   from slot 0, then catch up to wall-clock; useful for replaying long histories quickly.
 - **Native image** — supports a GraalVM native build for fast startup and small footprint.
-- **Modular** — publishable libraries (`yano-core-api`, `yano-runtime`, `yano-ledger-state`, …)
+- **Modular** — publishable libraries (`yano-node-api`, `yano-cardano-api`, `yano-runtime`, `yano-ledger-state`, …)
   let downstream projects depend on just the slice they need.
 
 ---
@@ -62,7 +62,7 @@ Yano's initial goal is to fill three roles:
 ### Build
 
 ```bash
-./gradlew clean build              # all modules + L1/app-chain core tests
+./gradlew clean build              # all modules + core tests
 ./gradlew fullBuild                # optional extended + crypto + distribution verification
 ./gradlew :app:quarkusBuild        # produce app/build/yano.jar (Quarkus uber-jar)
 ```
@@ -81,7 +81,7 @@ java -jar app/build/yano.jar
 ```
 
 The default profile points at the public Cardano **preprod** network (protocol magic `1`,
-upstream peer `localhost:30000` — adjust in `app/src/main/resources/application.yml` or via
+upstream peer `localhost:30000` — adjust in `app-core/src/main/resources/application.yml` or via
 system properties).
 
 ### Run a local devnet block producer
@@ -141,7 +141,8 @@ ext {
 dependencies {
     implementation "org.yanoproject:yano-runtime:$yanoVersion"
     // or pull a slim slice:
-    implementation "org.yanoproject:yano-core-api:$yanoVersion"
+    implementation "org.yanoproject:yano-node-api:$yanoVersion"
+    implementation "org.yanoproject:yano-cardano-api:$yanoVersion"
     implementation "org.yanoproject:yano-ledger-state:$yanoVersion"
 }
 ```
@@ -150,7 +151,9 @@ dependencies {
 
 | Coordinate | What it is |
 |---|---|
-| `org.yanoproject:yano-core-api` | Public node interfaces and plugin SPI |
+| `org.yanoproject:yano-node-api` | Shared node/configuration contracts and plugin SPI |
+| `org.yanoproject:yano-cardano-api` | Cardano chain, ledger, and query contracts |
+| `org.yanoproject:yano-host-api` | Independently versioned framework hosting capabilities |
 | `org.yanoproject:yano-runtime` | Node implementation with RocksDB persistence |
 | `org.yanoproject:yano-ledger-state` | Account / delegation / governance state stores |
 | `org.yanoproject:yano-ledger-rules` | Transaction validation API and Conway ledger rules |
@@ -181,7 +184,9 @@ A distributable zip (`yano-native-<version>-<platform>.zip`) is produced under
 
 ```
 yano/
-├── core-api/            # Public node interfaces + plugin SPI
+├── node-api/            # Shared node/configuration contracts + plugin SPI
+├── cardano-api/         # Cardano chain, ledger, and query contracts
+├── host-api/            # Versioned framework hosting capabilities
 ├── plugin-catalog/      # Manifest validation + JVM-only yano-plugins CLI
 ├── runtime/             # Main node implementation (RocksDB-backed)
 ├── ledger-state/        # Account / delegation / governance state stores
@@ -201,8 +206,7 @@ For deeper coverage of how to operate and extend Yano, see:
 
 | Doc | What's inside |
 |---|---|
-| **[`docs/appchain/README.md`](docs/appchain/README.md)** | Yano's generic app-chain host, `ordered-log`, proofs, plugin contracts, and L1 anchoring. |
-| **[Yano X](https://github.com/bloxbean/yano-x)** | JVM extensions: additional state machines, capabilities, connectors, products, examples, and tools. |
+| **[Yano X](https://github.com/bloxbean/yano-x)** | Separate product built on Yano: application ledgers (app chains), their state machines, connectors, products, examples, and tools. |
 | **[`app/README.md`](app/README.md)** | Operator's guide — run modes (relay, devnet, native), `start.sh` / `start-devnet.sh`, configuration knobs, REST API reference, profiles, Swagger UI, integration with [yaci-store](https://github.com/bloxbean/yaci-store), and the test tiers (unit / integration / e2e). |
 | **[`app/ARCHITECTURE.md`](app/ARCHITECTURE.md)** | Internal architecture — high-level topology, header/body split sync pipeline, event system, plugin system, module overview, REST API surface, configuration modes, and extension points. |
 | **[`docs/PLUGIN_OPERATIONS.md`](docs/PLUGIN_OPERATIONS.md)** | Plugin catalog validation, operations API authentication, health/metrics exposure, dashboard behavior, and JVM/native deployment notes. |
@@ -220,7 +224,7 @@ and `adr/014-slot-leader-selection-block-production.md` for block production.
   (Yano is the underlying node)
 - **[Cardano Client Lib](https://github.com/bloxbean/cardano-client-lib)** — transaction
   building, address handling, crypto
-- **[Yano X](https://github.com/bloxbean/yano-x)** — JVM extension ecosystem for Yano app chains
+- **[Yano X](https://github.com/bloxbean/yano-x)** — application ledgers (app chains) built on Yano
 
 ---
 

@@ -22,11 +22,11 @@ Build the JVM Docker context:
 ./gradlew :app:prepareYanoDockerJvmContext -PskipSigning=true
 ```
 
-Build the local image:
+Build the local image. The Dockerfile defaults `JVM_BASE_IMAGE` to a digest-pinned Amazon Corretto 25 image
+on Amazon Linux 2023 (the one the release images use). An override must be an image with `dnf`.
 
 ```bash
 docker build \
-  --build-arg JVM_BASE_IMAGE=eclipse-temurin:25-jre \
   -t bloxbean/yano:local-jvm \
   app/build/docker/jvm/context
 ```
@@ -123,7 +123,6 @@ The JVM image can be built as a multi-platform image from one JVM context:
 
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
-  --build-arg JVM_BASE_IMAGE=eclipse-temurin:25-jre \
   -t bloxbean/yano:local-jvm \
   app/build/docker/jvm/context
 ```
@@ -201,11 +200,9 @@ For another network, use the matching command:
 ./yano.sh config:devnet | grep 'image:'
 ```
 
-Each network keeps its data in `data-<network>/`: `chainstate/`, `runtime-data/`,
-`appchain-chainstate/`, and `appchain-indexers/`. The launcher creates them on `start`
-or `restart`. Set `YANO_CHAINSTATE_PATH`, `YANO_RUNTIME_DATA_PATH`,
-`YANO_APPCHAIN_STATE_PATH`, and `YANO_APPCHAIN_INDEXER_PATH` in `compose/.env` for
-custom host paths.
+Each network keeps its data in `data-<network>/`: `chainstate/` and `runtime-data/`.
+The launcher creates them on `start` or `restart`. Set `YANO_CHAINSTATE_PATH` and
+`YANO_RUNTIME_DATA_PATH` in `compose/.env` for custom host paths.
 
 Switch to the native image by editing `compose/.env`:
 

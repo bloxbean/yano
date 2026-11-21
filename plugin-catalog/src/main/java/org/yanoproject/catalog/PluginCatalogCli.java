@@ -41,17 +41,10 @@ public final class PluginCatalogCli {
             + System.lineSeparator()
             + "Policy options: [--api-major <positive-int>] [--api-level <positive-int>]"
             + " [--allow <bundle-id>]..."
-            + " [--deny <bundle-id>]... [--]";
-
-    private final PluginCatalogInspector inspector;
+            + " [--deny <bundle-id>]... [--host-artifact <artifact>]... [--]";
 
     /** Creates a command backed by the strict offline inspector. */
     public PluginCatalogCli() {
-        this(new PluginCatalogInspector());
-    }
-
-    PluginCatalogCli(PluginCatalogInspector inspector) {
-        this.inspector = Objects.requireNonNull(inspector, "inspector");
     }
 
     /**
@@ -77,7 +70,11 @@ public final class PluginCatalogCli {
             return EXIT_USAGE;
         }
 
+        List<Path> diagnosticPaths = new ArrayList<>(parsed.artifacts());
+        diagnosticPaths.addAll(parsed.hostArtifacts());
         try {
+            PluginCatalogInspector inspector = new PluginCatalogInspector(
+                    ContributionKindRegistry.fromHostArtifacts(parsed.hostArtifacts()));
             PluginCatalogInspection inspection = inspector.inspect(
                     parsed.artifacts(), parsed.policy());
             if (parsed.command() == Command.VALIDATE) {
@@ -91,12 +88,12 @@ public final class PluginCatalogCli {
             return EXIT_OK;
         } catch (PluginCatalogException failure) {
             err.println("Plugin catalog is invalid: "
-                    + safeDiagnostic(failure, parsed.artifacts()));
+                    + safeDiagnostic(failure, diagnosticPaths));
             err.flush();
             return EXIT_INVALID_CATALOG;
         } catch (IOException failure) {
             err.println("Plugin catalog could not be read: "
-                    + safeDiagnostic(failure, parsed.artifacts()));
+                    + safeDiagnostic(failure, diagnosticPaths));
             err.flush();
             return EXIT_IO;
         }
@@ -134,6 +131,7 @@ public final class PluginCatalogCli {
         Set<String> allow = new TreeSet<>();
         Set<String> deny = new TreeSet<>();
         List<Path> artifacts = new ArrayList<>();
+        List<Path> hostArtifacts = new ArrayList<>();
         while (cursor < args.length) {
             String argument = args[cursor++];
             if ("--".equals(argument)) {
@@ -187,6 +185,7 @@ public final class PluginCatalogCli {
                 }
                 case "--allow" -> allow.add(value(args, cursor++, argument));
                 case "--deny" -> deny.add(value(args, cursor++, argument));
+                case "--host-artifact" -> hostArtifacts.add(path(value(args, cursor++, argument)));
                 case "--format" -> {
                     if (command != Command.INSPECT) {
                         throw usage("--format is supported only by 'inspect'");
@@ -211,7 +210,7 @@ public final class PluginCatalogCli {
         try {
             return new Arguments(command, format,
                     new PluginCatalogInspectionPolicy(apiMajor, apiLevel, allow, deny),
-                    List.copyOf(artifacts));
+                    List.copyOf(artifacts), List.copyOf(hostArtifacts));
         } catch (IllegalArgumentException failure) {
             throw usage(bounded(failure.getMessage()));
         }
@@ -417,7 +416,8 @@ public final class PluginCatalogCli {
             Command command,
             Format format,
             PluginCatalogInspectionPolicy policy,
-            List<Path> artifacts
+            List<Path> artifacts,
+            List<Path> hostArtifacts
     ) {
     }
 

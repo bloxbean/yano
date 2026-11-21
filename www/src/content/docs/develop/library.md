@@ -575,7 +575,7 @@ Like yaci-store's start point, `YanoConfig.syncStartSlot` and `syncStartBlockHas
 
 ### Package your listener as a plugin
 
-The same `@DomainEventListener` methods can run inside the packaged Yano node instead of your own application. Implement `org.yanoproject.api.plugin.NodePlugin`, register your listener object in `start()` with `AnnotationListenerRegistrar.register(ctx.eventBus(), listener, SubscriptionOptions.builder().build())`, close the returned handles in `stop()`, and list the class in `META-INF/services/org.yanoproject.api.plugin.NodePlugin`. Plugins see the event bus, configuration and a scheduler, not the query APIs. See [plugin operations](/operate/plugins/) and the [plugin contract](/reference/plugin-contract/).
+The same `@DomainEventListener` methods can run inside the packaged Yano node instead of your own application. Implement `org.yanoproject.api.plugin.NodePlugin`, register your listener object in `start()` with `AnnotationListenerRegistrar.register(ctx.eventBus(), listener, SubscriptionOptions.builder().build())`, close the returned handles in `stop()`, and list the class in `META-INF/services/org.yanoproject.api.plugin.NodePlugin`. Plugins see the event bus, configuration and a scheduler, not the query APIs. See [plugin operations](/operate/plugins/).
 
 ### Index inside Yano's storage
 

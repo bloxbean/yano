@@ -57,7 +57,7 @@ not expose `DevnetControl`.
 
 This module intentionally does not expose raw runtime internals such as
 `RuntimeNode`, `ChainState`, RocksDB handles, or maintenance gates. The public
-boundary remains the `Yano` handle and role interfaces from `core-api`.
+boundary remains the `Yano` handle and Cardano role interfaces from `cardano-api`.
 
 Devnet mutation operations are not production APIs. They are meant for isolated
 devnets where tests or local tooling own the node lifecycle.
