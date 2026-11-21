@@ -18,8 +18,7 @@ Version constraints for:
 - Quarkus host: `yano-app-core`
 - Devnet and test support: `yano-devnet-toolkit`, `yano-testkit`, `yano-testkit-ccl`, `yano-app-e2e-testkit`
 
-Unpublished projects (`app`, `console-ui`, `ledger-conformance`, examples, the optional `amaru-validator`)
-are not in it.
+Unpublished projects (`app`, `console-ui`, `ledger-conformance`, examples) are not in it.
 
 ```gradle
 dependencies {
