@@ -1,10 +1,12 @@
 package org.yanoproject.runtime.plugins;
 
 import org.yanoproject.api.config.PluginsOptions;
+import org.yanoproject.api.config.YanoPropertyKeys;
 import org.yanoproject.api.plugin.NodePlugin;
 import org.yanoproject.api.plugin.PluginCatalogView;
 import org.yanoproject.api.plugin.PluginDigestMode;
 import org.yanoproject.api.plugin.PluginSourceCategory;
+import org.yanoproject.catalog.BundleManifestParser;
 import org.yanoproject.catalog.CatalogDigests;
 import org.yanoproject.catalog.IndexedBundle;
 import org.yanoproject.catalog.PluginArtifactScanner;
@@ -22,6 +24,8 @@ import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.Enumeration;
 import java.util.HashSet;
 import java.util.HexFormat;
@@ -29,7 +33,9 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Optional;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.ScheduledExecutorService;
 
@@ -43,6 +49,7 @@ public final class PluginRuntimeEnvironment implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(PluginRuntimeEnvironment.class);
     private final PluginsOptions options;
+    private final PluginKinds kinds;
     private final PluginLoaderHandle loaderHandle;
     private final PluginCatalogBuilder.BuildResult build;
     private final AtomicBoolean closed = new AtomicBoolean();
@@ -54,18 +61,49 @@ public final class PluginRuntimeEnvironment implements AutoCloseable {
     private Throwable terminalCloseFailure;
 
     private PluginRuntimeEnvironment(PluginsOptions options,
+                                     PluginKinds kinds,
                                      PluginLoaderHandle loaderHandle,
                                      PluginCatalogBuilder.BuildResult build) {
         this.options = options;
+        this.kinds = kinds;
         this.loaderHandle = loaderHandle;
         this.build = build;
     }
 
     public static PluginRuntimeEnvironment open(PluginsOptions options,
                                                 PluginLoaderHandle loaderHandle) {
-        return open(options, loaderHandle, (embeddedIndexSha256, result) ->
+        return open(options, loaderHandle, Set.of());
+    }
+
+    /**
+     * Select host-required embedded bundles through the ordinary catalog. These
+     * infrastructure roots and their embedded dependencies are independent of
+     * optional-plugin policy; directory bundles cannot satisfy them.
+     */
+    public static PluginRuntimeEnvironment open(PluginsOptions options,
+                                                PluginLoaderHandle loaderHandle,
+                                                Set<String> requiredEmbeddedBundles) {
+        return open(options, loaderHandle, requiredEmbeddedBundles, (embeddedIndexSha256, result) ->
                 log.info("{} indexSha256={} catalogFingerprint={}", PROVENANCE_LOG_PREFIX,
                         embeddedIndexSha256, result.catalog().fingerprint()));
+    }
+
+    /**
+     * The host-required embedded bundle ids configured by {@link YanoPropertyKeys.Plugins#REQUIRED}
+     * (comma-separated).
+     */
+    public static Set<String> requiredBundles(Map<String, Object> globals) {
+        Object value = globals.get(YanoPropertyKeys.Plugins.REQUIRED);
+        if (value == null) {
+            return Set.of();
+        }
+        Set<String> required = new TreeSet<>();
+        for (String id : String.valueOf(value).split(",")) {
+            if (!id.isBlank()) {
+                required.add(id.trim());
+            }
+        }
+        return Set.copyOf(required);
     }
 
     /** Package-private post-build seam for ownership and cleanup-order tests. */
@@ -74,19 +112,32 @@ public final class PluginRuntimeEnvironment implements AutoCloseable {
             PluginLoaderHandle loaderHandle,
             PostBuildAction postBuildAction
     ) {
+        return open(options, loaderHandle, Set.of(), postBuildAction);
+    }
+
+    private static PluginRuntimeEnvironment open(
+            PluginsOptions options,
+            PluginLoaderHandle loaderHandle,
+            Set<String> requiredEmbeddedBundles,
+            PostBuildAction postBuildAction
+    ) {
         Objects.requireNonNull(options, "options");
         Objects.requireNonNull(loaderHandle, "loaderHandle");
         Objects.requireNonNull(postBuildAction, "postBuildAction");
+        Set<String> required = Set.copyOf(requiredEmbeddedBundles);
         loaderHandle.claimRuntimeOwnership();
         PluginCatalogBuilder.BuildResult result = null;
         try {
-            DiscoveryResult discovery = options.enabled()
-                    ? discoverInputs(options, loaderHandle) : DiscoveryResult.disabled();
-            result = new PluginCatalogBuilder().build(
+            boolean active = options.enabled() || !required.isEmpty();
+            PluginKinds kinds = active
+                    ? PluginKinds.load(loaderHandle.embeddedIndexLoader()) : PluginKinds.BUILT_INS;
+            DiscoveryResult discovery = active
+                    ? discoverInputs(options, kinds, loaderHandle, required) : DiscoveryResult.disabled();
+            result = new PluginCatalogBuilder(kinds).build(
                     options, loaderHandle.classLoader(), discovery.inputs(),
-                    discovery.allowUnindexedLegacyProviders());
+                    discovery.allowUnindexedLegacyProviders(), required);
             PluginRuntimeEnvironment environment =
-                    new PluginRuntimeEnvironment(options, loaderHandle, result);
+                    new PluginRuntimeEnvironment(options, kinds, loaderHandle, result);
             postBuildAction.run(discovery.embeddedIndexSha256(), result);
             return environment;
         } catch (Throwable failure) {
@@ -137,10 +188,12 @@ public final class PluginRuntimeEnvironment implements AutoCloseable {
 
     private static DiscoveryResult discoverInputs(
             PluginsOptions options,
-            PluginLoaderHandle handle) {
+            PluginKinds kinds,
+            PluginLoaderHandle handle,
+            Set<String> requiredEmbeddedBundles) {
         List<PluginCatalogBuilder.CatalogInput> inputs = new ArrayList<>();
         List<String> embeddedIndexDigests = new ArrayList<>();
-        PluginIndexCodec codec = new PluginIndexCodec();
+        PluginIndexCodec codec = new PluginIndexCodec(kinds.registry());
         try {
             Enumeration<URL> resources = handle.embeddedIndexLoader()
                     .getResources(PluginIndex.RESOURCE_PATH);
@@ -178,7 +231,19 @@ public final class PluginRuntimeEnvironment implements AutoCloseable {
                     embeddedIndexDigests.add(sha256(encodedIndex));
                 }
             }
-            PluginArtifactScanner scanner = new PluginArtifactScanner();
+            if (embeddedIndexes.isEmpty()
+                    && handle.discoveryMode() == PluginDiscoveryMode.LIBRARY_COMPATIBILITY) {
+                inputs.addAll(discoverRequiredLibraryInputs(
+                        kinds, handle.embeddedIndexLoader(), requiredEmbeddedBundles));
+            }
+            if (!options.enabled()) {
+                // Required infrastructure uses only the trusted embedded index.
+                // Do not scan or install directory artifacts while user plugins
+                // are disabled, even when the supplied handle contains them.
+                return new DiscoveryResult(List.copyOf(inputs), false,
+                        embeddedIndexDigests.isEmpty() ? "none" : embeddedIndexDigests.getFirst());
+            }
+            PluginArtifactScanner scanner = new PluginArtifactScanner(kinds.registry());
             for (Path artifact : handle.artifacts()) {
                 PluginIndex index = scanner.scan(artifact);
                 if (index.bundles().isEmpty() && index.legacyProviders().isEmpty()) {
@@ -193,7 +258,7 @@ public final class PluginRuntimeEnvironment implements AutoCloseable {
             }
             PluginCatalogBuilder.validateProviderBudget(inputs, PluginIndex.MAX_PROVIDERS);
             PluginCatalogBuilder.validateManifestCompatibility(inputs);
-            validateDirectoryArtifacts(handle, inputs);
+            validateDirectoryArtifacts(kinds, handle, inputs);
             handle.activateDirectoryArtifacts(
                     selectedDirectoryArtifacts(options, inputs));
             inputs = promoteDirectoryBundleEvidence(inputs);
@@ -206,6 +271,44 @@ public final class PluginRuntimeEnvironment implements AutoCloseable {
         } catch (IOException e) {
             throw new IllegalStateException("Plugin catalog inputs could not be read", e);
         }
+    }
+
+    /** Library embedding may supply complete manifested JARs without a generated aggregate index. */
+    private static List<PluginCatalogBuilder.CatalogInput> discoverRequiredLibraryInputs(
+            PluginKinds kinds, ClassLoader loader, Set<String> roots) throws IOException {
+        List<PluginCatalogBuilder.CatalogInput> inputs = new ArrayList<>();
+        Set<String> discovered = new LinkedHashSet<>();
+        Deque<String> pending = new ArrayDeque<>(new TreeSet<>(roots));
+        PluginArtifactScanner scanner = new PluginArtifactScanner(kinds.registry());
+        while (!pending.isEmpty()) {
+            String id = pending.removeFirst();
+            if (!discovered.add(id)) continue;
+            if (discovered.size() > PluginIndex.MAX_BUNDLES) {
+                throw new IllegalStateException("Too many host-required embedded plugin bundles");
+            }
+            String resourcePath = BundleManifestParser.RESOURCE_DIRECTORY + id + BundleManifestParser.RESOURCE_SUFFIX;
+            Enumeration<URL> resources = loader.getResources(resourcePath);
+            if (!resources.hasMoreElements()) {
+                throw new IllegalStateException("Host-required embedded plugin bundle '" + id
+                        + "' has no classpath manifest");
+            }
+            URL resource = resources.nextElement();
+            if (resources.hasMoreElements()) {
+                throw new IllegalStateException(
+                        "Multiple classpath manifests for host-required embedded plugin bundle '"
+                        + id + "'");
+            }
+            PluginIndex index = scanner.scan(PluginArtifactScanner.classPathArtifact(resource, resourcePath));
+            IndexedBundle bundle = index.bundles().stream()
+                    .filter(candidate -> candidate.manifest().id().equals(id))
+                    .findFirst().orElseThrow(() -> new IllegalStateException(
+                            "Classpath artifact does not declare host-required embedded plugin bundle '" + id + "'"));
+            inputs.add(new PluginCatalogBuilder.CatalogInput(
+                    new PluginIndex(PluginIndex.CURRENT_SCHEMA_VERSION, List.of(bundle), List.of()),
+                    PluginSourceCategory.CLASSPATH));
+            bundle.manifest().dependencies().forEach(dependency -> pending.addLast(dependency.id()));
+        }
+        return List.copyOf(inputs);
     }
 
     /**
@@ -243,6 +346,7 @@ public final class PluginRuntimeEnvironment implements AutoCloseable {
     }
 
     private static void validateDirectoryArtifacts(
+            PluginKinds kinds,
             PluginLoaderHandle handle,
             List<PluginCatalogBuilder.CatalogInput> inputs
     ) {
@@ -252,7 +356,7 @@ public final class PluginRuntimeEnvironment implements AutoCloseable {
         for (PluginCatalogBuilder.CatalogInput input : inputs) {
             if (input.source() == PluginSourceCategory.DIRECTORY) {
                 DirectoryPluginArtifactValidator.validate(
-                        input.artifact(), input.index(), handle.embeddedIndexLoader(),
+                        kinds, input.artifact(), input.index(), handle.embeddedIndexLoader(),
                         deploymentBudget);
             }
         }
@@ -365,6 +469,12 @@ public final class PluginRuntimeEnvironment implements AutoCloseable {
         return build.catalog();
     }
 
+    /** Keys of contribution kinds whose request operations are recorded. */
+    public Set<String> operationsTrackedKinds() {
+        ensureOpen();
+        return kinds.operationsTrackedKinds();
+    }
+
     public PluginProviderRegistry providers() {
         ensureOpen();
         return build.registry();
@@ -475,19 +585,30 @@ public final class PluginRuntimeEnvironment implements AutoCloseable {
         return build.bundleConfigs().getOrDefault(bundleId, Map.of());
     }
 
-    /**
-     * Safe configuration projected into an ADR-011.3 domain context.
-     *
-     * <p>v1 deliberately exposes no raw bundle values. The catalog namespace
-     * can contain credentials, while the domain SPI does not yet define a
-     * typed opaque secret-reference/capability value. Returning an empty view
-     * fails closed until that contract exists instead of relying on key-name
-     * heuristics that can copy secret material into a request-facing plugin.</p>
-     */
-    public Map<String, Object> domainApiConfig(String bundleId) {
+    /** Whether a selected bundle was loaded from the host class path rather than a plugin directory. */
+    public boolean embeddedBundle(String bundleId) {
         ensureOpen();
-        Objects.requireNonNull(bundleId, "bundleId");
-        return Map.of();
+        return build.catalog().bundles().stream().anyMatch(bundle -> bundle.id().equals(bundleId)
+                && bundle.selected() && bundle.source() != PluginSourceCategory.DIRECTORY);
+    }
+
+    /**
+     * The bundle whose own {@code NodePlugin.init} or host assembly step is the innermost plugin code on this
+     * thread; empty when none runs or a nested provider callback is innermost.
+     */
+    public Optional<String> currentOwner() {
+        ensureOpen();
+        return build.registry().callbackTracker().owner();
+    }
+
+    /** Runs a host assembly step as {@code bundleId}'s own code. */
+    public void runAsOwner(String bundleId, Runnable step) {
+        ensureOpen();
+        Objects.requireNonNull(step, "step");
+        build.registry().callbackTracker().callAsOwner(bundleId, () -> {
+            step.run();
+            return null;
+        });
     }
 
     public ClassLoader classLoader() {
@@ -495,7 +616,7 @@ public final class PluginRuntimeEnvironment implements AutoCloseable {
         return loaderHandle.classLoader();
     }
 
-    /** True while an app-chain product may still invoke bundle code. */
+    /** True while a returned plugin product may still invoke bundle code. */
     public boolean hasPendingContributionCleanup() {
         ensureOpen();
         return build.registry().hasPendingContributionCleanup();

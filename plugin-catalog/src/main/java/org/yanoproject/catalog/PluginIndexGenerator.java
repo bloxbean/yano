@@ -25,9 +25,13 @@ public final class PluginIndexGenerator {
     private final PluginArtifactScanner scanner;
     private final PluginIndexCodec codec;
 
-    /** Creates a generator using the strict scanner and canonical codec. */
-    public PluginIndexGenerator() {
-        this(new PluginArtifactScanner(), new PluginIndexCodec());
+    /**
+     * Creates a generator using the strict scanner and canonical codec.
+     *
+     * @param kinds the supported contribution kinds and trusted host artifacts
+     */
+    public PluginIndexGenerator(ContributionKindRegistry kinds) {
+        this(new PluginArtifactScanner(kinds), new PluginIndexCodec(kinds));
     }
 
     PluginIndexGenerator(PluginArtifactScanner scanner, PluginIndexCodec codec) {
@@ -368,6 +372,10 @@ public final class PluginIndexGenerator {
     /**
      * Runs the build-time generator command.
      *
+     * <p>Every artifact argument is part of the application host class path,
+     * so contribution-kind descriptors are read from, and trusted in, all of
+     * them.</p>
+     *
      * <p>A full classpath closure is far longer than the command line a
      * platform will accept, so {@code --args-file} reads the same argument
      * list from a UTF-8 file holding one argument per line.</p>
@@ -414,7 +422,8 @@ public final class PluginIndexGenerator {
         for (; i < args.length; i++) {
             artifacts.add(Path.of(args[i]));
         }
-        PluginIndexGenerator generator = new PluginIndexGenerator();
+        PluginIndexGenerator generator = new PluginIndexGenerator(
+                ContributionKindRegistry.fromHostArtifacts(artifacts));
         if (strictClosures) {
             generator.writeArtifactClosures(artifacts, closures, output);
         } else {

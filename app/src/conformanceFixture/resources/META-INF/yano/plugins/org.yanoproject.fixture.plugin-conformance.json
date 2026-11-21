@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "org.yanoproject.fixture.plugin-conformance",
+  "version": "1.0.0",
+  "yanoApi": { "min": 3, "max": 3, "minLevel": 14 },
+  "dependencies": [],
+  "contributions": [
+    {
+      "kind": "node-plugin",
+      "name": "org.yanoproject.fixture.plugin-conformance",
+      "provider": "org.yanoproject.fixture.conformance.PluginConformanceFixture"
+    },
+    {
+      "kind": "health",
+      "name": "org.yanoproject.fixture.plugin-conformance",
+      "provider": "org.yanoproject.fixture.conformance.ConformanceHealthProvider"
+    },
+    {
+      "kind": "metrics",
+      "name": "org.yanoproject.fixture.plugin-conformance",
+      "provider": "org.yanoproject.fixture.conformance.ConformanceMetricsProvider"
+    }
+  ]
+}

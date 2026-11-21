@@ -3,7 +3,6 @@ plugins {
 }
 
 dependencies {
-    api project(':core-api')
     integrationTestImplementation libs.duckdb.jdbc
     integrationTestImplementation libs.sqlite.jdbc
 }

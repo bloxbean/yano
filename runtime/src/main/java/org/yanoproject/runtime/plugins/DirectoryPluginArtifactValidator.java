@@ -12,7 +12,7 @@ import java.net.URL;
 import java.net.URLClassLoader;
 import java.nio.file.Path;
 import java.util.Collections;
-import java.util.EnumMap;
+import java.util.HashMap;
 import java.util.Enumeration;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -21,6 +21,7 @@ import java.util.Objects;
 import java.util.ServiceLoader;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.stream.Collectors;
 
 /**
  * Resolves provider types from one captured directory artifact at a time.
@@ -37,30 +38,30 @@ final class DirectoryPluginArtifactValidator {
     private static final int MAX_PROVIDER_DIAGNOSTIC_IDENTITIES = 2;
     private static final int MAX_PROVIDER_DIAGNOSTIC_IDENTITY_LENGTH = 96;
 
-    private static final Set<String> SUPPORTED_SERVICE_RESOURCES =
-            java.util.Arrays.stream(ContributionKind.values())
-                    .map(kind -> "META-INF/services/" + kind.serviceType().getName())
-                    .collect(java.util.stream.Collectors.toUnmodifiableSet());
-
     private DirectoryPluginArtifactValidator() {
     }
 
     static void validate(
+            PluginKinds kinds,
             Path artifact,
             PluginIndex index,
             ClassLoader parent,
             DeploymentValidationBudget deploymentBudget
     ) {
+        Objects.requireNonNull(kinds, "kinds");
         Objects.requireNonNull(artifact, "artifact");
         Objects.requireNonNull(index, "index");
         Objects.requireNonNull(parent, "parent");
         Objects.requireNonNull(deploymentBudget, "deploymentBudget");
 
-        Map<ContributionKind, Set<String>> expected = expectedProviders(index);
+        Map<ContributionKind, Set<String>> expected = expectedProviders(kinds, index);
+        Set<String> serviceResources = kinds.registry().kinds().stream()
+                .map(kind -> "META-INF/services/" + kind.serviceInterface())
+                .collect(Collectors.toUnmodifiableSet());
         try (ArtifactValidationLoader loader = new ArtifactValidationLoader(
-                artifact.toUri().toURL(), parent)) {
+                artifact.toUri().toURL(), parent, serviceResources)) {
             PluginThreadContext.run(loader, () -> validateInContext(
-                    artifact, expected, loader, deploymentBudget));
+                    kinds, artifact, expected, loader, deploymentBudget));
         } catch (Throwable failure) {
             LifecycleFailures.rethrowIfProcessFatalReachable(failure);
             if (failure instanceof RuntimeException runtime) {
@@ -71,9 +72,9 @@ final class DirectoryPluginArtifactValidator {
         }
     }
 
-    private static Map<ContributionKind, Set<String>> expectedProviders(PluginIndex index) {
-        Map<ContributionKind, Set<String>> expected = new EnumMap<>(ContributionKind.class);
-        for (ContributionKind kind : ContributionKind.values()) {
+    private static Map<ContributionKind, Set<String>> expectedProviders(PluginKinds kinds, PluginIndex index) {
+        Map<ContributionKind, Set<String>> expected = new HashMap<>();
+        for (ContributionKind kind : kinds.registry().kinds()) {
             expected.put(kind, new TreeSet<>());
         }
         index.bundles().forEach(bundle -> {
@@ -83,24 +84,25 @@ final class DirectoryPluginArtifactValidator {
         });
         index.legacyProviders().forEach(provider ->
                 expected.get(provider.kind()).add(provider.provider()));
-        Map<ContributionKind, Set<String>> snapshot = new EnumMap<>(ContributionKind.class);
+        Map<ContributionKind, Set<String>> snapshot = new HashMap<>();
         expected.forEach((kind, providers) -> snapshot.put(kind, Set.copyOf(providers)));
         return Collections.unmodifiableMap(snapshot);
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})
     private static void validateInContext(
+            PluginKinds kinds,
             Path artifact,
             Map<ContributionKind, Set<String>> expected,
             ArtifactValidationLoader loader,
             DeploymentValidationBudget deploymentBudget
     ) {
         int artifactDiscovered = 0;
-        for (ContributionKind kind : ContributionKind.values()) {
+        for (ContributionKind kind : kinds.registry().kinds()) {
             Set<String> actual = new HashSet<>();
             Iterator<? extends ServiceLoader.Provider<?>> providers =
                     (Iterator) ServiceLoader.load(
-                            (Class) kind.serviceType(), loader).stream().iterator();
+                            (Class) kinds.binding(kind).serviceType(), loader).stream().iterator();
             while (providers.hasNext()) {
                 if (artifactDiscovered == PluginCatalogBuilder.MAX_DISCOVERED_PROVIDERS) {
                     throw new IllegalStateException(
@@ -206,13 +208,16 @@ final class DirectoryPluginArtifactValidator {
 
     /** Hide parent service descriptors while retaining parent-first API identity. */
     private static final class ArtifactValidationLoader extends URLClassLoader {
-        private ArtifactValidationLoader(URL artifact, ClassLoader parent) {
+        private final Set<String> serviceResources;
+
+        private ArtifactValidationLoader(URL artifact, ClassLoader parent, Set<String> serviceResources) {
             super(new URL[]{artifact}, parent);
+            this.serviceResources = serviceResources;
         }
 
         @Override
         public Enumeration<URL> getResources(String name) throws IOException {
-            if (SUPPORTED_SERVICE_RESOURCES.contains(name)) {
+            if (serviceResources.contains(name)) {
                 return findResources(name);
             }
             return super.getResources(name);

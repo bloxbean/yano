@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "owner": "org.yanoproject.runtime.fixture",
+  "kinds": [
+    {
+      "key": "fixture-product",
+      "serviceInterface": "org.yanoproject.runtime.plugins.fixture.FixtureProvider",
+      "manifestRequired": false,
+      "trustTier": "CONSENSUS",
+      "reservedSystemNames": ["system"],
+      "operationsTracked": true
+    }
+  ]
+}

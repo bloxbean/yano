@@ -2,15 +2,12 @@
 
 This guide explains how to use the Yano event system and plugin SPI, both for developers embedding Yano in their apps and for contributors writing default plugins or internal listeners.
 
-For committed state-machine queries and manifested domain HTTP APIs, continue
-with the [query and domain API plugin guide](../../docs/APP_CHAIN_PLUGIN_QUERY_AND_DOMAIN_API.md).
-
 ## Overview
 
 - Module overview
   - `events-core`: event SPI (`Event`, `EventBus`, `EventListener`, `EventContext`, `EventMetadata`, `SubscriptionOptions`, `PublishOptions`, `@DomainEventListener`), `SimpleEventBus`, `NoopEventBus`, registrar, `support.DomainEventBindings` SPI.
   - `events-processor`: JSR 269 annotation processor generating build-time bindings for `@DomainEventListener` (GraalVM friendly).
-  - `core-api`: plugin SPI (`NodePlugin`, `PluginContext`, `PluginCapability`, `Notifier`, `Notification`, `StorageAdapter`, `NodePolicy`), config (`RuntimeOptions`, `PluginsOptions`).
+  - `node-api`: plugin SPI (`NodePlugin`, `PluginContext`, `PluginCapability`, `Notifier`, `Notification`, `StorageAdapter`, `NodePolicy`), config (`RuntimeOptions`, `PluginsOptions`).
   - `plugin-catalog`: strict bundle manifest parsing, artifact correlation and
     canonical aggregate-index generation.
   - `runtime`: catalog/runtime ownership, lifecycle wiring, publication points,
@@ -71,7 +68,7 @@ Use explicit options (records) — do not rely on `System.setProperty`.
   - `bufferSize` (int): queue capacity for async offload.
   - `overflow` (enum): `BLOCK | DROP_LATEST | DROP_OLDEST | ERROR`.
 
-- `PluginsOptions` (core-api)
+- `PluginsOptions` (node-api)
   - `enabled` (boolean): enable/disable plugin system.
   - `autoRegisterAnnotated` (boolean): reserved and currently inactive; plugins
     should own their listener handles explicitly.
@@ -85,7 +82,7 @@ Use explicit options (records) — do not rely on `System.setProperty`.
     `yano.plugins.bundle."<bundle-id>".*`; the context removes that exact owner
     segment and exposes only the selected bundle's values.
 
-- `RuntimeOptions` (core-api)
+- `RuntimeOptions` (node-api)
   - Wraps `EventsOptions`, `PluginsOptions`, and a `globals` map.
 
 ### Embedding in plain Java
@@ -164,29 +161,23 @@ rolls back the selected set in reverse dependency order and fails node startup.
 `stop()` and `close()` also run in reverse order. Manifested typed contributions
 derive their trust tier from their SPI kind: consensus and privileged-local
 activation failures are fatal, while auxiliary sink failures are isolated and
-reported by the app-chain operations surface.
+reported by the plugin operations surface.
 
-### Authenticated-map validator bundles
+### Contribution kinds
 
-An `authenticated-map-validator` contribution implements
-`AuthenticatedMapValueValidatorFactory` from `core-api`. It is narrowly scoped
-to a pure verdict over `(collectionId, applicationKey, value)` and must not be
-used for rules that read state. The descriptor selecting it lives in
-authenticated-map genesis, not node-local plugin configuration.
-
-Production activation is stricter than ordinary discovery: the owning bundle
-must be named in the operator's explicit plugin allow-list, the catalog must
-provide `ARTIFACT_CLOSURE` evidence, and its raw SHA-256 digest must exactly
-match the digest pinned in genesis. All voting nodes therefore install and
-allow-list the same artifact closure. Provider id, SPI contract version, and
-canonical parameters must also match before the state machine starts.
-
-Java plugin validators run in process. The narrow SPI does not grant host
-services, but it is not a JVM sandbox: code can still call filesystem, network,
-clock, process, reflection, and thread APIs directly. Treat every such bundle
-as reviewed consensus code. Use the devtools determinism conformance harness,
-including its isolated-classloader check, before deployment; never load hostile
-or merely untrusted validator bytecode.
+Yano defines four contribution kinds: `node-plugin`, `utxo-index-contributor`,
+`health` and `metrics`. A framework on the host class path adds kinds with a
+descriptor `META-INF/yano/contribution-kinds/<owner>.json` (owner, key, service
+interface, trust tier and manifest rules) plus one
+`org.yanoproject.api.plugin.spi.ContributionKindBinding` per kind, registered
+with `ServiceLoader`. The host loads the descriptor of each owner a binding
+names (`descriptorOwner()`), so descriptors from several JARs survive merging
+into one uber-JAR. The binding builds the facade through the host's
+`PluginCallbackScope`, which applies callback admission, the plugin TCCL,
+activation diagnostics and product reservations. Descriptors are trusted only
+from the host class path; a plugin-directory bundle that carries one is
+rejected, and a manifest naming an unknown kind fails with `contribution kind
+is not supported`.
 
 Every context sees the same service registry. A dependency may register a
 service during `init()` and its dependent may retrieve it during its own
@@ -383,6 +374,7 @@ SubscriptionHandle h = bus.subscribe(
 
 ## References
 
-- SPI: `events-core` and `core-api` modules.
+- Event/plugin SPI: `events-core` and `node-api`; framework contribution kinds are
+  documented by the framework that defines them.
 - Processor: `events-processor` module.
 - Example: `runtime` `LoggingPlugin` and event publications.

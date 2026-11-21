@@ -1,6 +1,7 @@
 package org.yanoproject.runtime.plugins;
 
-import org.yanoproject.api.appchain.sink.FinalizedStreamSinkFactory;
+import org.yanoproject.api.plugin.spi.ContributionKindBinding;
+import org.yanoproject.runtime.plugins.fixture.FixtureProvider;
 import org.yanoproject.api.config.PluginsOptions;
 import org.yanoproject.api.plugin.PluginDigestMode;
 import org.yanoproject.api.plugin.PluginSelectionStatus;
@@ -36,11 +37,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class PluginCatalogCollisionPolicyTest {
     private static final String ALPHA_ID = "com.example.collision.alpha";
     private static final String BETA_ID = "com.example.collision.beta";
-    private static final String ALPHA_PROVIDER = "com.example.collision.AlphaSinkFactory";
-    private static final String BETA_PROVIDER = "com.example.collision.BetaSinkFactory";
-    private static final String SHARED_SCHEME = "shared-sink";
+    private static final String ALPHA_PROVIDER = "com.example.collision.AlphaProvider";
+    private static final String BETA_PROVIDER = "com.example.collision.BetaProvider";
+    private static final String SHARED_SCHEME = "shared-product";
     private static final String SINK_SERVICE = "META-INF/services/"
-            + FinalizedStreamSinkFactory.class.getName();
+            + FixtureProvider.class.getName();
 
     @TempDir
     Path temporary;
@@ -57,7 +58,7 @@ class PluginCatalogCollisionPolicyTest {
                         .as(mode + " selected bundle")
                         .containsExactly(ALPHA_ID);
                 assertThat(opened.environment().providers()
-                        .find(FinalizedStreamSinkFactory.class, SHARED_SCHEME))
+                        .find(FixtureProvider.class, SHARED_SCHEME))
                         .as(mode + " selected contribution")
                         .isPresent();
 
@@ -77,7 +78,7 @@ class PluginCatalogCollisionPolicyTest {
     void selectingCollidingAlternativesFailsDeterministicallyInEveryDiscoveryMode()
             throws Exception {
         Fixture fixture = fixture();
-        String diagnostic = "Duplicate selected contribution 'finalized-sink/"
+        String diagnostic = "Duplicate selected contribution 'fixture-product/"
                 + SHARED_SCHEME + "' from bundles '" + ALPHA_ID + "' and '" + BETA_ID + "'";
 
         for (Mode mode : Mode.values()) {
@@ -120,7 +121,7 @@ class PluginCatalogCollisionPolicyTest {
                 BETA_PROVIDER.replace('.', '/') + ".class", betaClass,
                 SINK_SERVICE, (ALPHA_PROVIDER + "\n" + BETA_PROVIDER + "\n")
                         .getBytes(StandardCharsets.UTF_8),
-                PluginIndex.RESOURCE_PATH, new PluginIndexCodec().write(index)));
+                PluginIndex.RESOURCE_PATH, new PluginIndexCodec(TestPluginKinds.KINDS.registry()).write(index)));
         return new Fixture(directory, packaged);
     }
 
@@ -131,7 +132,7 @@ class PluginCatalogCollisionPolicyTest {
         Path beta = writeProviderSource(sourceRoot, BETA_PROVIDER);
         String apiPath;
         try {
-            apiPath = Path.of(FinalizedStreamSinkFactory.class.getProtectionDomain()
+            apiPath = Path.of(FixtureProvider.class.getProtectionDomain()
                     .getCodeSource().getLocation().toURI()).toString();
         } catch (Exception e) {
             throw new IOException("Could not locate plugin API classes", e);
@@ -151,16 +152,9 @@ class PluginCatalogCollisionPolicyTest {
         Files.createDirectories(source.getParent());
         Files.writeString(source, """
                 package %s;
-                import org.yanoproject.api.appchain.sink.FinalizedStreamSink;
-                import org.yanoproject.api.appchain.sink.FinalizedStreamSinkFactory;
-                import java.util.List;
-                import java.util.Map;
-                public final class %s implements FinalizedStreamSinkFactory {
-                    public String scheme() { return "%s"; }
-                    public List<FinalizedStreamSink> create(
-                            String chainId, Map<String, String> config) {
-                        return List.of();
-                    }
+                import org.yanoproject.runtime.plugins.fixture.FixtureProvider;
+                public final class %s implements FixtureProvider {
+                    public String id() { return "%s"; }
                 }
                 """.formatted(packageName, simpleName, SHARED_SCHEME), StandardCharsets.UTF_8);
         return source;
@@ -209,7 +203,7 @@ class PluginCatalogCollisionPolicyTest {
                 currentApiRange(),
                 List.of(),
                 List.of(new BundleContribution(
-                        ContributionKind.FINALIZED_SINK, SHARED_SCHEME, provider)));
+                        TestPluginKinds.FIXTURE, SHARED_SCHEME, provider)));
         return new IndexedBundle(manifest,
                 "sha256:" + String.valueOf(digest).repeat(64),
                 PluginDigestMode.ARTIFACT_CLOSURE);
@@ -224,7 +218,7 @@ class PluginCatalogCollisionPolicyTest {
                   "yanoApi": {"min": %d, "max": %d, "minLevel": %d},
                   "dependencies": [],
                   "contributions": [{
-                    "kind": "finalized-sink",
+                    "kind": "fixture-product",
                     "name": "%s",
                     "provider": "%s"
                   }]
@@ -303,7 +297,9 @@ class PluginCatalogCollisionPolicyTest {
 
         @Override
         public Enumeration<URL> getResources(String name) throws IOException {
-            if (name.startsWith("META-INF/services/")) {
+            // Host bindings stay visible: they belong to the trusted parent, not to plugins.
+            if (name.startsWith("META-INF/services/")
+                    && !name.equals("META-INF/services/" + ContributionKindBinding.class.getName())) {
                 return findResources(name);
             }
             return super.getResources(name);

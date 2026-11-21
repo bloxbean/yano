@@ -57,7 +57,7 @@ class PluginCatalogProviderBudgetTest {
                         PluginCatalogBuilder.PLUGIN_API_LEVEL),
                 List.of(),
                 List.of(new BundleContribution(
-                        ContributionKind.FINALIZED_SINK, name, provider)));
+                        TestPluginKinds.FIXTURE, name, provider)));
         return new PluginIndex(
                 PluginIndex.CURRENT_SCHEMA_VERSION,
                 List.of(new IndexedBundle(manifest, DIGEST, PluginDigestMode.JAR)),
@@ -69,7 +69,7 @@ class PluginCatalogProviderBudgetTest {
                 PluginIndex.CURRENT_SCHEMA_VERSION,
                 List.of(),
                 List.of(new IndexedLegacyProvider(
-                        ContributionKind.SIGNER_PROVIDER,
+                        TestPluginKinds.FIXTURE,
                         provider,
                         DIGEST,
                         PluginDigestMode.JAR)));

@@ -1,25 +1,12 @@
 package org.yanoproject.runtime.plugins;
 
-import org.yanoproject.api.utxo.index.UtxoIndexContributorProvider;
-
-import org.yanoproject.api.appchain.AppStateMachineProvider;
-import org.yanoproject.api.appchain.authmap.AuthenticatedMapValueValidatorFactory;
-import org.yanoproject.api.appchain.effects.AppEffectExecutorFactory;
-import org.yanoproject.api.appchain.l1view.L1EpochObserverProvider;
-import org.yanoproject.api.appchain.l1view.L1ObserverProvider;
-import org.yanoproject.api.appchain.observation.ObservationProviderFactory;
-import org.yanoproject.api.appchain.sequencer.SequencerModeProvider;
-import org.yanoproject.api.appchain.signer.SignerProviderFactory;
-import org.yanoproject.api.appchain.sink.FinalizedStreamSinkFactory;
 import org.yanoproject.api.plugin.NodePlugin;
 import org.yanoproject.api.plugin.PluginActivationException;
 import org.yanoproject.api.plugin.PluginCapability;
 import org.yanoproject.api.plugin.PluginDigestMode;
 import org.yanoproject.api.plugin.PluginContext;
-import org.yanoproject.api.plugin.domain.DomainApiProvider;
-import org.yanoproject.api.plugin.operations.PluginHealthProvider;
-import org.yanoproject.api.plugin.operations.PluginMetricsProvider;
 import org.yanoproject.catalog.BundleManifest;
+import org.yanoproject.api.plugin.spi.ContributionKindBinding;
 import org.yanoproject.catalog.ContributionKind;
 import org.yanoproject.runtime.util.LifecycleFailures;
 import org.yanoproject.runtime.sync.validation.HeaderValidationCustomizer;
@@ -49,6 +36,7 @@ final class CatalogPluginProviderRegistry implements PluginProviderRegistry, Aut
     private final List<Entry> closeOrder;
     private final List<Object> eagerLegacyInstances;
     private final ClassLoader pluginClassLoader;
+    private final PluginKinds kinds;
     private final PluginSpiFacades.ProductReservations productReservations =
             new PluginSpiFacades.ProductReservations();
     private final PluginSpiFacades.CallbackTracker callbackTracker =
@@ -63,17 +51,20 @@ final class CatalogPluginProviderRegistry implements PluginProviderRegistry, Aut
     private boolean normalAdmissionSealed;
     private RegistryState state = RegistryState.OPEN;
 
-    CatalogPluginProviderRegistry(List<Entry> entries,
+    CatalogPluginProviderRegistry(PluginKinds kinds,
+                                  List<Entry> entries,
                                   List<String> bundleOrder,
                                   List<Object> eagerLegacyInstances) {
-        this(entries, bundleOrder, eagerLegacyInstances,
+        this(kinds, entries, bundleOrder, eagerLegacyInstances,
                 Thread.currentThread().getContextClassLoader());
     }
 
-    CatalogPluginProviderRegistry(List<Entry> entries,
+    CatalogPluginProviderRegistry(PluginKinds kinds,
+                                  List<Entry> entries,
                                   List<String> bundleOrder,
                                   List<Object> eagerLegacyInstances,
                                   ClassLoader pluginClassLoader) {
+        this.kinds = Objects.requireNonNull(kinds, "kinds");
         Map<String, Integer> order = new LinkedHashMap<>();
         for (int i = 0; i < bundleOrder.size(); i++) {
             order.put(bundleOrder.get(i), i);
@@ -81,7 +72,7 @@ final class CatalogPluginProviderRegistry implements PluginProviderRegistry, Aut
         Map<Class<?>, TreeMap<String, Entry>> mutable = new LinkedHashMap<>();
         for (Entry entry : entries) {
             TreeMap<String, Entry> byName = mutable.computeIfAbsent(
-                    entry.kind().serviceType(), ignored -> new TreeMap<>());
+                    kinds.binding(entry.kind()).serviceType(), ignored -> new TreeMap<>());
             Entry previous = byName.putIfAbsent(entry.name(), entry);
             if (previous != null) {
                 throw new IllegalStateException("Duplicate selected plugin contribution "
@@ -94,7 +85,7 @@ final class CatalogPluginProviderRegistry implements PluginProviderRegistry, Aut
                 Collections.unmodifiableMap(new LinkedHashMap<>(values))));
         this.entries = Collections.unmodifiableMap(frozen);
         this.nodePlugins = entries.stream()
-                .filter(entry -> entry.kind() == ContributionKind.NODE_PLUGIN)
+                .filter(entry -> entry.kind().equals(ContributionKind.NODE_PLUGIN))
                 .sorted(Comparator.comparingInt((Entry entry) -> order.getOrDefault(
                                 entry.bundleId(), Integer.MAX_VALUE))
                         .thenComparing(Entry::bundleId))
@@ -122,7 +113,7 @@ final class CatalogPluginProviderRegistry implements PluginProviderRegistry, Aut
         try (admission) {
             return Optional.of(providerType.cast(
                     entry.get(
-                            pluginClassLoader,
+                            kinds, pluginClassLoader,
                             terminallyClosedInstances,
                             productReservations,
                             callbackTracker)));
@@ -186,7 +177,7 @@ final class CatalogPluginProviderRegistry implements PluginProviderRegistry, Aut
             for (Entry entry : nodePlugins) {
                 result.add(NodePlugin.class.cast(
                         entry.get(
-                                pluginClassLoader,
+                                kinds, pluginClassLoader,
                                 terminallyClosedInstances,
                                 productReservations,
                                 callbackTracker)));
@@ -519,6 +510,7 @@ final class CatalogPluginProviderRegistry implements PluginProviderRegistry, Aut
         }
 
         Object get(
+                PluginKinds kinds,
                 ClassLoader pluginClassLoader,
                 Set<Object> terminallyClosedInstances,
                 PluginSpiFacades.ProductReservations productReservations,
@@ -529,11 +521,12 @@ final class CatalogPluginProviderRegistry implements PluginProviderRegistry, Aut
             // TCCL scope. A callback that corrupts TCCL therefore cannot poison
             // the next metadata callback.
             return callbackTracker.call(() -> getUnderAdmission(
-                    pluginClassLoader, terminallyClosedInstances,
+                    kinds, pluginClassLoader, terminallyClosedInstances,
                     productReservations, callbackTracker));
         }
 
         private Object getUnderAdmission(
+                PluginKinds kinds,
                 ClassLoader pluginClassLoader,
                 Set<Object> terminallyClosedInstances,
                 PluginSpiFacades.ProductReservations productReservations,
@@ -549,7 +542,7 @@ final class CatalogPluginProviderRegistry implements PluginProviderRegistry, Aut
 
             try {
                 ConstructedProvider constructed = construct(
-                        pluginClassLoader, terminallyClosedInstances,
+                        kinds, pluginClassLoader, terminallyClosedInstances,
                         productReservations, callbackTracker);
                 synchronized (this) {
                     instance = constructed.instance();
@@ -626,6 +619,7 @@ final class CatalogPluginProviderRegistry implements PluginProviderRegistry, Aut
         }
 
         private ConstructedProvider construct(
+                PluginKinds kinds,
                 ClassLoader pluginClassLoader,
                 Set<Object> terminallyClosedInstances,
                 PluginSpiFacades.ProductReservations productReservations,
@@ -639,13 +633,15 @@ final class CatalogPluginProviderRegistry implements PluginProviderRegistry, Aut
                         "ServiceLoader returned a null provider");
                 productReservations.claimProvider(candidate);
                 ownsProviderIdentity = true;
-                if (!kind.serviceType().isInstance(candidate)) {
+                ContributionKindBinding<?> binding = kinds.binding(kind);
+                if (!binding.serviceType().isInstance(candidate)) {
                     throw new IllegalStateException("Provider '" + providerClass
-                            + "' is not a " + kind.serviceType().getName());
+                            + "' is not a " + binding.serviceType().getName());
                 }
+                Object provider = candidate;
                 String actual = nodePluginMetadata != null
                         ? nodePluginMetadata.id()
-                        : selector(kind, candidate, pluginClassLoader, callbackTracker);
+                        : selector(kinds, provider, pluginClassLoader, callbackTracker);
                 if (!name.equals(actual)) {
                     throw new IllegalStateException("Provider '" + providerClass
                             + "' selector mismatch: manifest='" + name
@@ -658,7 +654,7 @@ final class CatalogPluginProviderRegistry implements PluginProviderRegistry, Aut
                 }
                 Object exposed = immutableMetadata == null
                         ? PluginSpiFacades.provider(
-                                kind, candidate, pluginClassLoader,
+                                binding, candidate, pluginClassLoader,
                                 manifest != null ? manifest.id() : bundleId, name,
                                 providerClass, productReservations, callbackTracker,
                                 manifest != null)
@@ -826,60 +822,14 @@ final class CatalogPluginProviderRegistry implements PluginProviderRegistry, Aut
             return Set.copyOf(snapshot);
         }
 
-        private static String selector(
-                ContributionKind kind,
+        private String selector(
+                PluginKinds kinds,
                 Object provider,
                 ClassLoader pluginClassLoader,
                 PluginSpiFacades.CallbackTracker callbackTracker
         ) {
-            String selector = switch (kind) {
-                case NODE_PLUGIN -> pluginCallback(
-                        callbackTracker, pluginClassLoader,
-                        ((NodePlugin) provider)::id);
-                case APP_STATE_MACHINE -> pluginCallback(
-                        callbackTracker, pluginClassLoader,
-                        ((AppStateMachineProvider) provider)::id);
-                case AUTHENTICATED_MAP_VALIDATOR -> pluginCallback(
-                        callbackTracker, pluginClassLoader,
-                        ((AuthenticatedMapValueValidatorFactory) provider)::id);
-                case SEQUENCER_MODE -> pluginCallback(
-                        callbackTracker, pluginClassLoader,
-                        ((SequencerModeProvider) provider)::id);
-                case L1_OBSERVER -> pluginCallback(
-                        callbackTracker, pluginClassLoader,
-                        ((L1ObserverProvider) provider)::type);
-                case L1_EPOCH_OBSERVER -> pluginCallback(
-                        callbackTracker, pluginClassLoader,
-                        ((L1EpochObserverProvider) provider)::type);
-                case OBSERVATION_PROVIDER -> pluginCallback(
-                        callbackTracker, pluginClassLoader,
-                        ((ObservationProviderFactory) provider)::type);
-                case SIGNER_PROVIDER -> pluginCallback(
-                        callbackTracker, pluginClassLoader,
-                        ((SignerProviderFactory) provider)::scheme);
-                case EFFECT_EXECUTOR -> pluginCallback(
-                        callbackTracker, pluginClassLoader,
-                        ((AppEffectExecutorFactory) provider)::scheme);
-                case FINALIZED_SINK -> pluginCallback(
-                        callbackTracker, pluginClassLoader,
-                        ((FinalizedStreamSinkFactory) provider)::scheme);
-                case DOMAIN_API -> pluginCallback(
-                        callbackTracker, pluginClassLoader,
-                        ((DomainApiProvider) provider)::id);
-                case LOCAL_READ_MODEL -> pluginCallback(
-                        callbackTracker, pluginClassLoader,
-                        ((org.yanoproject.api.plugin.domain.LocalReadModelProvider)
-                                provider)::id);
-                case HEALTH -> pluginCallback(
-                        callbackTracker, pluginClassLoader,
-                        ((PluginHealthProvider) provider)::id);
-                case UTXO_INDEX_CONTRIBUTOR -> pluginCallback(
-                        callbackTracker, pluginClassLoader,
-                        ((UtxoIndexContributorProvider) provider)::id);
-                case METRICS -> pluginCallback(
-                        callbackTracker, pluginClassLoader,
-                        ((PluginMetricsProvider) provider)::id);
-            };
+            String selector = pluginCallback(callbackTracker, pluginClassLoader,
+                    () -> kinds.selector(kind, provider));
             if (selector == null || selector.isBlank() || !selector.equals(selector.trim())) {
                 throw new IllegalStateException("Provider returned an invalid selector");
             }
@@ -949,10 +899,13 @@ final class CatalogPluginProviderRegistry implements PluginProviderRegistry, Aut
             return metadata.capabilities();
         }
 
+        /** The facade's own admission suspends the caller's owner frame, so init re-enters it. */
         @Override
         public void init(PluginContext ctx) {
-            callbackTracker.run(() -> PluginThreadContext.run(
-                    pluginClassLoader, () -> delegate.init(ctx)));
+            callbackTracker.run(() -> callbackTracker.callAsOwner(metadata.id(), () -> {
+                PluginThreadContext.run(pluginClassLoader, () -> delegate.init(ctx));
+                return null;
+            }));
         }
 
         @Override

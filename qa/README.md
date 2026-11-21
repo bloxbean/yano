@@ -6,7 +6,7 @@ isolated ports, and writes a report you can share. The Claude Code skill
 runs a single test through it.
 
 ```bash
-qa/release-qa.sh                              # l1, appchain, e2e, compat, docker; JVM and native
+qa/release-qa.sh                              # l1, e2e, compat, docker; JVM and native
 qa/release-qa.sh --quick                      # JVM variants only
 qa/release-qa.sh --categories l1,e2e
 qa/release-qa.sh --only haskell-sync-jvm,compat-jvm
@@ -22,10 +22,6 @@ qa/release-qa.sh --render qa/results/<run-id> # re-render after adding triage no
 | | `haskell-sync-{jvm,native}` | A Haskell cardano-node follows Yano for 2 epochs with matching hashes |
 | | `past-time-travel-{jvm,native}` | Epoch shift, catch-up to wall clock, Haskell sync from slot 0 |
 | | `sparse-backfill` | Backfill interval matrix; Haskell syncs the history and follows live blocks |
-| `appchain` | `appchain-cluster` | Two-node cluster: sequencing, proofs, finality, L1 anchor, an L1 rollback under a follower and its restart, an L1 fork while the follower is down |
-| | `appchain-extensions` | Multi-chain, query, SSE, webhooks, admin API, evidence, snapshot, metrics |
-| | `appchain-rotation-governance` | Rotating sequencer and governed membership |
-| | `appchain-script-anchor` | Script anchors, follower identity adoption, L1 deposit observations |
 | `e2e` | `e2e-{jvm,native}` | `e2e-tests/` endpoint smoke and devnet functional suites, incl. time travel |
 | `compat` | `compat-{jvm,native}` | `compat-tests/` CCL, Mesh and Evolution compat cases on a fresh node |
 | `load` (opt-in) | `load-jvm` | `compat-tests/` load and chained-transaction cases on a fresh node |
@@ -33,7 +29,7 @@ qa/release-qa.sh --render qa/results/<run-id> # re-render after adding triage no
 | `docker-public` (opt-in) | `docker-public` | Compose bundle syncing preprod (`wallet,small`), preview (`small`) and mainnet (`wallet,medium`) to a target epoch; needs internet |
 | `ledger-rules` (opt-in) | `ledger-rules-native` | ADR-056 Phase 7c: the same transaction workload (`NativeParityWorkloadTest`) against a JVM and a native devnet producer with `engine: java-julc` (the default, julc phase 2; admission shadow `scalus`, shadow sync `java-julc,java-scalus` on the producer and a follower), with `engine: java-scalus` (Scalus phase 2), and with the legacy `scalus` path, at protocol versions 9, 10 and 11; every verdict, shadow counter and dump must be identical, and native dumps must replay on the JVM. |
 
-A full default run takes about 2-3 hours, most of it in the Haskell and app-chain tests.
+A full default run takes about 2-3 hours, most of it in the Haskell tests.
 
 ## Prerequisites
 
@@ -60,9 +56,8 @@ Docker tests remove only their own `yano-qa-docker-*` containers and networks.
 
 Tests run one at a time. The harness uses its own ports (HTTP 7171/7172, N2N
 13441/13442, Haskell 3103 with EKG 12889 and Prometheus 12899, e2e 7181/13451, compat
-7191/13461, app-chain webhook sink 9199, Docker 7281-7283/13551-13553), and the sparse-backfill runner picks free
-ports itself. The run stops
-before starting if a harness port is busy. It never kills by port: each test records
+7191/13461, Docker 7281-7283/13551-13553), and the sparse-backfill runner picks free
+ports itself. The run stops before starting if a harness port is busy. It never kills by port: each test records
 the PIDs it starts, and only those are stopped, so nodes you run on 7070/13337 are safe.
 Every mutable path (chainstate, history, genesis copies, logs) lives in the run
 directory; tracked files under `app/config` are not modified.

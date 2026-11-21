@@ -1,12 +1,16 @@
-ARG JVM_BASE_IMAGE=eclipse-temurin:25-jre
+# Runtime base image: Amazon Corretto 25 LTS (GPLv2 + Classpath Exception) on Amazon Linux 2023.
+# 25.0.5.1 fixes CVE-2026-114938 ("Java4Shell"); Temurin has no fixed 25 build yet.
+# Pinned by multi-arch index digest (linux/amd64 + linux/arm64). release-docker.yml passes the same value.
+ARG JVM_BASE_IMAGE=amazoncorretto:25.0.5-al2023-headless@sha256:d43cc2b87faf3e80d04659d315dd9f1dba2c1176cc9b48d9daed285856ac056c
 FROM ${JVM_BASE_IMAGE}
 
 ARG YANO_UID=10001
 ARG YANO_GID=10001
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
-    && rm -rf /var/lib/apt/lists/* \
+# The base already has ca-certificates and curl (healthcheck); entrypoint.sh needs find (findutils).
+RUN dnf install -y findutils \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf \
     && mkdir -p /app/chainstate /app/logs /app/plugins
 
 WORKDIR /app

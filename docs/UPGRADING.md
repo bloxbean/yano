@@ -16,6 +16,19 @@ publication, so only nodes built with `-PwithAmaru=true` are affected.
   health fields (`<engine>.healthy`, `shadowUnhealthy`, `shadowSync.<engine>.healthy`, `shadowSyncUnhealthy`,
   `validationEngineHealthy`).
 
+## ADR-064 app chains moved to Yano X
+
+Application ledgers (app chains) are no longer part of Yano. They are built on Yano by the
+separate product [Yano X](https://github.com/bloxbean/yano-x), which ships the integrated
+distribution, the `/api/v1/app-chain/**` REST API, the `/ui/app-chain/` console pages, the
+`appchain` profile and the app-chain QA and documentation. Yano's JVM ZIP, Docker image and
+native binary serve no app chains, and Yano no longer publishes `yano-appchain-*` artifacts.
+
+- To keep running app chains, move to the Yano X distribution.
+- The Docker Compose files no longer mount `appchain-chainstate/` or `appchain-indexers/`.
+  Yano leaves existing folders untouched; keep them for Yano X.
+- The `yano.app-chain.api.*` keys still protect the plugin operations API.
+
 ## Reference-script hashes from the original bytes
 
 The UTxO store now hashes a reference script from its original bytes (CCL's raw script view), as the ledger does.

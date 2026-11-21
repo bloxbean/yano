@@ -18,10 +18,7 @@ Yano is modular. Select capabilities for the job, and check the configuration an
 | CCL backend adapter | Java testkit | Selected backend services, not the whole CCL backend API |
 | Wallet first-seen and scan indexes | Optional node capability | Fresh sync and continuous coverage; scans require retained bodies |
 | DuckLake history projection | JVM | Fresh-sync archive; no native support |
-| `ordered-log` app ledger | JVM or native host | Opaque events; does not enforce application business rules |
-| Multiple app ledgers, proofs, and L1 anchoring | App ledger host | Configure identities, membership, thresholds, and anchor requirements |
-| Certified observations | Optional preview | Disabled by default; explicit committed profile and trust policy |
-| Dynamic plugin JARs and Yano X extensions | JVM | Matching plugin contracts and explicit installation |
+| Dynamic plugin JARs | JVM | Matching plugin contracts and explicit installation |
 | Console, health, and metrics | Runnable application | Optional persistent metrics companion requires Docker Compose |
 | Embedding and event/plugin SPI | Java libraries | Use public role and extension interfaces |
 
@@ -29,4 +26,4 @@ Yano is modular. Select capabilities for the job, and check the configuration an
 
 The `wallet` and `projection` profiles serve different purposes. The former enables optional discovery/scan indexes; the latter enables historical projection. A plain default node is not an archive, and a filtered UTxO database is not complete wallet history.
 
-Native builds preserve core providers but cannot dynamically load JVM plugins. Use the [configuration guide](/reference/configuration/) and [generated catalog](/reference/configuration-catalog/) to inspect exact source/profile values.
+Native builds preserve core providers but cannot dynamically load JVM plugins. Application ledgers (app chains) are not a Yano capability; they are built on Yano by [Yano X](https://github.com/bloxbean/yano-x). Use the [configuration guide](/reference/configuration/) and [generated catalog](/reference/configuration-catalog/) to inspect exact source/profile values.

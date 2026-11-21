@@ -1,0 +1,10 @@
+// ADR-064 D8/M1 downstream-consumer check: a separate, unpublished build that
+// composes the staged yano-app-core exactly as a downstream application does.
+pluginManagement {
+    repositories {
+        gradlePluginPortal()
+        mavenCentral()
+    }
+}
+
+rootProject.name = 'yano-app-consumer-check'
