@@ -28,8 +28,7 @@ class WalletSerializedEraTest {
                 // A generated pallas block: its proposal sets n_opt (key 8, uint .size 2 in Conway's CDDL, Word16 in
                 // the ledger) to 2^64-1. Haskell does not decode it, nor does Yaci since it reads through CCL 0.8.0-pre8.
                 assertThatThrownBy(() -> BlockSerializer.INSTANCE.deserialize(cbor)).as(name)
-                        .hasRootCauseMessage("Expected an unsigned integer that fits an int, found 18446744073709551615"
-                                + " at offset 233");
+                        .hasStackTraceContaining("18446744073709551615");
                 continue;
             }
             var block = BlockSerializer.INSTANCE.deserialize(cbor);

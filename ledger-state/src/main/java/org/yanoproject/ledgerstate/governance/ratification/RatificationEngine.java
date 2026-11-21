@@ -821,13 +821,14 @@ public class RatificationEngine {
 
     /**
      * Whether a new member's term ends after {@code currentEpoch + committeeMaxTermLength}
-     * (Conway/Rules/Ratify.hs:370-382, {@code validCommitteeTerm}). A term is a Word64 epoch, held as its 64 bits.
+     * (Conway/Rules/Ratify.hs:370-382, {@code validCommitteeTerm}). A term is a Word64 epoch, held as its 64 bits;
+     * {@code committeeMaxTermLength} is a Word32 interval, held as its 32 bits.
      */
     private static boolean updateCommitteeTermExceedsMax(GovActionRecord proposal, int currentEpoch,
                                                          int committeeMaxTermLength) {
         if (proposal.govAction() instanceof com.bloxbean.cardano.yaci.core.model.governance.actions.UpdateCommittee uc
                 && uc.getNewMembersAndTerms() != null) {
-            long maxExpiry = (long) currentEpoch + committeeMaxTermLength;
+            long maxExpiry = currentEpoch + Integer.toUnsignedLong(committeeMaxTermLength);
             for (Long expiryEpoch : uc.getNewMembersAndTerms().values()) {
                 if (expiryEpoch != null && Long.compareUnsigned(expiryEpoch, maxExpiry) > 0) {
                     return true;

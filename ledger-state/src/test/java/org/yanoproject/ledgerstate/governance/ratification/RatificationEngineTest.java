@@ -287,7 +287,21 @@ class RatificationEngineTest {
         assertThat(updateCommitteeStatus(-1L)).isEqualTo(Status.ACTIVE);
     }
 
+    @Test
+    @DisplayName("UpdateCommittee: committeeMaxTermLength is a Word32, read unsigned")
+    void updateCommittee_maxTermLengthIsReadUnsigned() throws Exception {
+        // committeeMaxTermLength 2^32 - 1 arrives as the int -1. Read signed, the maximum was epoch 2.
+        int maxTermLength = (int) 0xFFFF_FFFFL;
+        assertThat(updateCommitteeStatus(100L, maxTermLength)).isEqualTo(Status.RATIFIED);
+        assertThat(updateCommitteeStatus(3L + 0xFFFF_FFFFL, maxTermLength)).isEqualTo(Status.RATIFIED);
+        assertThat(updateCommitteeStatus(4L + 0xFFFF_FFFFL, maxTermLength)).isEqualTo(Status.ACTIVE);
+    }
+
     private Status updateCommitteeStatus(long term) throws Exception {
+        return updateCommitteeStatus(term, 146);
+    }
+
+    private Status updateCommitteeStatus(long term, int committeeMaxTermLength) throws Exception {
         Path dir = java.nio.file.Files.createTempDirectory(tempDir, "term");
         try (var rocks = TestRocksDBHelper.create(dir)) {
             var engine = new RatificationEngine(rocks.governanceStore(), new VoteTallyCalculator());
@@ -301,8 +315,8 @@ class RatificationEngineTest {
 
             var results = engine.evaluateAll(
                     Map.of(id, proposal), Map.<DRepDistKey, BigInteger>of(), Set.of(), Map.of(), Map.of(),
-                    Map.of(), BigDecimal.ZERO, NO_PREV, 3, false, 0, 146, "NORMAL", BigInteger.ZERO,
-                    Map.of(GovActionType.UPDATE_COMMITTEE, BigDecimal.ZERO),
+                    Map.of(), BigDecimal.ZERO, NO_PREV, 3, false, 0, committeeMaxTermLength, "NORMAL",
+                    BigInteger.ZERO, Map.of(GovActionType.UPDATE_COMMITTEE, BigDecimal.ZERO),
                     Map.of(GovActionType.UPDATE_COMMITTEE, BigDecimal.ZERO), null);
 
             assertThat(results).hasSize(1);

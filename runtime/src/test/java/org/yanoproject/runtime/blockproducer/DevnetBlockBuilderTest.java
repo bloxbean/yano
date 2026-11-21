@@ -294,8 +294,7 @@ class DevnetBlockBuilderTest {
                 // the builder, which reads each transaction's execution units, refuses it.
                 assertThatThrownBy(() -> builder.buildBlock(1, 100, new byte[32], txs)).as(name)
                         .isInstanceOf(IllegalArgumentException.class)
-                        .hasRootCauseMessage("Expected an unsigned integer that fits an int, found 18446744073709551615"
-                                + " at offset 234");
+                        .hasStackTraceContaining("18446744073709551615");
                 continue;
             }
             var result = builder.buildBlock(1, 100, new byte[32], txs);

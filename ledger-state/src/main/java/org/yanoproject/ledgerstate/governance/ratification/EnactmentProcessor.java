@@ -249,7 +249,8 @@ public class EnactmentProcessor {
             for (var entry : uc.getNewMembersAndTerms().entrySet()) {
                 Credential cred = entry.getKey();
                 // only a ratified action is enacted, and ratification bounds each term by currentEpoch +
-                // committeeMaxTermLength, so it fits an int
+                // committeeMaxTermLength, so it fits an int while that sum does; a larger one fails loudly
+                // rather than narrowing (stored expiry is an int: #257)
                 additions.add(new CommitteeAddition(
                         new GovernanceStateStore.CredentialKey(credTypeFromModel(cred), cred.getHash()),
                         Math.toIntExact(entry.getValue())));

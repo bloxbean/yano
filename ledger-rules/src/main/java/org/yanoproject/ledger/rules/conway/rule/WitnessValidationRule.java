@@ -1,6 +1,7 @@
 package org.yanoproject.ledger.rules.conway.rule;
 
 import com.bloxbean.cardano.client.crypto.Blake2bUtil;
+import com.bloxbean.cardano.client.crypto.api.impl.BouncyCastleEd25519Verifier;
 import com.bloxbean.cardano.client.crypto.api.impl.EdDSASigningProvider;
 import com.bloxbean.cardano.client.plutus.spec.*;
 import com.bloxbean.cardano.client.plutus.util.ScriptDataHashGenerator;
@@ -39,7 +40,10 @@ import java.util.stream.Collectors;
 public class WitnessValidationRule implements LedgerRule {
 
     private static final String RULE_NAME = "WitnessValidation";
-    private static final EdDSASigningProvider SIGNING_PROVIDER = new EdDSASigningProvider();
+    // An explicit verifier: since CCL 0.8.0-pre8 the no-argument constructor reads CryptoConfiguration's global
+    // verifier on every call, which an embedding application could replace.
+    private static final EdDSASigningProvider SIGNING_PROVIDER =
+            new EdDSASigningProvider(new BouncyCastleEd25519Verifier());
 
     @Override
     public List<RuleValidationError> validate(LedgerContext context, Transaction transaction) {
