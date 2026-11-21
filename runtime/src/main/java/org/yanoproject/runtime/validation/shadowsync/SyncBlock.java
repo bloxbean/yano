@@ -1,8 +1,10 @@
 package org.yanoproject.runtime.validation.shadowsync;
 
 import com.bloxbean.cardano.client.common.cbor.CborSpan;
+import com.bloxbean.cardano.client.exception.CborRuntimeException;
 import com.bloxbean.cardano.client.spec.Era;
 import com.bloxbean.cardano.client.transaction.raw.RawBlock;
+import com.bloxbean.cardano.client.transaction.raw.RawHeader;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
 
 import java.util.ArrayList;
@@ -124,36 +126,26 @@ public record SyncBlock(List<byte[]> txs, List<String> txIds, Set<Integer> inval
     }
 
     /**
-     * @return the body digest, or {@code null} when the block has no {@code invalid_transactions} or its header body
-     *         is not the Babbage/Conway 10-field or the Alonzo-and-earlier 15-field shape
+     * @return the body digest, or {@code null} when the block has no {@code invalid_transactions} or its header has
+     *         the items of no header layout (CCL's {@link RawHeader})
      */
     private static BodyDigest digest(RawBlock block) {
         Optional<CborSpan> invalid = block.invalidTransactions();
         if (invalid.isEmpty()) {
             return null;
         }
-        List<CborSpan> header = block.header().items();
-        if (header.isEmpty() || header.get(0).tag() != -1 || header.get(0).majorType() != 4) {
-            return null;
-        }
-        List<CborSpan> headerBody = header.get(0).items();
-        int sizeIndex = switch (headerBody.size()) {
-            case 10 -> 6;   // Babbage, Conway: [.., vrf_result, block_body_size, block_body_hash, ..]
-            case 15 -> 7;   // Shelley to Alonzo: [.., nonce_vrf, leader_vrf, block_body_size, block_body_hash, ..]
-            default -> -1;
-        };
-        if (sizeIndex < 0) {
-            return null;
-        }
-        CborSpan size = headerBody.get(sizeIndex);
-        CborSpan hash = headerBody.get(sizeIndex + 1);
-        if (size.tag() != -1 || size.majorType() != 0 || size.asBigInteger().bitLength() > 63
-                || hash.tag() != -1 || hash.majorType() != 2) {
+        long headerSize;
+        byte[] headerHash;
+        try {
+            RawHeader header = RawHeader.of(block.header());
+            headerSize = header.bodySize();
+            headerHash = header.bodyHash();
+        } catch (CborRuntimeException e) {
             return null;
         }
         long actualSize = (long) block.transactionBodies().length() + block.transactionWitnessSets().length()
                 + block.auxiliaryDataSet().length() + invalid.get().length();
-        return new BodyDigest(size.asLong(), HexUtil.encodeHexString(hash.byteString()), actualSize,
+        return new BodyDigest(headerSize, HexUtil.encodeHexString(headerHash), actualSize,
                 HexUtil.encodeHexString(block.bodyHash()));
     }
 }
