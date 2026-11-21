@@ -60,8 +60,9 @@ jobs:
           cache: 'gradle'
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
+      # verifyNoYanoXDependency runs after the build and also inspects yano.jar and the ZIP (ADR-064).
       - name: Verify core JVM distribution
-        run: ./gradlew distributionCheck -PskipSigning=true --stacktrace
+        run: ./gradlew distributionCheck verifyNoYanoXDependency -PskipSigning=true --stacktrace
 
   native-core:
     runs-on: ubuntu-latest
@@ -88,6 +89,7 @@ jobs:
           ./gradlew
           :app:verifyCoreNativeDistribution
           :app:nativePluginCatalogSmoke
+          verifyNoYanoXDependency
           -Dquarkus.native.enabled=true
           -Dquarkus.package.jar.enabled=false
           -PskipSigning=true

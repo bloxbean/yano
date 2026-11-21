@@ -53,23 +53,6 @@ Run a standalone local blockchain with automatic block production.
 - Time advance: `POST http://localhost:7070/api/v1/devnet/time/advance`
 - Rollback: `POST http://localhost:7070/api/v1/devnet/rollback`
 
-### Standalone App-Chain Demo
-
-Add the `appchain` profile to start the built-in `orders-chain` as a
-single-member ordered log:
-
-```bash
-# Local devnet block producer plus the standalone ordered log
-./yano.sh start:devnet,appchain
-
-# Public-network sync plus the standalone ordered log
-./yano.sh start:preprod,appchain
-```
-
-The demo uses threshold `1` and a deterministic identity from
-`config/application-appchain.yml`. That identity is for local testing only.
-Use the Yano X showcase for multi-node examples and additional state machines.
-
 ## Key Features
 
 - **REST API** (port 7070) — blocks, transactions, UTXOs, epochs, protocol params
@@ -97,8 +80,8 @@ YANO_REMOTE_HOST=localhost YANO_REMOTE_PORT=3001 ./yano.sh start
 ```
 
 Every concurrently running node must have a distinct REST port, N2N port,
-chainstate path and log path. App-chain and projection nodes must also use
-distinct `YANO_APP_CHAIN_STORAGE_PATH` and `YANO_HISTORY_DIR` values.
+chainstate path and log path. Projection nodes must also use a distinct
+`YANO_HISTORY_DIR` value.
 
 ### Runtime memory options
 
@@ -133,7 +116,6 @@ The `config/` directory contains genesis files and protocol parameters for each 
 ```
 config/
   application.yml
-  application-appchain.yml
   application-bootstrap.yml
   application-devnet.yml
   application-pruned.yml

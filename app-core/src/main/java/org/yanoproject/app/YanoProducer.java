@@ -1,0 +1,1631 @@
+package org.yanoproject.app;
+
+import com.bloxbean.cardano.yaci.events.api.SubscriptionOptions;
+import com.bloxbean.cardano.yaci.events.api.config.EventsOptions;
+import org.yanoproject.api.ChainQuery;
+import org.yanoproject.api.DevnetControl;
+import org.yanoproject.api.LedgerQuery;
+import org.yanoproject.api.NodeLifecycle;
+import org.yanoproject.api.ProducerControl;
+import org.yanoproject.api.TxEvaluationGateway;
+import org.yanoproject.api.MempoolQueryGateway;
+import org.yanoproject.api.MempoolAdminGateway;
+import org.yanoproject.api.TxGateway;
+import org.yanoproject.api.config.PluginsOptions;
+import org.yanoproject.api.config.RuntimeOptions;
+import org.yanoproject.api.config.ChainSelectionConfig;
+import org.yanoproject.api.config.UpstreamConfig;
+import org.yanoproject.api.config.UpstreamDiscoveryConfig;
+import org.yanoproject.api.config.UpstreamFailoverConfig;
+import org.yanoproject.api.config.UpstreamGovernorConfig;
+import org.yanoproject.api.config.UpstreamPeerConfig;
+import org.yanoproject.api.config.UpstreamPreset;
+import org.yanoproject.api.config.UpstreamSyncConfig;
+import org.yanoproject.api.config.UpstreamTxConfig;
+import org.yanoproject.api.config.UpstreamValidationConfig;
+import org.yanoproject.api.config.UpstreamValidationStartConfig;
+import org.yanoproject.api.config.YanoConfig;
+import org.yanoproject.api.config.RuntimeMode;
+import org.yanoproject.api.config.YanoPropertyKeys;
+import org.yanoproject.api.db.IncompatibleChainStateException;
+import org.yanoproject.api.plugin.PluginCatalogView;
+import org.yanoproject.api.plugin.operations.PluginOperationsView;
+import org.yanoproject.app.bootstrap.BootstrapConfigParser;
+import org.yanoproject.app.api.validation.ValidationEnginesSource;
+import org.yanoproject.app.archive.HistoryArchiveService;
+import org.yanoproject.app.archive.ProjectionHistoryService;
+import org.yanoproject.app.spi.RuntimeGlobalsContributor;
+import org.yanoproject.bootstrap.providers.DefaultBootstrapDataProviderFactory;
+import org.yanoproject.devnet.YanoDevnetAssembly;
+import org.yanoproject.runtime.assembly.YanoAssembly;
+import org.yanoproject.runtime.assembly.Yano;
+import org.yanoproject.runtime.config.DnsCachePolicy;
+import org.yanoproject.runtime.config.GenesisFileResolver;
+import org.yanoproject.runtime.config.NetworkGenesisConfig;
+import org.yanoproject.runtime.config.RollbackRetentionGenesisValues;
+import org.yanoproject.runtime.config.RollbackRetentionPlanner;
+import org.yanoproject.runtime.config.RollbackRetentionSettings;
+import org.yanoproject.runtime.config.ResourceProfile;
+import org.yanoproject.runtime.debug.DebugLedgerStateAccess;
+import org.yanoproject.runtime.kernel.NodeKernel;
+import org.yanoproject.runtime.maintenance.RuntimeMaintenanceGate;
+import org.yanoproject.api.plugin.PluginActivationException;
+import org.yanoproject.runtime.plugins.HostPluginActivationException;
+import org.yanoproject.runtime.plugins.PluginCatalogActivationException;
+import org.yanoproject.runtime.plugins.PluginLoaderHandle;
+import org.yanoproject.runtime.plugins.PluginManager;
+import org.yanoproject.runtime.util.LifecycleFailures;
+import org.yanoproject.runtime.tx.TransactionBootstrapOptions;
+import org.yanoproject.tx.DefaultTransactionServicesFactory;
+import org.yanoproject.api.model.DevnetRestoreResult;
+import org.yanoproject.api.model.DevnetRollbackResult;
+import org.yanoproject.api.model.DevnetRollbackTarget;
+import org.yanoproject.api.model.FundResult;
+import org.yanoproject.api.model.SnapshotInfo;
+import org.yanoproject.api.model.TimeAdvanceResult;
+import io.quarkus.arc.All;
+import io.quarkus.runtime.ShutdownEvent;
+import io.quarkus.runtime.StartupEvent;
+import jakarta.annotation.Priority;
+import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.event.Observes;
+import jakarta.enterprise.inject.Produces;
+import jakarta.inject.Inject;
+import jakarta.inject.Named;
+import jakarta.interceptor.Interceptor;
+import org.eclipse.microprofile.config.Config;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import java.util.HashMap;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.IdentityHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
+
+/**
+ * Quarkus composition boundary that maps application properties to a
+ * role-specific {@link Yano}.
+ */
+@ApplicationScoped
+public class YanoProducer {
+
+    private static final Logger log = LoggerFactory.getLogger(YanoProducer.class);
+    static final String PLUGIN_STARTUP_DIAGNOSTICS = "yano.plugins.startup-diagnostics";
+    private static final int MAX_DIAGNOSTIC_CAUSES = 16;
+    private static final int MAX_DIAGNOSTIC_LENGTH = 512;
+    private static final String ROLLBACK_RETENTION_EPOCHS = RollbackRetentionPlanner.ROLLBACK_RETENTION_EPOCHS;
+    private static final String UTXO_ROLLBACK_WINDOW = RollbackRetentionPlanner.UTXO_ROLLBACK_WINDOW;
+    private static final String ACCOUNT_STATE_EPOCH_BLOCK_DATA_RETENTION_LAG =
+            RollbackRetentionPlanner.ACCOUNT_STATE_EPOCH_BLOCK_DATA_RETENTION_LAG;
+    private static final String ACCOUNT_STATE_SNAPSHOT_RETENTION_EPOCHS =
+            RollbackRetentionPlanner.ACCOUNT_STATE_SNAPSHOT_RETENTION_EPOCHS;
+    private static final String BLOCK_BODY_PRUNE_DEPTH =
+            RollbackRetentionPlanner.BLOCK_BODY_PRUNE_DEPTH;
+
+    @Inject
+    Config appConfig;
+
+    @Inject
+    HistoryArchiveService historyArchive;
+
+    @Inject
+    ProjectionHistoryService projectionHistory;
+
+    @Inject
+    @All
+    List<RuntimeGlobalsContributor> globalsContributors = List.of();
+
+    @ConfigProperty(name = YanoPropertyKeys.NETWORK, defaultValue = "mainnet")
+    String network;
+
+    @ConfigProperty(name = YanoPropertyKeys.Remote.HOST, defaultValue = "backbone.cardano.iog.io")
+    String remoteHost;
+
+    @ConfigProperty(name = YanoPropertyKeys.Remote.PORT, defaultValue = "3001")
+    int remotePort;
+
+    @ConfigProperty(name = YanoPropertyKeys.Remote.PROTOCOL_MAGIC, defaultValue = "764824073")
+    long protocolMagic;
+
+    @ConfigProperty(name = DnsCachePolicy.DNS_CACHE_TTL_KEY)
+    java.util.Optional<Integer> dnsCacheTtl;
+
+    @ConfigProperty(name = DnsCachePolicy.DNS_CACHE_NEGATIVE_TTL_KEY)
+    java.util.Optional<Integer> dnsCacheNegativeTtl;
+
+    @ConfigProperty(name = YanoPropertyKeys.Server.PORT, defaultValue = "13337")
+    int serverPort;
+
+    /**
+     * {@code full} also logs the bounded cause chain of a plugin startup failure. Off by default: plugin messages
+     * can contain credentials, so only an operator debugging a disposable node should enable it.
+     */
+    @ConfigProperty(name = PLUGIN_STARTUP_DIAGNOSTICS, defaultValue = "summary")
+    String pluginStartupDiagnostics = "summary";
+
+    @ConfigProperty(name = YanoPropertyKeys.Client.ENABLED, defaultValue = "true")
+    boolean clientEnabled;
+
+    @ConfigProperty(name = YanoPropertyKeys.Server.ENABLED, defaultValue = "true")
+    boolean serverEnabled;
+
+    @ConfigProperty(name = YanoPropertyKeys.Relay.AUTO_DISCOVERY, defaultValue = "false")
+    boolean relayAutoDiscovery;
+
+    @ConfigProperty(name = YanoPropertyKeys.Relay.ADVERTISED_HOST)
+    Optional<String> relayAdvertisedHost;
+
+    @ConfigProperty(name = YanoPropertyKeys.Relay.ADVERTISED_PORT, defaultValue = "0")
+    int relayAdvertisedPort;
+
+    @ConfigProperty(name = YanoPropertyKeys.Relay.ALLOW_PRIVATE_ADDRESSES, defaultValue = "false")
+    boolean relayAllowPrivateAddresses;
+
+    @ConfigProperty(name = YanoPropertyKeys.Relay.CONNECTION_MAX_INBOUND_CONNECTIONS, defaultValue = "100")
+    int relayConnectionMaxInboundConnections;
+
+    @ConfigProperty(name = YanoPropertyKeys.Relay.CONNECTION_MAX_CONNECTIONS_PER_IP, defaultValue = "5")
+    int relayConnectionMaxConnectionsPerIp;
+
+    @ConfigProperty(name = YanoPropertyKeys.Relay.CONNECTION_SOURCE_PORT_REUSE, defaultValue = "true")
+    boolean relayConnectionSourcePortReuse;
+
+    @ConfigProperty(name = YanoPropertyKeys.Storage.ROCKSDB, defaultValue = "true")
+    boolean useRocksDB;
+
+    @ConfigProperty(name = YanoPropertyKeys.Storage.PATH, defaultValue = "./chainstate")
+    String storagePath;
+
+    @ConfigProperty(name = YanoPropertyKeys.AUTO_SYNC_START, defaultValue = "false")
+    boolean autoSyncStart;
+
+    @ConfigProperty(name = "quarkus.http.port", defaultValue = "8080")
+    int httpPort;
+
+    @ConfigProperty(name = YanoPropertyKeys.API_PREFIX, defaultValue = "/api/v1")
+    String apiPrefix;
+
+    @Inject
+    ApiPrefixContract apiPrefixContract;
+
+    @ConfigProperty(name = YanoPropertyKeys.Events.ENABLED, defaultValue = "true")
+    boolean eventsEnabled;
+
+    // UTXO config
+    @ConfigProperty(name = YanoPropertyKeys.WalletIndex.FIRST_SEEN_ENABLED, defaultValue = "false")
+    boolean walletFirstSeenEnabled;
+    @ConfigProperty(name = YanoPropertyKeys.WalletIndex.FILTERS_ENABLED, defaultValue = "false")
+    boolean walletFiltersEnabled;
+
+    @ConfigProperty(name = YanoPropertyKeys.Utxo.ENABLED, defaultValue = "true")
+    boolean utxoEnabled;
+    @ConfigProperty(name = YanoPropertyKeys.Utxo.PRUNE_DEPTH, defaultValue = "2160")
+    int utxoPruneDepth;
+    @ConfigProperty(name = YanoPropertyKeys.Utxo.ROLLBACK_WINDOW, defaultValue = "4320")
+    int utxoRollbackWindow;
+    @ConfigProperty(name = YanoPropertyKeys.Utxo.PRUNE_BATCH_SIZE, defaultValue = "500")
+    int utxoPruneBatchSize;
+    @ConfigProperty(name = YanoPropertyKeys.Utxo.PRUNE_SCHEDULE_SECONDS, defaultValue = "5")
+    long utxoPruneScheduleSeconds;
+    @ConfigProperty(name = YanoPropertyKeys.Utxo.METRICS_LAG_LOG_SECONDS, defaultValue = "10")
+    long utxoMetricsLagLogSeconds;
+    @ConfigProperty(name = YanoPropertyKeys.Utxo.LAG_FAIL_IF_ABOVE, defaultValue = "-1")
+    long utxoLagFailIfAbove;
+    @ConfigProperty(name = YanoPropertyKeys.Utxo.INDEX_ADDRESS_HASH, defaultValue = "true")
+    boolean utxoIndexAddressHash;
+    @ConfigProperty(name = YanoPropertyKeys.Utxo.INDEX_PAYMENT_CREDENTIAL, defaultValue = "true")
+    boolean utxoIndexPaymentCred;
+    @ConfigProperty(name = YanoPropertyKeys.Utxo.INDEXING_STRATEGY, defaultValue = "both")
+    String utxoIndexingStrategy;
+    @ConfigProperty(name = YanoPropertyKeys.Utxo.DELTA_SELF_CONTAINED, defaultValue = "false")
+    boolean utxoDeltaSelfContained;
+    @ConfigProperty(name = YanoPropertyKeys.Utxo.APPLY_ASYNC, defaultValue = "false")
+    boolean utxoApplyAsync;
+    @ConfigProperty(name = YanoPropertyKeys.Utxo.REBUILD_UNMARKED_FROM_GENESIS, defaultValue = "false")
+    boolean utxoRebuildUnmarkedFromGenesis;
+    @ConfigProperty(name = YanoPropertyKeys.Metrics.ENABLED, defaultValue = "true")
+    boolean metricsEnabled;
+    @ConfigProperty(name = YanoPropertyKeys.Metrics.ROCKSDB_SAMPLE_SECONDS, defaultValue = "0")
+    int metricsSampleRocksDbSeconds;
+    @ConfigProperty(name = YanoPropertyKeys.Validation.DEFAULT_VALIDATOR_ENABLED, defaultValue = "true")
+    boolean defaultValidatorEnabled;
+
+    @ConfigProperty(name = YanoPropertyKeys.Tx.MEMPOOL_MAX_TXS, defaultValue = "10000")
+    int txMempoolMaxTxs;
+
+    @ConfigProperty(name = YanoPropertyKeys.Tx.MEMPOOL_MAX_BYTES, defaultValue = "134217728")
+    long txMempoolMaxBytes;
+
+    @ConfigProperty(name = YanoPropertyKeys.Tx.MEMPOOL_TTL_SECONDS, defaultValue = "10800")
+    long txMempoolTtlSeconds;
+
+    @ConfigProperty(name = YanoPropertyKeys.Tx.DIFFUSION_ENABLED, defaultValue = "true")
+    boolean txDiffusionEnabled = true;
+
+    @ConfigProperty(name = YanoPropertyKeys.Tx.DIFFUSION_MODE)
+    java.util.Optional<String> txDiffusionMode = java.util.Optional.empty();
+
+    @ConfigProperty(name = YanoPropertyKeys.Tx.DIFFUSION_MAX_IN_FLIGHT_TXS_PER_PEER, defaultValue = "100")
+    int txDiffusionMaxInFlightTxsPerPeer;
+
+    @ConfigProperty(name = YanoPropertyKeys.Tx.DIFFUSION_MAX_IN_FLIGHT_BYTES_PER_PEER, defaultValue = "1048576")
+    long txDiffusionMaxInFlightBytesPerPeer;
+
+    @ConfigProperty(name = YanoPropertyKeys.Tx.DIFFUSION_PEER_COOLDOWN_MS, defaultValue = "60000")
+    long txDiffusionPeerCooldownMs;
+
+    // CCL "supplementary rules" (GOVCERT/governance/delegatee) layered on top of Scalus validation.
+    // Disabled by default — they don't yet account for intra-tx state changes within a single block.
+    @ConfigProperty(name = YanoPropertyKeys.Validation.SUPPLEMENTARY_RULES_ENABLED, defaultValue = "false")
+    boolean supplementaryRulesEnabled;
+
+    @ConfigProperty(name = ROLLBACK_RETENTION_EPOCHS)
+    java.util.Optional<Integer> rollbackRetentionEpochs;
+
+    // Account state config
+    @ConfigProperty(name = YanoPropertyKeys.AccountState.ENABLED, defaultValue = "false")
+    boolean accountStateEnabled;
+    @ConfigProperty(name = YanoPropertyKeys.AccountState.EPOCH_BLOCK_DATA_RETENTION_LAG, defaultValue = "5")
+    int accountStateEpochBlockDataRetentionLag;
+    @ConfigProperty(name = YanoPropertyKeys.AccountState.SNAPSHOT_RETENTION_EPOCHS, defaultValue = "50")
+    int accountStateSnapshotRetentionEpochs;
+    @ConfigProperty(name = YanoPropertyKeys.AccountState.STAKE_BALANCE_INDEX_ENABLED, defaultValue = "true")
+    boolean stakeBalanceIndexEnabled;
+    @ConfigProperty(name = YanoPropertyKeys.AccountState.EPOCH_SNAPSHOT_MAX_BATCH_OPERATIONS,
+            defaultValue = "10000")
+    int epochBoundaryMaxBatchOperations;
+    @ConfigProperty(name = YanoPropertyKeys.AccountState.EPOCH_SNAPSHOT_MAX_BATCH_BYTES,
+            defaultValue = "4194304")
+    int epochBoundaryMaxBatchBytes;
+    @ConfigProperty(name = YanoPropertyKeys.AccountState.EPOCH_REWARD_MODE,
+            defaultValue = "streaming")
+    String epochRewardMode;
+    // Epoch subsystem config
+    @ConfigProperty(name = YanoPropertyKeys.EpochSnapshot.AMOUNTS_ENABLED, defaultValue = "false")
+    boolean epochSnapshotAmountsEnabled;
+    @ConfigProperty(name = YanoPropertyKeys.EpochSnapshot.BALANCE_MODE, defaultValue = "auto")
+    String balanceMode; // "full-scan" or "incremental"
+    @ConfigProperty(name = YanoPropertyKeys.Ledger.ADAPOT_ENABLED, defaultValue = "false")
+    boolean adapotEnabled;
+    @ConfigProperty(name = YanoPropertyKeys.Ledger.REWARDS_ENABLED, defaultValue = "false")
+    boolean rewardsEnabled;
+    @ConfigProperty(name = YanoPropertyKeys.Ledger.EPOCH_PARAMS_TRACKING_ENABLED, defaultValue = "false")
+    boolean epochParamsTrackingEnabled;
+    @ConfigProperty(name = YanoPropertyKeys.Ledger.GOVERNANCE_ENABLED, defaultValue = "false")
+    boolean governanceEnabled;
+    @ConfigProperty(name = YanoPropertyKeys.Ledger.EXIT_ON_EPOCH_CALC_ERROR, defaultValue = "false")
+    boolean exitOnEpochCalcError;
+    @ConfigProperty(name = YanoPropertyKeys.Ledger.AUTO_CHECKPOINT_INTERVAL, defaultValue = "0")
+    int autoCheckpointInterval;
+
+    // Block body pruning config
+    @ConfigProperty(name = YanoPropertyKeys.Chain.BLOCK_BODY_PRUNE_DEPTH, defaultValue = "0")
+    int blockBodyPruneDepth;
+    @ConfigProperty(name = YanoPropertyKeys.Chain.BLOCK_PRUNE_BATCH_SIZE, defaultValue = "500000")
+    int blockPruneBatchSize;
+    @ConfigProperty(name = YanoPropertyKeys.Chain.BLOCK_PRUNE_INTERVAL_SECONDS, defaultValue = "300")
+    long blockPruneIntervalSeconds;
+
+    // UTXO storage filter config
+    @ConfigProperty(name = YanoPropertyKeys.UtxoFilter.ENABLED, defaultValue = "false")
+    boolean utxoFilterEnabled;
+    @ConfigProperty(name = YanoPropertyKeys.UtxoFilter.ADDRESSES)
+    java.util.Optional<java.util.List<String>> utxoFilterAddresses;
+    @ConfigProperty(name = YanoPropertyKeys.UtxoFilter.PAYMENT_CREDENTIALS)
+    java.util.Optional<java.util.List<String>> utxoFilterPaymentCredentials;
+
+    // Dev mode
+    @ConfigProperty(name = YanoPropertyKeys.DEV_MODE, defaultValue = "false")
+    boolean devMode;
+
+    // Adhoc rollback — pass via command line, NOT application.yml (to avoid accidental re-rollback)
+    // Usage: -Dyano.debug.rollback-to-slot=54172800 or -Dyano.debug.rollback-to-epoch=320
+    @ConfigProperty(name = YanoPropertyKeys.Debug.ROLLBACK_TO_SLOT, defaultValue = "-1")
+    long debugRollbackToSlot;
+
+    @ConfigProperty(name = YanoPropertyKeys.Debug.ROLLBACK_TO_EPOCH, defaultValue = "-1")
+    int debugRollbackToEpoch;
+
+    // Block producer config
+    @ConfigProperty(name = YanoPropertyKeys.BlockProducer.ENABLED, defaultValue = "false")
+    boolean blockProducerEnabled;
+
+    @ConfigProperty(name = YanoPropertyKeys.BlockProducer.BLOCK_TIME_MILLIS, defaultValue = "2000")
+    int blockTimeMillis;
+
+    @ConfigProperty(name = YanoPropertyKeys.BlockProducer.LAZY, defaultValue = "false")
+    boolean blockProducerLazy;
+
+    @ConfigProperty(name = YanoPropertyKeys.BlockProducer.GENESIS_TIMESTAMP, defaultValue = "0")
+    long genesisTimestamp;
+
+    // Retained for compatibility; runtime always uses the Shelley genesis slotLength.
+    @ConfigProperty(name = YanoPropertyKeys.BlockProducer.SLOT_LENGTH_MILLIS, defaultValue = "0")
+    int slotLengthMillis;
+
+    @ConfigProperty(name = YanoPropertyKeys.BlockProducer.TX_EVALUATION, defaultValue = "true")
+    boolean txEvaluationEnabled;
+
+    @ConfigProperty(name = YanoPropertyKeys.BlockProducer.PROCESS_SKIPPED_EPOCHS, defaultValue = "false")
+    boolean blockProducerProcessSkippedEpochs;
+
+    @ConfigProperty(name = YanoPropertyKeys.BlockProducer.SCRIPT_EVALUATOR, defaultValue = "scalus")
+    String scriptEvaluator;
+
+    @ConfigProperty(name = YanoPropertyKeys.BlockProducer.VRF_SKEY_FILE)
+    java.util.Optional<String> vrfSkeyFile;
+
+    @ConfigProperty(name = YanoPropertyKeys.BlockProducer.KES_SKEY_FILE)
+    java.util.Optional<String> kesSkeyFile;
+
+    @ConfigProperty(name = YanoPropertyKeys.BlockProducer.OPCERT_FILE)
+    java.util.Optional<String> opCertFile;
+
+    @ConfigProperty(name = YanoPropertyKeys.BlockProducer.SLOT_LEADER_MODE, defaultValue = "false")
+    boolean slotLeaderMode;
+
+    @ConfigProperty(name = YanoPropertyKeys.BlockProducer.STAKE_DATA_PROVIDER_URL)
+    java.util.Optional<String> stakeDataProviderUrl;
+
+    @ConfigProperty(name = YanoPropertyKeys.BlockProducer.INITIAL_EPOCH_NONCE)
+    java.util.Optional<String> initialEpochNonce;
+
+    @ConfigProperty(name = YanoPropertyKeys.BlockProducer.INITIAL_EPOCH, defaultValue = "-1")
+    int initialEpoch;
+
+    @ConfigProperty(name = YanoPropertyKeys.BlockProducer.START_EPOCH, defaultValue = "0")
+    int startEpoch;
+
+    @ConfigProperty(name = YanoPropertyKeys.BlockProducer.PAST_TIME_TRAVEL_MODE, defaultValue = "false")
+    boolean pastTimeTravelMode;
+
+    @ConfigProperty(name = YanoPropertyKeys.BlockProducer.PAST_TIME_TRAVEL_SLOT_LEADER_MODE, defaultValue = "false")
+    boolean pastTimeTravelSlotLeaderMode;
+
+    @ConfigProperty(name = YanoPropertyKeys.BlockProducer.BACKFILL_BLOCK_INTERVAL_SLOTS, defaultValue = "1")
+    int backfillBlockIntervalSlots;
+
+    // Bootstrap config
+    @ConfigProperty(name = YanoPropertyKeys.Bootstrap.ENABLED, defaultValue = "false")
+    boolean bootstrapEnabled;
+
+    @ConfigProperty(name = YanoPropertyKeys.Bootstrap.BLOCK_NUMBER, defaultValue = "-1")
+    long bootstrapBlockNumber;
+
+    @ConfigProperty(name = YanoPropertyKeys.Bootstrap.PROVIDER, defaultValue = "blockfrost")
+    String bootstrapProvider;
+
+    @ConfigProperty(name = YanoPropertyKeys.Bootstrap.ADDRESSES)
+    java.util.Optional<java.util.List<String>> bootstrapAddresses;
+
+    @ConfigProperty(name = YanoPropertyKeys.Bootstrap.UTXOS)
+    java.util.Optional<java.util.List<String>> bootstrapUtxos;
+
+    @ConfigProperty(name = YanoPropertyKeys.Bootstrap.BLOCKFROST_API_KEY)
+    java.util.Optional<String> bootstrapBlockfrostApiKey;
+
+    @ConfigProperty(name = YanoPropertyKeys.Bootstrap.BLOCKFROST_BASE_URL)
+    java.util.Optional<String> bootstrapBlockfrostBaseUrl;
+
+    @ConfigProperty(name = YanoPropertyKeys.Bootstrap.KOIOS_BASE_URL)
+    java.util.Optional<String> bootstrapKoiosBaseUrl;
+
+    // Genesis config (shared between devnet and relay modes)
+    @ConfigProperty(name = YanoPropertyKeys.Genesis.SHELLEY_FILE)
+    java.util.Optional<String> shelleyGenesisFile;
+
+    @ConfigProperty(name = YanoPropertyKeys.Genesis.BYRON_FILE)
+    java.util.Optional<String> byronGenesisFile;
+
+    @ConfigProperty(name = YanoPropertyKeys.Genesis.ALONZO_FILE)
+    java.util.Optional<String> alonzoGenesisFile;
+
+    @ConfigProperty(name = YanoPropertyKeys.Genesis.CONWAY_FILE)
+    java.util.Optional<String> conwayGenesisFile;
+
+    @ConfigProperty(name = YanoPropertyKeys.Genesis.SHELLEY_HASH)
+    java.util.Optional<String> shelleyGenesisHash;
+
+    @ConfigProperty(name = YanoPropertyKeys.Genesis.PROTOCOL_PARAMETERS_FILE)
+    java.util.Optional<String> protocolParametersFile;
+
+    private final PluginLoaderHandle pluginLoader;
+    private Yano yano;
+    private PluginStartupException pluginStartupFailure;
+    @jakarta.inject.Inject
+    public YanoProducer(@Named("pluginClassLoader") PluginLoaderHandle pluginLoader) {
+        this.pluginLoader = pluginLoader;
+    }
+
+    /** Source-compatible test/embedder constructor using a non-owned loader. */
+    public YanoProducer(ClassLoader pluginClassLoader) {
+        this(PluginLoaderHandle.classpath(pluginClassLoader));
+    }
+
+    /** The application's single {@link Yano}; downstream applications simply {@code @Inject Yano}. */
+    @Produces
+    @ApplicationScoped
+    public Yano createYano() {
+        return ensureYano();
+    }
+
+    /**
+     * Assembles the application's single {@link Yano} on first use and returns it afterwards. A plugin
+     * startup failure is terminal: later callers, such as a metrics cache refreshing in the background or
+     * the startup observer after an earlier probe, get its sanitised {@link PluginStartupException} instead
+     * of assembling Yano again. Any other failure stays retryable.
+     */
+    synchronized Yano ensureYano() {
+        if (apiPrefixContract != null) {
+            apiPrefixContract.verify();
+        }
+        if (yano != null) {
+            return yano;
+        }
+        if (pluginStartupFailure != null) {
+            throw pluginStartupFailure.copy();
+        }
+        try {
+            return assembleYano();
+        } catch (Throwable failure) {
+            Throwable pluginFailure = pluginStartupFailure(failure);
+            if (pluginFailure != null) {
+                pluginStartupFailure = sanitizedPluginStartupFailure(pluginFailure);
+            }
+            throw failure;
+        }
+    }
+
+    private Yano assembleYano() {
+        if (appConfig != null && RuntimeMode.parse(appConfig.getOptionalValue(YanoPropertyKeys.MODE, String.class)
+                .orElse("cardano")) == RuntimeMode.APP_LEDGER) {
+            yano = createStandaloneAppLedger();
+            return yano;
+        }
+        bridgeRuntimeResourceProperties();
+        log.info("Creating Yano with network: {}, resourceProfile={}",
+                network, ResourceProfile.current().externalName());
+
+        YanoConfig yaciConfig = YanoConfig.defaultForNetwork(network);
+
+        // Resolve genesis files: user config takes precedence, then auto-resolve from bundled classpath resources
+        String resolvedShelleyGenesis = resolveGenesisFile(shelleyGenesisFile.orElse(null), protocolMagic, "shelley-genesis.json");
+        String resolvedByronGenesis = resolveGenesisFile(byronGenesisFile.orElse(null), protocolMagic, "byron-genesis.json");
+        String resolvedAlonzoGenesis = resolveGenesisFile(alonzoGenesisFile.orElse(null), protocolMagic, "alonzo-genesis.json");
+        String resolvedConwayGenesis = resolveGenesisFile(conwayGenesisFile.orElse(null), protocolMagic, "conway-genesis.json");
+
+        // Override with configuration properties
+        yaciConfig = YanoConfig.builder()
+                .enableClient(clientEnabled)
+                .enableServer(serverEnabled)
+                .remoteHost(remoteHost)
+                .remotePort(remotePort)
+                .upstream(parseUpstreamConfig())
+                .serverPort(serverPort)
+                .protocolMagic(protocolMagic)
+                .useRocksDB(useRocksDB)
+                .rocksDBPath(storagePath)
+                .fullSyncThreshold(yaciConfig.getFullSyncThreshold())
+                .enablePipelinedSync(yaciConfig.isEnablePipelinedSync())
+                .headerPipelineDepth(yaciConfig.getHeaderPipelineDepth())
+                .bodyBatchSize(yaciConfig.getBodyBatchSize())
+                .maxParallelBodies(yaciConfig.getMaxParallelBodies())
+                .enableSelectiveBodyFetch(yaciConfig.isEnableSelectiveBodyFetch())
+                .selectiveBodyFetchRatio(yaciConfig.getSelectiveBodyFetchRatio())
+                .enableMonitoring(yaciConfig.isEnableMonitoring())
+                .monitoringPort(yaciConfig.getMonitoringPort())
+                .enableBlockProducer(blockProducerEnabled)
+                .devMode(devMode)
+                .blockTimeMillis(blockTimeMillis)
+                .lazyBlockProduction(blockProducerLazy)
+                .genesisTimestamp(genesisTimestamp)
+                .slotLengthMillis(slotLengthMillis)
+                .vrfSkeyFile(vrfSkeyFile.orElse(null))
+                .kesSkeyFile(kesSkeyFile.orElse(null))
+                .opCertFile(opCertFile.orElse(null))
+                .slotLeaderMode(slotLeaderMode)
+                .stakeDataProviderUrl(stakeDataProviderUrl.orElse(null))
+                .initialEpochNonce(initialEpochNonce.orElse(null))
+                .initialEpoch(initialEpoch)
+                .startEpoch(startEpoch)
+                .pastTimeTravelMode(pastTimeTravelMode)
+                .pastTimeTravelSlotLeaderMode(pastTimeTravelSlotLeaderMode)
+                .backfillBlockIntervalSlots(backfillBlockIntervalSlots)
+                .shelleyGenesisHash(shelleyGenesisHash.orElse(null))
+                .shelleyGenesisFile(resolvedShelleyGenesis)
+                .byronGenesisFile(resolvedByronGenesis)
+                .alonzoGenesisFile(resolvedAlonzoGenesis)
+                .conwayGenesisFile(resolvedConwayGenesis)
+                .protocolParametersFile(protocolParametersFile.orElse(null))
+                .enableBootstrap(bootstrapEnabled)
+                .bootstrapBlockNumber(bootstrapBlockNumber)
+                .bootstrapProvider(bootstrapProvider)
+                .bootstrapAddresses(bootstrapAddresses.orElse(null))
+                .bootstrapUtxos(BootstrapConfigParser.parseUtxoRefs(bootstrapUtxos.orElse(null)))
+                .bootstrapBlockfrostApiKey(bootstrapBlockfrostApiKey.orElse(null))
+                .bootstrapBlockfrostBaseUrl(bootstrapBlockfrostBaseUrl.orElse(null))
+                .bootstrapKoiosBaseUrl(bootstrapKoiosBaseUrl.orElse(null))
+                .network(network)
+                // Epoch/slot values are NOT set here — they must come from genesis
+                // at runtime via propagateGenesisToConfig(). Setting preset values here
+                // would mask misconfiguration for custom/unknown networks.
+                .build();
+
+        // Validate configuration
+        yaciConfig.validate();
+
+        // Build runtime options
+        EventsOptions eventsOptions = new EventsOptions(
+                eventsEnabled, 8192, SubscriptionOptions.Overflow.BLOCK);
+
+        PluginsOptions pluginsOptions = pluginOptions();
+
+        RollbackRetentionGenesisValues rollbackRetentionGenesisValues = rollbackRetentionEpochs.orElse(0) > 0
+                ? resolveRollbackRetentionGenesisValues(resolvedShelleyGenesis)
+                : new RollbackRetentionGenesisValues(0, 0);
+        RollbackRetentionSettings rollbackRetentionSettings =
+                resolveRollbackRetentionSettings(rollbackRetentionGenesisValues);
+
+        if (rollbackRetentionSettings.umbrellaEnabled()) {
+            if (blockBodyPruneDepth > 0
+                    && rollbackRetentionSettings.blockBodyPruneDepth() > blockBodyPruneDepth) {
+                log.warn("Raised chain.block-body-prune-depth from {} to {} to satisfy "
+                                + "{}={} with genesis epochLength={} activeSlotsCoeff={}",
+                        blockBodyPruneDepth,
+                        rollbackRetentionSettings.blockBodyPruneDepth(),
+                        ROLLBACK_RETENTION_EPOCHS,
+                        rollbackRetentionSettings.retentionEpochs(),
+                        rollbackRetentionGenesisValues.epochLength(),
+                        rollbackRetentionGenesisValues.activeSlotsCoeff());
+            }
+            log.info("Rollback retention umbrella configured: epochs={}, slotWindow={}. "
+                            + "Effective retention: utxo.rollbackWindow={}, "
+                            + "account-state.epoch-block-data-retention-lag={}, "
+                            + "account-state.snapshot-retention-epochs={}, "
+                            + "chain.block-body-prune-depth={}",
+                    rollbackRetentionSettings.retentionEpochs(),
+                    rollbackRetentionSettings.slotWindow(),
+                    rollbackRetentionSettings.utxoRollbackWindow(),
+                    rollbackRetentionSettings.accountStateEpochBlockDataRetentionLag(),
+                    rollbackRetentionSettings.accountStateSnapshotRetentionEpochs(),
+                    rollbackRetentionSettings.blockBodyPruneDepth());
+        }
+
+        // Globals: UTXO options
+        Map<String, Object> globals = new HashMap<>();
+        globals.put(YanoPropertyKeys.RESOURCE_PROFILE, ResourceProfile.current().externalName());
+        globals.put(YanoPropertyKeys.Remote.PROTOCOL_MAGIC, protocolMagic);
+        putRollbackRetentionGlobals(globals, rollbackRetentionSettings);
+        globals.put(YanoPropertyKeys.Utxo.ENABLED, utxoEnabled);
+        globals.put(YanoPropertyKeys.WalletIndex.FIRST_SEEN_ENABLED, walletFirstSeenEnabled);
+        globals.put(YanoPropertyKeys.WalletIndex.FILTERS_ENABLED, walletFiltersEnabled);
+        forwardUtxoContributorKeys(globals);
+        globals.put(YanoPropertyKeys.Utxo.PRUNE_DEPTH, utxoPruneDepth);
+        globals.put(YanoPropertyKeys.Utxo.PRUNE_BATCH_SIZE, utxoPruneBatchSize);
+        globals.put(YanoPropertyKeys.Utxo.PRUNE_SCHEDULE_SECONDS, utxoPruneScheduleSeconds);
+        globals.put(YanoPropertyKeys.Utxo.METRICS_LAG_LOG_SECONDS, utxoMetricsLagLogSeconds);
+        globals.put(YanoPropertyKeys.Utxo.LAG_FAIL_IF_ABOVE, utxoLagFailIfAbove);
+        globals.put(YanoPropertyKeys.Utxo.INDEX_ADDRESS_HASH, utxoIndexAddressHash);
+        globals.put(YanoPropertyKeys.Utxo.INDEX_PAYMENT_CREDENTIAL, utxoIndexPaymentCred);
+        globals.put(YanoPropertyKeys.Utxo.INDEXING_STRATEGY, utxoIndexingStrategy);
+        globals.put(YanoPropertyKeys.Utxo.DELTA_SELF_CONTAINED, utxoDeltaSelfContained);
+        globals.put(YanoPropertyKeys.Utxo.APPLY_ASYNC, utxoApplyAsync);
+        globals.put(YanoPropertyKeys.Utxo.REBUILD_UNMARKED_FROM_GENESIS,
+                utxoRebuildUnmarkedFromGenesis);
+        globals.put(YanoPropertyKeys.Metrics.ENABLED, metricsEnabled);
+        globals.put(YanoPropertyKeys.Metrics.ROCKSDB_SAMPLE_SECONDS, metricsSampleRocksDbSeconds);
+        globals.put(YanoPropertyKeys.Validation.DEFAULT_VALIDATOR_ENABLED, defaultValidatorEnabled);
+        globals.put(YanoPropertyKeys.Validation.SUPPLEMENTARY_RULES_ENABLED, supplementaryRulesEnabled);
+        warnDeprecatedValidationKeys();
+        forwardValidationEngineKeys(globals);
+        globals.put(YanoPropertyKeys.Tx.MEMPOOL_MAX_TXS, txMempoolMaxTxs);
+        globals.put(YanoPropertyKeys.Tx.MEMPOOL_MAX_BYTES, txMempoolMaxBytes);
+        globals.put(YanoPropertyKeys.Tx.MEMPOOL_TTL_SECONDS, txMempoolTtlSeconds);
+        globals.put(YanoPropertyKeys.Tx.DIFFUSION_ENABLED, txDiffusionEnabled);
+        txDiffusionMode.ifPresent(mode -> globals.put(YanoPropertyKeys.Tx.DIFFUSION_MODE, mode));
+        globals.put(YanoPropertyKeys.Tx.DIFFUSION_MAX_IN_FLIGHT_TXS_PER_PEER,
+                txDiffusionMaxInFlightTxsPerPeer);
+        globals.put(YanoPropertyKeys.Tx.DIFFUSION_MAX_IN_FLIGHT_BYTES_PER_PEER,
+                txDiffusionMaxInFlightBytesPerPeer);
+        globals.put(YanoPropertyKeys.Tx.DIFFUSION_PEER_COOLDOWN_MS, txDiffusionPeerCooldownMs);
+        globals.put(YanoPropertyKeys.Relay.AUTO_DISCOVERY, relayAutoDiscovery);
+        globals.put(YanoPropertyKeys.Relay.ADVERTISED_HOST,
+                relayAdvertisedHost.map(String::trim).filter(host -> !host.isBlank()).orElse("auto"));
+        globals.put(YanoPropertyKeys.Relay.ADVERTISED_PORT,
+                relayAdvertisedPort > 0 ? relayAdvertisedPort : serverPort);
+        globals.put(YanoPropertyKeys.Relay.ALLOW_PRIVATE_ADDRESSES, relayAllowPrivateAddresses);
+        globals.put(YanoPropertyKeys.Relay.CONNECTION_MAX_INBOUND_CONNECTIONS,
+                relayConnectionMaxInboundConnections);
+        globals.put(YanoPropertyKeys.Relay.CONNECTION_MAX_CONNECTIONS_PER_IP,
+                relayConnectionMaxConnectionsPerIp);
+        globals.put(YanoPropertyKeys.Relay.CONNECTION_SOURCE_PORT_REUSE,
+                relayConnectionSourcePortReuse);
+        globals.put(YanoPropertyKeys.BlockProducer.TX_EVALUATION, txEvaluationEnabled);
+        globals.put(YanoPropertyKeys.BlockProducer.PROCESS_SKIPPED_EPOCHS, blockProducerProcessSkippedEpochs);
+        dnsCacheTtl.ifPresent(value -> globals.put(DnsCachePolicy.DNS_CACHE_TTL_KEY, value));
+        dnsCacheNegativeTtl.ifPresent(value -> globals.put(DnsCachePolicy.DNS_CACHE_NEGATIVE_TTL_KEY, value));
+
+        // Account state
+        globals.put(YanoPropertyKeys.AccountState.ENABLED, accountStateEnabled);
+        globals.put(YanoPropertyKeys.AccountState.STAKE_BALANCE_INDEX_ENABLED, stakeBalanceIndexEnabled);
+        globals.put(YanoPropertyKeys.AccountState.EPOCH_SNAPSHOT_MAX_BATCH_OPERATIONS,
+                epochBoundaryMaxBatchOperations);
+        globals.put(YanoPropertyKeys.AccountState.EPOCH_SNAPSHOT_MAX_BATCH_BYTES,
+                epochBoundaryMaxBatchBytes);
+        globals.put(YanoPropertyKeys.AccountState.EPOCH_REWARD_MODE, epochRewardMode);
+
+        // Epoch subsystems
+        globals.put(YanoPropertyKeys.EpochSnapshot.AMOUNTS_ENABLED, epochSnapshotAmountsEnabled);
+        globals.put(YanoPropertyKeys.EpochSnapshot.BALANCE_MODE, balanceMode);
+        globals.put(YanoPropertyKeys.Ledger.ADAPOT_ENABLED, adapotEnabled);
+        globals.put(YanoPropertyKeys.Ledger.REWARDS_ENABLED, rewardsEnabled);
+        globals.put(YanoPropertyKeys.Ledger.EPOCH_PARAMS_TRACKING_ENABLED, epochParamsTrackingEnabled);
+        globals.put(YanoPropertyKeys.Ledger.GOVERNANCE_ENABLED, governanceEnabled);
+        globals.put(YanoPropertyKeys.Ledger.EXIT_ON_EPOCH_CALC_ERROR, exitOnEpochCalcError);
+        globals.put(YanoPropertyKeys.Ledger.AUTO_CHECKPOINT_INTERVAL, autoCheckpointInterval);
+
+        // Block pruning
+        globals.put(YanoPropertyKeys.Chain.BLOCK_PRUNE_BATCH_SIZE, blockPruneBatchSize);
+        globals.put(YanoPropertyKeys.Chain.BLOCK_PRUNE_INTERVAL_SECONDS, blockPruneIntervalSeconds);
+
+        // UTXO filters
+        globals.put(YanoPropertyKeys.UtxoFilter.ENABLED, utxoFilterEnabled);
+        globals.put(YanoPropertyKeys.UtxoFilter.ADDRESSES, utxoFilterAddresses.orElse(java.util.List.of()));
+        globals.put(YanoPropertyKeys.UtxoFilter.PAYMENT_CREDENTIALS,
+                utxoFilterPaymentCredentials.orElse(java.util.List.of()));
+        putRequiredPlugins(globals);
+        putContributedGlobals(globals, globalsContributors);
+
+        RuntimeOptions runtimeOptions = YanoAssembly.applyBootstrapPartialStatePolicy(
+                yaciConfig,
+                new RuntimeOptions(eventsOptions, pluginsOptions, globals));
+
+        YanoDevnetAssembly.Builder assembly = YanoDevnetAssembly.fromConfig(yaciConfig)
+                .runtimeOptions(runtimeOptions)
+                .pluginLoader(pluginLoader);
+
+        if (debugRollbackToSlot >= 0 || debugRollbackToEpoch >= 0) {
+            assembly.adhocRollback(debugRollbackToSlot, debugRollbackToEpoch);
+            log.info("Adhoc rollback configured: slot={}, epoch={}", debugRollbackToSlot, debugRollbackToEpoch);
+        }
+
+        if (bootstrapEnabled) {
+            DefaultBootstrapDataProviderFactory.create(yaciConfig)
+                    .ifPresent(assembly::bootstrapDataProvider);
+        }
+
+        yano = assembly.transactionBootstrap(
+                        TransactionBootstrapOptions.of(
+                                txEvaluationEnabled,
+                                YanoAssembly.effectiveDerivedLedgerStateEnabled(yaciConfig, epochParamsTrackingEnabled),
+                                supplementaryRulesEnabled,
+                                scriptEvaluator),
+                        DefaultTransactionServicesFactory::create)
+                .build();
+        log.info("Yano created successfully");
+
+        return yano;
+    }
+
+    private Yano createStandaloneAppLedger() {
+        Map<String, Object> globals = new HashMap<>();
+        putRequiredPlugins(globals);
+        putContributedGlobals(globals, globalsContributors);
+        YanoConfig standalone = YanoConfig.builder().mode(RuntimeMode.APP_LEDGER)
+                .enableServer(serverEnabled).serverPort(serverPort)
+                .enableBlockProducer(blockProducerEnabled).enableBootstrap(bootstrapEnabled).devMode(devMode)
+                .rocksDBPath(storagePath).build();
+        return YanoAssembly.fromConfig(standalone)
+                .runtimeOptions(new RuntimeOptions(new EventsOptions(
+                        eventsEnabled, 8192, SubscriptionOptions.Overflow.BLOCK), pluginOptions(), globals))
+                .pluginLoader(pluginLoader).build();
+    }
+
+    private void bridgeRuntimeResourceProperties() {
+        if (appConfig == null) return;
+        List<String> properties = List.of(
+                YanoPropertyKeys.RESOURCE_PROFILE,
+                YanoPropertyKeys.BodyFetch.MAX_BATCH_SIZE,
+                YanoPropertyKeys.LedgerApply.MAX_QUEUED_ITEMS,
+                YanoPropertyKeys.LedgerApply.MAX_QUEUED_DECODED_BYTES,
+                YanoPropertyKeys.LedgerApply.RESERVED_CONTROL_SLOTS,
+                YanoPropertyKeys.RocksDb.BLOCK_CACHE_BYTES,
+                YanoPropertyKeys.RocksDb.WRITE_BUFFER_BYTES,
+                YanoPropertyKeys.RocksDb.WRITE_BUFFER_ALLOW_STALL,
+                YanoPropertyKeys.RocksDb.MAX_BACKGROUND_JOBS,
+                YanoPropertyKeys.RocksDb.MAX_OPEN_FILES,
+                YanoPropertyKeys.RocksDb.TARGET_FILE_SIZE_BYTES);
+        for (String property : properties) {
+            if (System.getProperty(property) != null) continue;
+            appConfig.getOptionalValue(property, String.class)
+                    .filter(value -> !value.isBlank())
+                    .ifPresent(value -> System.setProperty(property, value));
+        }
+    }
+
+    @Produces
+    @ApplicationScoped
+    public NodeLifecycle createNodeLifecycle() {
+        return ensureYano().lifecycle();
+    }
+
+    @Produces
+    @ApplicationScoped
+    public ChainQuery createChainQuery() {
+        return ensureYano().chain();
+    }
+
+    @Produces
+    @ApplicationScoped
+    public LedgerQuery createLedgerQuery() {
+        return ensureYano().ledger();
+    }
+
+    @Produces
+    @ApplicationScoped
+    public TxGateway createTxGateway() {
+        return ensureYano().txGateway();
+    }
+
+    @Produces
+    @ApplicationScoped
+    public TxEvaluationGateway createTxEvaluationGateway() {
+        return ensureYano().txEvaluationGateway();
+    }
+
+    @Produces
+    @ApplicationScoped
+    public org.yanoproject.api.events.stream.NodeEventStream createNodeEventStream() {
+        return ensureYano().eventStream()
+                .orElse(org.yanoproject.api.events.stream.NodeEventStream.UNAVAILABLE);
+    }
+
+    @Produces
+    @ApplicationScoped
+    public MempoolQueryGateway createMempoolQueryGateway() {
+        return ensureYano().mempoolQueryGateway();
+    }
+
+    @Produces
+    @ApplicationScoped
+    public MempoolAdminGateway createMempoolAdminGateway() {
+        return ensureYano().mempoolAdminGateway();
+    }
+
+    @Produces
+    @ApplicationScoped
+    public ProducerControl createProducerControl() {
+        return ensureYano().producerControl().orElse(UnavailableProducerControl.INSTANCE);
+    }
+
+    @Produces
+    @ApplicationScoped
+    public DevnetControl createDevnetControl() {
+        return ensureYano().devnetControl().orElse(UnavailableDevnetControl.INSTANCE);
+    }
+
+    @Produces
+    @ApplicationScoped
+    public PluginCatalogView createPluginCatalogView() {
+        return ensureYano().pluginCatalog()
+                .orElseThrow(() -> unavailableRole("PluginCatalogView"));
+    }
+
+    @Produces
+    @ApplicationScoped
+    public PluginOperationsView createPluginOperationsView() {
+        return ensureYano().pluginOperations()
+                .orElseThrow(() -> unavailableRole("PluginOperationsView"));
+    }
+
+    /** Removed with the shadow-sync thread pool (shadow sync runs on virtual threads); ignored with a warning. */
+    private static final String REMOVED_SHADOW_SYNC_THREADS = "yano.validation.shadow-sync-threads";
+
+    /** ADR-056 §7 engine selection and shadowing, and ADR-057 §2 Amaru settings, forwarded verbatim. */
+    static final List<String> VALIDATION_ENGINE_KEYS = List.of(
+            YanoPropertyKeys.Validation.ENGINE,
+            YanoPropertyKeys.Validation.SHADOW_ENGINES,
+            YanoPropertyKeys.Validation.SHADOW_DUMP_DIR,
+            YanoPropertyKeys.Validation.SHADOW_SYNC,
+            YanoPropertyKeys.Validation.SHADOW_SYNC_ENGINES,
+            YanoPropertyKeys.Validation.SHADOW_SYNC_REPORT,
+            YanoPropertyKeys.Validation.SHADOW_SYNC_DUMP_DIR,
+            YanoPropertyKeys.Validation.SHADOW_SYNC_MAX_DUMPS,
+            YanoPropertyKeys.Validation.SHADOW_SYNC_MAX_IN_FLIGHT,
+            YanoPropertyKeys.Validation.SHADOW_SYNC_MAX_WAIT_MS,
+            YanoPropertyKeys.Validation.SHADOW_SYNC_SUMMARY_SECONDS,
+            YanoPropertyKeys.Validation.SNAPSHOT_MAX_AGE_MS,
+            YanoPropertyKeys.Validation.MAX_LIVE_SNAPSHOTS,
+            YanoPropertyKeys.Validation.AMARU_POOL_SIZE,
+            YanoPropertyKeys.Validation.AMARU_TIMEOUT_MS,
+            YanoPropertyKeys.Validation.AMARU_MAX_ABANDONED,
+            YanoPropertyKeys.Validation.AMARU_MAX_MEMORY_PAGES);
+
+    void forwardValidationEngineKeys(Map<String, Object> globals) {
+        for (String key : VALIDATION_ENGINE_KEYS) {
+            appConfig.getOptionalValue(key, String.class)
+                    .filter(value -> !value.isBlank())
+                    .ifPresent(value -> globals.put(key, value));
+        }
+        if (!globals.containsKey(YanoPropertyKeys.Validation.SHADOW_ENGINES)) {
+            // A YAML list may only exist as indexed keys.
+            forwardDynamicKeys(YanoPropertyKeys.Validation.SHADOW_ENGINES + "[", globals);
+        }
+        if (!globals.containsKey(YanoPropertyKeys.Validation.SHADOW_SYNC_ENGINES)) {
+            forwardDynamicKeys(YanoPropertyKeys.Validation.SHADOW_SYNC_ENGINES + "[", globals);
+        }
+    }
+
+    /**
+     * ADR-056 §7: {@code supplementary-rules-enabled} and {@code default-validator-enabled} are deprecated and
+     * removed in ADR-056 Phase 8. Their behaviour is unchanged until then; setting either logs a warning. The removed
+     * {@code shadow-sync-threads} is ignored with a warning.
+     */
+    private void warnDeprecatedValidationKeys() {
+        for (String key : List.of(YanoPropertyKeys.Validation.SUPPLEMENTARY_RULES_ENABLED,
+                YanoPropertyKeys.Validation.DEFAULT_VALIDATOR_ENABLED)) {
+            if (appConfig.getConfigValue(key).getRawValue() != null) {
+                log.warn("{} is deprecated (ADR-056 §7) and will be removed; select the admission engine with {} "
+                        + "instead", key, YanoPropertyKeys.Validation.ENGINE);
+            }
+        }
+        if (appConfig.getConfigValue(REMOVED_SHADOW_SYNC_THREADS).getRawValue() != null) {
+            log.warn("{} is ignored: shadow sync validates on virtual threads, bounded by {}",
+                    REMOVED_SHADOW_SYNC_THREADS, YanoPropertyKeys.Validation.SHADOW_SYNC_MAX_IN_FLIGHT);
+        }
+    }
+
+    void forwardUtxoContributorKeys(Map<String, Object> globals) {
+        forwardDynamicKeys(YanoPropertyKeys.Utxo.INDEX_CONTRIBUTORS + "[", globals);
+    }
+
+    /** ADR-064 D2: the host-required embedded bundles reach the runtime through its globals. */
+    void putRequiredPlugins(Map<String, Object> globals) {
+        Set<String> required = PluginHostConfiguration.from(appConfig).required();
+        if (!required.isEmpty()) {
+            globals.put(YanoPropertyKeys.Plugins.REQUIRED, String.join(",", required));
+        }
+    }
+
+    /**
+     * Merges every contributor into {@code globals}, which already holds the keys the host set in this run.
+     * A key a contributor shares with the host or another contributor, or a contributor returning
+     * {@code null}, fails startup naming the contributor.
+     */
+    static void putContributedGlobals(Map<String, Object> globals,
+                                      List<RuntimeGlobalsContributor> contributors) {
+        Map<String, Object> contributed = new HashMap<>();
+        for (RuntimeGlobalsContributor contributor : contributors) {
+            String name = contributor.getClass().getName();
+            Map<String, Object> contribution = contributor.globals();
+            if (contribution == null) {
+                throw new IllegalStateException("Runtime globals contributor " + name + " returned null");
+            }
+            for (Map.Entry<String, Object> global : contribution.entrySet()) {
+                String key = global.getKey();
+                if (globals.containsKey(key)) {
+                    throw new IllegalStateException("Runtime global " + key + " is set by the host in this run"
+                            + " and cannot be contributed by " + name);
+                }
+                if (contributed.containsKey(key)) {
+                    throw new IllegalStateException("Runtime global " + key + " is contributed more than once,"
+                            + " again by " + name);
+                }
+                contributed.put(key, global.getValue());
+            }
+        }
+        globals.putAll(contributed);
+    }
+
+    /** Copy every config property starting with {@code prefix} into globals verbatim. */
+    private void forwardDynamicKeys(String prefix, java.util.Map<String, Object> globals) {
+        var config = appConfig;
+        for (String property : config.getPropertyNames()) {
+            if (property.startsWith(prefix)) {
+                config.getOptionalValue(property, String.class)
+                        .ifPresent(value -> globals.put(property, value));
+            }
+        }
+    }
+
+    @Produces
+    @ApplicationScoped
+    public DebugLedgerStateAccess createDebugLedgerStateAccess() {
+        return ensureYano().debugLedgerStateAccess()
+                .orElseThrow(() -> new IllegalStateException("Debug ledger-state access unavailable"));
+    }
+
+    @Produces
+    @ApplicationScoped
+    public ValidationEnginesSource createValidationEnginesSource() {
+        return () -> ensureYano().validationEngines();
+    }
+
+    @Produces
+    @ApplicationScoped
+    public NodeKernel createNodeKernel() {
+        return ensureYano().kernel()
+                .orElseThrow(() -> new IllegalStateException("Runtime kernel unavailable"));
+    }
+
+    @Produces
+    @ApplicationScoped
+    public RuntimeMaintenanceGate createRuntimeMaintenanceGate() {
+        return ensureYano().maintenanceGate()
+                .orElseThrow(() -> new IllegalStateException("Runtime maintenance gate unavailable"));
+    }
+
+    void onStart(
+            @Observes @Priority(Interceptor.Priority.APPLICATION) StartupEvent event) {
+        if (apiPrefixContract != null) {
+            apiPrefixContract.verify();
+        }
+        log.info("Yano application starting up...");
+        log.info("Auto-sync-start enabled: {}", autoSyncStart);
+
+        try {
+            Yano assembledYano = ensureYano();
+            if (((YanoConfig) assembledYano.lifecycle().getConfig()).getMode() != RuntimeMode.APP_LEDGER) {
+                historyArchive.initialize();
+                // Projection history: the node's only archival write path. The service
+                // initialised above no longer writes anything - it is the read facade over the
+                // archive this one produces, which is why both are still composed here.
+                // Disabled by default; a disabled node installs no contributor.
+                projectionHistory.initialize(
+                        assembledYano,
+                        assembledYano.chain(),
+                        assembledYano.ledger(),
+                        (YanoConfig) assembledYano.lifecycle().getConfig());
+                // ADR-039 Phase 6: route historical reads at the primary archive. When the legacy
+                // writer is off, this service holds no backend, so every archive-backed query would
+                // answer "history disabled" over an archive the projection had fully populated.
+                if (projectionHistory.isEnabled() && !historyArchive.enabled()) {
+                    projectionHistory.archiveIdentity().ifPresent(identity ->
+                            historyArchive.initializeProjectionReads(
+                                    identity,
+                                    projectionHistory.coveredDatasets(),
+                                    projectionHistory::committedThroughBlock,
+                                    projectionHistory::requireCompleteEpochHistory));
+                }
+            }
+
+            if (autoSyncStart) {
+                log.info("Auto-starting Yano runtime...");
+                assembledYano.start();
+                if (((YanoConfig) assembledYano.lifecycle().getConfig()).getMode() == RuntimeMode.APP_LEDGER) {
+                    log.info("Standalone application-ledger runtime started; Cardano L1 is unavailable");
+                } else {
+                    log.info("Yano started automatically and syncing with {} network", network);
+                }
+                log.info("REST API available at {}/ for manual control", nodeApiBaseUrl());
+            } else {
+                log.info("Auto-sync is disabled. Start manually via: curl -X POST {}/start", nodeApiBaseUrl());
+                log.info("REST API available at {}/", nodeApiBaseUrl());
+            }
+            // ADR-039: there is no separate archive worker to start. The projection drain runs
+            // with the node, and historical reads are served from the archive it writes.
+        } catch (Throwable e) {
+            // Do not inspect or allocate diagnostics around a process-fatal
+            // root. Runtime layers preserve the same terminal distinction.
+            LifecycleFailures.rethrowIfProcessFatal(e);
+            Throwable pluginFailure = pluginStartupFailure(e);
+            if (pluginFailure != null) {
+                // Plugin exception messages and cause chains can contain
+                // credentials or endpoint tokens. Runtime/library layers keep
+                // those causes for rollback and programmatic inspection, but
+                // Quarkus renders any exception escaping this observer. Cross
+                // the application boundary with a new cause-free exception so
+                // neither a wrapper nor suppressed cleanup failures leak.
+                PluginStartupException sanitized = sanitizedPluginStartupFailure(pluginFailure);
+                log.error("YANO_STARTUP_FAILURE code=PLUGIN_ACTIVATION_FAILED");
+                log.error(sanitized.getMessage());
+                if (pluginFailure instanceof PluginCatalogActivationException) {
+                    log.error("Check the plugin directory offline with: tools/yano-plugins/bin/yano-plugins"
+                            + " validate [--allow <bundle-id>]... [--deny <bundle-id>]... <plugins-directory>/*.jar,"
+                            + " passing this node's " + YanoPropertyKeys.Plugins.ALLOW_LIST + " and "
+                            + YanoPropertyKeys.Plugins.DENY_LIST + " as --allow and --deny; it does not read them");
+                }
+                if ("full".equals(pluginStartupDiagnostics)) {
+                    fullPluginDiagnostics(e).forEach(log::error);
+                } else {
+                    log.error("On a disposable node, set " + PLUGIN_STARTUP_DIAGNOSTICS
+                            + "=full to log the failure's causes");
+                }
+                throw sanitized;
+            }
+            IncompatibleChainStateException incompatibleChainState =
+                    incompatibleChainStateFailure(e);
+            if (incompatibleChainState != null) {
+                log.error("YANO_STARTUP_FAILURE code=INCOMPATIBLE_CHAINSTATE");
+                log.error(incompatibleChainState.getMessage());
+                throw incompatibleChainState;
+            }
+            if (e instanceof Error error) {
+                throw error;
+            }
+            log.error("YANO_STARTUP_FAILURE code=RUNTIME_INITIALIZATION_FAILED");
+            log.error("Failed to initialize or auto-start Yano: {}", e.getMessage(), e);
+            if (bootstrapEnabled) {
+                log.error("Bootstrap mode is enabled but failed. "
+                        + "The node cannot start without bootstrap state. Shutting down.");
+                throw new RuntimeException("Bootstrap failed, cannot start node", e);
+            }
+            log.info("Inspect the startup failure before retrying; a process restart may be required");
+        }
+    }
+
+    static boolean isPluginStartupFailure(Throwable failure) {
+        return pluginStartupFailure(failure) != null;
+    }
+
+    private static IncompatibleChainStateException incompatibleChainStateFailure(
+            Throwable failure) {
+        Throwable current = failure;
+        while (current != null) {
+            if (current instanceof IncompatibleChainStateException incompatible) {
+                return incompatible;
+            }
+            current = current.getCause();
+        }
+        return null;
+    }
+
+    private static Throwable pluginStartupFailure(Throwable failure) {
+        if (failure == null) {
+            return null;
+        }
+        final int maximumThrowableGraphNodes = 256;
+        java.util.ArrayDeque<Throwable> pending = new java.util.ArrayDeque<>();
+        java.util.Set<Throwable> visited = java.util.Collections.newSetFromMap(
+                new java.util.IdentityHashMap<>());
+        boolean truncated = false;
+        Throwable firstPluginFailure = null;
+        pending.add(failure);
+        while (!pending.isEmpty() && visited.size() < maximumThrowableGraphNodes) {
+            Throwable current = pending.removeFirst();
+            if (!visited.add(current)) {
+                continue;
+            }
+            // A wrapper does not make an OOME/ThreadDeath recoverable. Scan the
+            // complete bounded graph before returning a plugin classification
+            // so an earlier plugin sibling cannot hide a later fatal signal.
+            LifecycleFailures.rethrowIfProcessFatal(current);
+            if (current instanceof PluginActivationException
+                    || current instanceof PluginManager.PluginManagerException
+                    || current instanceof PluginStartupException) {
+                if (firstPluginFailure == null) {
+                    firstPluginFailure = current;
+                }
+            }
+            Throwable cause;
+            Throwable[] suppressed;
+            try {
+                // getCause() is overridable application/plugin code.
+                cause = current.getCause();
+                suppressed = current.getSuppressed();
+            } catch (Throwable graphFailure) {
+                LifecycleFailures.rethrowIfProcessFatal(graphFailure);
+                return failure;
+            }
+            if (cause != null) {
+                if (pending.size() + visited.size() < maximumThrowableGraphNodes) {
+                    pending.addLast(cause);
+                } else {
+                    truncated = true;
+                }
+            }
+            for (Throwable nested : suppressed) {
+                if (nested != null && pending.size() + visited.size()
+                        < maximumThrowableGraphNodes) {
+                    pending.addLast(nested);
+                } else if (nested != null) {
+                    truncated = true;
+                }
+            }
+        }
+        // A hostile or pathological exception graph must not force the app to
+        // render an uninspected tail that may contain plugin credentials.
+        if (truncated || !pending.isEmpty()) {
+            return failure;
+        }
+        return firstPluginFailure;
+    }
+
+    static PluginStartupException sanitizedPluginStartupFailure(Throwable failure) {
+        if (failure instanceof PluginStartupException sanitized) {
+            return sanitized.copy();
+        }
+        if (failure instanceof PluginCatalogActivationException) {
+            return new PluginStartupException(
+                    PluginCatalogActivationException.class.getName(), null);
+        }
+        if (failure instanceof PluginManager.PluginManagerException managerFailure) {
+            // The plugin id comes from the plugin's own id(), so only the host's fixed phase is shown.
+            return new PluginStartupException(
+                    PluginManager.PluginManagerException.class.getName(),
+                    managerFailure.phase().name());
+        }
+        // Only the host builds this type, for manifested providers, from the validated manifest. Any other
+        // PluginActivationException may come from plugin code or a legacy id, whatever its fields contain.
+        if (failure instanceof HostPluginActivationException host) {
+            return new PluginStartupException(PluginActivationException.class.getName(), null,
+                    host.bundleId(), host.contributionKind());
+        }
+        return new PluginStartupException(PluginActivationException.class.getName(), null);
+    }
+
+    /**
+     * The opt-in cause chain: class and bounded single-line message of each cause, at most
+     * {@value #MAX_DIAGNOSTIC_CAUSES} deep. A cause whose inspection fails ends the chain.
+     */
+    static List<String> fullPluginDiagnostics(Throwable failure) {
+        List<String> lines = new ArrayList<>();
+        Set<Throwable> seen = Collections.newSetFromMap(new IdentityHashMap<>());
+        Throwable current = failure;
+        while (current != null && lines.size() < MAX_DIAGNOSTIC_CAUSES && seen.add(current)) {
+            String message;
+            Throwable cause;
+            try {
+                message = current.getMessage();
+                cause = current.getCause();
+            } catch (Throwable inspection) {
+                LifecycleFailures.rethrowIfProcessFatal(inspection);
+                lines.add("cause[" + lines.size() + "] " + current.getClass().getName()
+                        + ": <diagnostic unavailable>");
+                break;
+            }
+            lines.add("cause[" + lines.size() + "] " + current.getClass().getName() + ": " + boundedLine(message));
+            current = cause;
+        }
+        return lines;
+    }
+
+    /** ISO controls and the Unicode line and paragraph separators, which some log viewers render as breaks. */
+    private static boolean breaksLine(char character) {
+        int type = Character.getType(character);
+        return Character.isISOControl(character)
+                || type == Character.LINE_SEPARATOR || type == Character.PARAGRAPH_SEPARATOR;
+    }
+
+    private static String boundedLine(String message) {
+        if (message == null) return "";
+        StringBuilder line = new StringBuilder(Math.min(message.length(), MAX_DIAGNOSTIC_LENGTH));
+        for (int index = 0; index < message.length() && line.length() < MAX_DIAGNOSTIC_LENGTH; index++) {
+            char character = message.charAt(index);
+            line.append(breaksLine(character) ? ' ' : character);
+        }
+        return message.length() > MAX_DIAGNOSTIC_LENGTH ? line + "..." : line.toString();
+    }
+
+    private String nodeApiBaseUrl() {
+        String prefix = apiPrefixContract != null
+                ? apiPrefixContract.pathPrefix() : normalizedApiPrefix();
+        return "http://localhost:" + httpPort + prefix + "/node";
+    }
+
+    private String normalizedApiPrefix() {
+        if (apiPrefix == null || apiPrefix.isBlank() || "/".equals(apiPrefix.trim())) {
+            return "";
+        }
+        String prefix = apiPrefix.trim();
+        if (!prefix.startsWith("/")) {
+            prefix = "/" + prefix;
+        }
+        while (prefix.endsWith("/") && prefix.length() > 1) {
+            prefix = prefix.substring(0, prefix.length() - 1);
+        }
+        return prefix;
+    }
+
+    UpstreamConfig parseUpstreamConfig() {
+        java.util.Optional<String> mode = appConfig.getOptionalValue(YanoPropertyKeys.Upstream.MODE, String.class);
+        List<UpstreamPeerConfig> peers = parseUpstreamPeers();
+        if (mode.isEmpty() && peers.isEmpty() && !hasExplicitUpstreamProperty()) {
+            return null;
+        }
+        UpstreamPreset upstreamMode = UpstreamPreset.fromConfig(mode.orElse("trusted-single"));
+        boolean discoveryEnabled = relayAutoDiscovery
+                || configBoolean(YanoPropertyKeys.Upstream.DISCOVERY_ENABLED, false);
+        List<String> peerSnapshotUrls = configStringList(YanoPropertyKeys.Upstream.DISCOVERY_PEER_SNAPSHOT_URLS);
+        if (peerSnapshotUrls.isEmpty()) {
+            peerSnapshotUrls = defaultPeerSnapshotUrls(upstreamMode, discoveryEnabled);
+        }
+
+        return UpstreamConfig.builder()
+                .mode(upstreamMode)
+                .peers(peers)
+                .selection(ChainSelectionConfig.builder()
+                        .policy(configString(YanoPropertyKeys.Upstream.SELECTION_POLICY,
+                                "trusted-or-quorum-within-rollback-window"))
+                        .rollbackWindowSlots(appConfig.getOptionalValue(
+                                        YanoPropertyKeys.Upstream.SELECTION_ROLLBACK_WINDOW_SLOTS, Long.class)
+                                .orElse(0L))
+                        .requireBodyBeforeAdoption(configBoolean(
+                                YanoPropertyKeys.Upstream.SELECTION_REQUIRE_BODY_BEFORE_ADOPTION, true))
+                        .trustPolicy(configString(YanoPropertyKeys.Upstream.SELECTION_TRUST_POLICY, "trusted-only"))
+                        .quorum(configInt(YanoPropertyKeys.Upstream.SELECTION_QUORUM, 2))
+                        .tieBreak(configString(YanoPropertyKeys.Upstream.SELECTION_TIE_BREAK, "deterministic"))
+                        .build())
+                .validation(UpstreamValidationConfig.builder()
+                        .level(configString(YanoPropertyKeys.Upstream.VALIDATION_LEVEL, "none"))
+                        .bodyLevel(configString(YanoPropertyKeys.Upstream.VALIDATION_BODY_LEVEL, "none"))
+                        .opCertCounterMode(configString(
+                                YanoPropertyKeys.Upstream.VALIDATION_OPCERT_COUNTER_MODE, "none"))
+                        .start(UpstreamValidationStartConfig.builder()
+                                .mode(configString(YanoPropertyKeys.Upstream.VALIDATION_START_MODE, "immediate"))
+                                .era(configString(YanoPropertyKeys.Upstream.VALIDATION_START_ERA, "conway"))
+                                .slot(configLong(YanoPropertyKeys.Upstream.VALIDATION_START_SLOT, -1L))
+                                .hash(configString(YanoPropertyKeys.Upstream.VALIDATION_START_HASH, ""))
+                                .build())
+                        .build())
+                .sync(UpstreamSyncConfig.builder()
+                        .bulkSource(configString(YanoPropertyKeys.Upstream.SYNC_BULK_SOURCE, "single-trusted"))
+                        .fanInStart(configString(YanoPropertyKeys.Upstream.SYNC_FAN_IN_START, "near-tip"))
+                        .build())
+                .failover(UpstreamFailoverConfig.builder()
+                        .cooldownMs(configLong(YanoPropertyKeys.Upstream.FAILOVER_COOLDOWN_MS, 30_000L))
+                        .maxFailuresBeforeCooldown(configInt(
+                                YanoPropertyKeys.Upstream.FAILOVER_MAX_FAILURES_BEFORE_COOLDOWN, 3))
+                .build())
+                .tx(UpstreamTxConfig.builder()
+                        .forwarding(effectiveUpstreamTxForwarding())
+                        .build())
+                .governor(UpstreamGovernorConfig.builder()
+                        .enabled(configBoolean(YanoPropertyKeys.Upstream.GOVERNOR_ENABLED, false))
+                        .targetCold(configInt(YanoPropertyKeys.Upstream.GOVERNOR_TARGET_COLD, 100))
+                        .targetWarm(configInt(YanoPropertyKeys.Upstream.GOVERNOR_TARGET_WARM, 8))
+                        .targetHot(configInt(YanoPropertyKeys.Upstream.GOVERNOR_TARGET_HOT, 2))
+                        .maxConcurrentDials(configInt(
+                                YanoPropertyKeys.Upstream.GOVERNOR_MAX_CONCURRENT_DIALS, 4))
+                        .build())
+                .discovery(UpstreamDiscoveryConfig.builder()
+                        .enabled(discoveryEnabled)
+                        .peerSharing(relayAutoDiscovery
+                                || configBoolean(YanoPropertyKeys.Upstream.DISCOVERY_PEER_SHARING, false))
+                        .seeds(configStringList(YanoPropertyKeys.Upstream.DISCOVERY_SEEDS))
+                        .peerSnapshotUrls(peerSnapshotUrls)
+                        .peerSnapshotFiles(configStringList(YanoPropertyKeys.Upstream.DISCOVERY_PEER_SNAPSHOT_FILES))
+                        .peerSnapshotLimit(configInt(
+                                YanoPropertyKeys.Upstream.DISCOVERY_PEER_SNAPSHOT_LIMIT, 128))
+                        .topologyFile(configString(YanoPropertyKeys.Upstream.DISCOVERY_TOPOLOGY_FILE, ""))
+                        .ledgerPeers(configBoolean(YanoPropertyKeys.Upstream.DISCOVERY_LEDGER_PEERS, false))
+                        .useLedgerAfterSlot(configLong(
+                                YanoPropertyKeys.Upstream.DISCOVERY_USE_LEDGER_AFTER_SLOT, -1L))
+                        .allowPrivateAddresses(configBoolean(
+                                YanoPropertyKeys.Upstream.DISCOVERY_ALLOW_PRIVATE_ADDRESSES, false))
+                        .allowlist(configStringList(YanoPropertyKeys.Upstream.DISCOVERY_ALLOWLIST))
+                        .denylist(configStringList(YanoPropertyKeys.Upstream.DISCOVERY_DENYLIST))
+                        .build())
+                .build();
+    }
+
+    private String effectiveUpstreamTxForwarding() {
+        String legacyForwarding = configString(YanoPropertyKeys.Upstream.TX_FORWARDING, "active-selected");
+        java.util.Optional<String> configuredDiffusionMode = configuredTxDiffusionMode();
+        if (configuredDiffusionMode.isEmpty()) {
+            return txDiffusionEnabled ? "all-hot" : "disabled";
+        }
+
+        String mode = configuredDiffusionMode.get().trim().toLowerCase(java.util.Locale.ROOT);
+        return switch (mode) {
+            case "disabled" -> "disabled";
+            case "local-submit-only" -> {
+                String normalizedLegacy = legacyForwarding != null
+                        ? legacyForwarding.trim().toLowerCase(java.util.Locale.ROOT)
+                        : "active-selected";
+                yield "all-hot-trusted".equals(normalizedLegacy) ? "all-hot-trusted" : "active-selected";
+            }
+            case "trusted-hot" -> "all-hot-trusted";
+            case "all-hot" -> "all-hot";
+            default -> "disabled";
+        };
+    }
+
+    private java.util.Optional<String> configuredTxDiffusionMode() {
+        if (txDiffusionMode != null && txDiffusionMode.isPresent()) {
+            return txDiffusionMode;
+        }
+        if (appConfig != null) {
+            return appConfig.getOptionalValue(YanoPropertyKeys.Tx.DIFFUSION_MODE, String.class);
+        }
+        return java.util.Optional.empty();
+    }
+
+    private boolean hasExplicitUpstreamProperty() {
+        for (String propertyName : appConfig.getPropertyNames()) {
+            if (propertyName != null && propertyName.startsWith("yano.upstream.")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private List<String> defaultPeerSnapshotUrls(UpstreamPreset upstreamMode, boolean discoveryEnabled) {
+        if (!discoveryEnabled || upstreamMode != UpstreamPreset.P2P_RELAY) {
+            return List.of();
+        }
+        String normalizedNetwork = network != null ? network.trim().toLowerCase(java.util.Locale.ROOT) : "";
+        return switch (normalizedNetwork) {
+            case "mainnet", "preprod", "preview" -> List.of(
+                    "https://book.play.dev.cardano.org/environments/" + normalizedNetwork + "/peer-snapshot.json");
+            default -> List.of();
+        };
+    }
+
+    private List<UpstreamPeerConfig> parseUpstreamPeers() {
+        List<UpstreamPeerConfig> peers = new ArrayList<>();
+        for (int i = 0; i < 512; i++) {
+            String prefix = YanoPropertyKeys.Upstream.PEERS + "[" + i + "]";
+            java.util.Optional<String> host = appConfig.getOptionalValue(prefix + ".host", String.class);
+            if (host.isEmpty()) {
+                if (i == 0) {
+                    continue;
+                }
+                break;
+            }
+            peers.add(UpstreamPeerConfig.builder()
+                    .id(appConfig.getOptionalValue(prefix + ".id", String.class).orElse(null))
+                    .host(host.get())
+                    .port(appConfig.getOptionalValue(prefix + ".port", Integer.class).orElse(remotePort))
+                    .source(appConfig.getOptionalValue(prefix + ".source", String.class).orElse("local-root"))
+                    .priority(appConfig.getOptionalValue(prefix + ".priority", Integer.class).orElse(i))
+                    .trust(appConfig.getOptionalValue(prefix + ".trust", String.class).orElse("trusted"))
+                    .build());
+        }
+        return peers;
+    }
+
+    private String configString(String key, String defaultValue) {
+        return appConfig.getOptionalValue(key, String.class).orElse(defaultValue);
+    }
+
+    private int configInt(String key, int defaultValue) {
+        return appConfig.getOptionalValue(key, Integer.class).orElse(defaultValue);
+    }
+
+    private long configLong(String key, long defaultValue) {
+        return appConfig.getOptionalValue(key, Long.class).orElse(defaultValue);
+    }
+
+    private boolean configBoolean(String key, boolean defaultValue) {
+        return appConfig.getOptionalValue(key, Boolean.class).orElse(defaultValue);
+    }
+
+    private List<String> configStringList(String key) {
+        java.util.Optional<List<String>> listValue = appConfig.getOptionalValues(key, String.class);
+        if (listValue.isPresent()) {
+            return listValue.get().stream()
+                    .map(String::trim)
+                    .filter(item -> !item.isBlank())
+                    .toList();
+        }
+        return appConfig.getOptionalValue(key, String.class)
+                .map(value -> java.util.Arrays.stream(value.split(","))
+                        .map(String::trim)
+                        .filter(item -> !item.isBlank())
+                        .toList())
+                .orElse(List.of());
+    }
+
+    /** Map packaged-node configuration to the complete existing plugin policy. */
+    PluginsOptions pluginOptions() {
+        PluginHostConfiguration hostConfiguration =
+                PluginHostConfiguration.from(appConfig);
+        Map<String, Object> pluginConfigMap = new java.util.LinkedHashMap<>();
+        if (appConfig != null) {
+            for (String property : appConfig.getPropertyNames()) {
+                if (isPluginConfigurationProperty(property)) {
+                    appConfig.getOptionalValue(property, String.class)
+                            .ifPresent(value -> pluginConfigMap.put(property, value));
+                }
+            }
+        }
+        // Compatibility key consumed by the built-in logging NodePlugin.
+        pluginConfigMap.put("plugins.logging.enabled",
+                hostConfiguration.loggingEnabled());
+        return new PluginsOptions(
+                hostConfiguration.enabled(),
+                hostConfiguration.autoRegisterAnnotated(),
+                hostConfiguration.allowList(),
+                hostConfiguration.denyList(),
+                pluginConfigMap);
+    }
+
+    private static boolean isPluginConfigurationProperty(String property) {
+        if (property == null) {
+            return false;
+        }
+        if (Set.of(
+                YanoPropertyKeys.Plugins.ENABLED,
+                YanoPropertyKeys.Plugins.DIRECTORY,
+                YanoPropertyKeys.Plugins.ALLOW_LIST,
+                YanoPropertyKeys.Plugins.DENY_LIST,
+                YanoPropertyKeys.Plugins.AUTO_REGISTER_ANNOTATED,
+                YanoPropertyKeys.Plugins.LOGGING_ENABLED,
+                YanoPropertyKeys.Plugins.REQUIRED).contains(property)) {
+            return false;
+        }
+        if (property.startsWith("yano.plugins.")) {
+            return true;
+        }
+        // SmallRye enumerates both a best-effort dotted name and the original
+        // environment name. Retain the reversible hex-owner spelling. Retain
+        // the obsolete lossy spelling too so the catalog can reject it with a
+        // deterministic migration diagnostic instead of silently ignoring it.
+        return property.startsWith("YANO_PLUGINS_BUNDLE_HEX__")
+                || property.startsWith("YANO_PLUGINS_BUNDLE__");
+    }
+
+    void onStop(@Observes ShutdownEvent event) {
+        log.info("Yano application shutting down...");
+        // Stop and join optional archive work while its core query dependencies
+        // and native stores are still valid.
+        try {
+            projectionHistory.close();
+            historyArchive.close();
+        } finally {
+            if (yano != null) {
+                log.info("Stopping Yano...");
+                yano.close();
+                log.info("Yano stopped");
+            }
+        }
+    }
+
+    /**
+     * Placeholder for CDI injection sites when producer control is not available
+     * for the assembled node role.
+     */
+    private enum UnavailableProducerControl implements ProducerControl {
+        INSTANCE;
+
+        @Override
+        public void startProducer() {
+            throw unavailableRole("ProducerControl");
+        }
+
+        @Override
+        public void stopProducer() {
+            throw unavailableRole("ProducerControl");
+        }
+
+        @Override
+        public void resetProducerToChainTip() {
+            throw unavailableRole("ProducerControl");
+        }
+    }
+
+    /**
+     * Placeholder for CDI injection sites when devnet control is not available
+     * for the assembled node role.
+     */
+    private enum UnavailableDevnetControl implements DevnetControl {
+        INSTANCE;
+
+        @Override
+        public void rollbackDevnetToSlot(long targetSlot) {
+            throw unavailableRole("DevnetControl");
+        }
+
+        @Override
+        public DevnetRollbackResult rollbackDevnet(DevnetRollbackTarget target) {
+            throw unavailableRole("DevnetControl");
+        }
+
+        @Override
+        public SnapshotInfo createDevnetSnapshot(String name) {
+            throw unavailableRole("DevnetControl");
+        }
+
+        @Override
+        public void restoreDevnetSnapshot(String name) {
+            throw unavailableRole("DevnetControl");
+        }
+
+        @Override
+        public DevnetRestoreResult restoreDevnetSnapshotAndGetTip(String name) {
+            throw unavailableRole("DevnetControl");
+        }
+
+        @Override
+        public List<SnapshotInfo> listDevnetSnapshots() {
+            throw unavailableRole("DevnetControl");
+        }
+
+        @Override
+        public void deleteDevnetSnapshot(String name) {
+            throw unavailableRole("DevnetControl");
+        }
+
+        @Override
+        public FundResult fundAddress(String address, long lovelace) {
+            throw unavailableRole("DevnetControl");
+        }
+
+        @Override
+        public TimeAdvanceResult advanceTimeBySlots(int slots) {
+            throw unavailableRole("DevnetControl");
+        }
+
+        @Override
+        public TimeAdvanceResult advanceTimeBySeconds(int seconds) {
+            throw unavailableRole("DevnetControl");
+        }
+
+        @Override
+        public long shiftGenesisAndStartProducer(int epochs) {
+            throw unavailableRole("DevnetControl");
+        }
+
+        @Override
+        public TimeAdvanceResult catchUpToWallClock() {
+            throw unavailableRole("DevnetControl");
+        }
+    }
+
+    private static IllegalStateException unavailableRole(String role) {
+        return new IllegalStateException(role + " is not available for this Yano assembly");
+    }
+
+    private RollbackRetentionGenesisValues resolveRollbackRetentionGenesisValues(String resolvedShelleyGenesis) {
+        try {
+            NetworkGenesisConfig genesis = NetworkGenesisConfig.load(resolvedShelleyGenesis, null, null, null);
+            return new RollbackRetentionGenesisValues(genesis.getEpochLength(), genesis.getActiveSlotsCoeff());
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to resolve Shelley genesis values for "
+                    + ROLLBACK_RETENTION_EPOCHS + " from " + resolvedShelleyGenesis, e);
+        }
+    }
+
+    RollbackRetentionSettings resolveRollbackRetentionSettings(RollbackRetentionGenesisValues genesisValues) {
+        return RollbackRetentionPlanner.resolve(
+                rollbackRetentionEpochs,
+                genesisValues.epochLength(),
+                genesisValues.activeSlotsCoeff(),
+                utxoRollbackWindow,
+                isConfigPropertyPresent(UTXO_ROLLBACK_WINDOW),
+                accountStateEpochBlockDataRetentionLag,
+                isConfigPropertyPresent(ACCOUNT_STATE_EPOCH_BLOCK_DATA_RETENTION_LAG),
+                accountStateSnapshotRetentionEpochs,
+                isConfigPropertyPresent(ACCOUNT_STATE_SNAPSHOT_RETENTION_EPOCHS),
+                blockBodyPruneDepth);
+    }
+
+    void putRollbackRetentionGlobals(Map<String, Object> globals, RollbackRetentionSettings settings) {
+        globals.put(UTXO_ROLLBACK_WINDOW, settings.utxoRollbackWindow());
+        globals.put(ACCOUNT_STATE_EPOCH_BLOCK_DATA_RETENTION_LAG,
+                settings.accountStateEpochBlockDataRetentionLag());
+        globals.put(ACCOUNT_STATE_SNAPSHOT_RETENTION_EPOCHS,
+                settings.accountStateSnapshotRetentionEpochs());
+        globals.put(BLOCK_BODY_PRUNE_DEPTH, settings.blockBodyPruneDepth());
+    }
+
+    private boolean isConfigPropertyPresent(String propertyName) {
+        if (appConfig == null) {
+            return false;
+        }
+        try {
+            return appConfig.getOptionalValue(propertyName, String.class).isPresent();
+        } catch (Exception e) {
+            log.debug("Failed to inspect config property {}: {}", propertyName, e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Resolve a genesis file path. If the user has provided an explicit path and the file exists,
+     * use it. Otherwise, for known networks (mainnet/preprod/preview), extract the bundled
+     * classpath resource to a temp file.
+     */
+    String resolveGenesisFile(String userPath, long magic, String filename) {
+        // Genesis is host bootstrap input, not a plugin contribution. Never
+        // resolve it through selected (or, especially, denied) directory JARs.
+        return GenesisFileResolver.resolveHostOnly(
+                userPath, magic, filename, pluginLoader.hostClassLoader());
+    }
+}

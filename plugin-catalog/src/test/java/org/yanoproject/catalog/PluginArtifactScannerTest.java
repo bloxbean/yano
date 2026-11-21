@@ -26,12 +26,12 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class PluginArtifactScannerTest {
-    private static final ContributionKind KIND = ContributionKind.FINALIZED_SINK;
+    private static final ContributionKind KIND = TestKinds.SINK;
 
     @TempDir
     Path temporary;
 
-    private final PluginArtifactScanner scanner = new PluginArtifactScanner();
+    private final PluginArtifactScanner scanner = new PluginArtifactScanner(TestKinds.REGISTRY);
 
     @Test
     void snapshotByteBudgetAcceptsExactLimitAndRejectsNextByte() throws Exception {
@@ -120,15 +120,15 @@ class PluginArtifactScannerTest {
         assertThatThrownBy(() -> scanner.scan(missing))
                 .isInstanceOf(PluginCatalogException.class)
                 .hasMessageContaining("manifest and supported ServiceLoader entries differ")
-                .hasMessageContaining("missing=[finalized-sink:com.example.DeclaredProvider]")
-                .hasMessageContaining("undeclared=[finalized-sink:com.example.OtherProvider]");
+                .hasMessageContaining("missing=[fixture-sink:com.example.DeclaredProvider]")
+                .hasMessageContaining("undeclared=[fixture-sink:com.example.OtherProvider]");
 
         Path undeclared = emptyArtifact("undeclared");
         writeService(undeclared, KIND, "com.example.LegacyProvider");
         writeManifest(undeclared, "com.example.undeclared", List.of());
         assertThatThrownBy(() -> scanner.scan(undeclared))
                 .isInstanceOf(PluginCatalogException.class)
-                .hasMessageContaining("undeclared=[finalized-sink:com.example.LegacyProvider]");
+                .hasMessageContaining("undeclared=[fixture-sink:com.example.LegacyProvider]");
     }
 
     @Test
@@ -142,10 +142,10 @@ class PluginArtifactScannerTest {
                 .hasMessageContaining("packages Yano API class")
                 .hasMessageContaining("NodePlugin.class");
 
-        Path coreApi = emptyArtifact("core-api");
-        writeBytes(coreApi, "org/yanoproject/api/plugin/NodePlugin.class", new byte[]{1});
-        writeService(coreApi, KIND, "# no provider entry");
-        assertThat(scanner.scan(coreApi)).isEqualTo(PluginIndex.empty());
+        Path nodeApi = emptyArtifact("node-api");
+        writeBytes(nodeApi, "org/yanoproject/api/plugin/NodePlugin.class", new byte[]{1});
+        writeService(nodeApi, KIND, "# no provider entry");
+        assertThat(scanner.scan(nodeApi)).isEqualTo(PluginIndex.empty());
     }
 
     @Test
@@ -160,6 +160,70 @@ class PluginArtifactScannerTest {
         assertThatThrownBy(() -> scanner.scan(jar))
                 .isInstanceOf(PluginCatalogException.class)
                 .hasMessageContaining("packages Yano API class");
+    }
+
+    @Test
+    void rejectsDescriptorDeclaredApiCopiesInPlainAndMultiReleasePlugins() throws Exception {
+        for (String apiClass : List.of(
+                "org/yanoproject/catalog/fixture/FixtureSinkProvider.class",
+                "org/yanoproject/catalog/fixture/model/FixtureValue.class")) {
+            for (String prefix : List.of("", "META-INF/versions/25/")) {
+                String name = "framework-api-" + Math.abs((apiClass + prefix).hashCode());
+                Path plugin = manifestedDirectory(name, "com.example." + name, "sink", "com.example.Provider");
+                writeBytes(plugin, prefix + apiClass, new byte[]{1});
+                Path jar = createJar(plugin, temporary.resolve(name + ".jar"));
+                assertThatThrownBy(() -> scanner.scan(jar))
+                        .isInstanceOf(PluginCatalogException.class)
+                        .hasMessageContaining("packages Yano API class")
+                        .hasMessageContaining(apiClass);
+            }
+        }
+    }
+
+    @Test
+    void rejectsRetiredFrameworkDescriptorsWithARebuildDiagnostic() throws Exception {
+        for (String oldContract : List.of(
+                "org.yanoproject.api.appchain.AppStateMachineProvider",
+                "org.yanoproject.api.plugin.domain.DomainApiProvider")) {
+            for (boolean manifested : List.of(false, true)) {
+                String name = "retired-" + Math.abs(oldContract.hashCode()) + "-" + manifested;
+                Path artifact = manifested
+                        ? manifestedDirectory(name, "com.example." + name, "sink", "com.example.Provider")
+                        : emptyArtifact(name);
+                writeBytes(artifact, "META-INF/services/" + oldContract,
+                        "com.example.OldProvider\n".getBytes(StandardCharsets.UTF_8));
+                Path jar = createJar(artifact, temporary.resolve(name + ".jar"));
+                for (Path input : List.of(artifact, jar)) {
+                    assertThatThrownBy(() -> scanner.scan(input))
+                            .isInstanceOf(PluginCatalogException.class)
+                            .hasMessageContaining("retired framework ServiceLoader contract")
+                            .hasMessageContaining(oldContract)
+                            .hasMessageContaining("rebuild the plugin against the current framework APIs");
+                }
+            }
+        }
+    }
+
+    @Test
+    void rejectsContributionKindDescriptorsOutsideHostArtifacts() throws Exception {
+        byte[] descriptor = Files.readAllBytes(TestKinds.HOST_ARTIFACT.resolve(TestKinds.DESCRIPTOR));
+        Path plugin = manifestedDirectory(
+                "descriptor-plugin", "com.example.descriptor", "sink", "com.example.Provider");
+        writeBytes(plugin, TestKinds.DESCRIPTOR, descriptor);
+        Path ordinary = emptyArtifact("descriptor-only");
+        writeBytes(ordinary, TestKinds.DESCRIPTOR, descriptor);
+        for (Path input : List.of(plugin, ordinary, createJar(plugin, temporary.resolve("descriptor.jar")))) {
+            assertThatThrownBy(() -> scanner.scan(input))
+                    .isInstanceOf(PluginCatalogException.class)
+                    .hasMessageContaining("contribution-kind descriptor")
+                    .hasMessageContaining("trusted only from host class-path artifacts");
+        }
+
+        PluginArtifactScanner hostScanner = new PluginArtifactScanner(
+                ContributionKindRegistry.fromHostArtifacts(List.of(plugin)));
+        assertThat(hostScanner.scan(plugin).bundles()).singleElement()
+                .extracting(bundle -> bundle.manifest().id())
+                .isEqualTo("com.example.descriptor");
     }
 
     @Test
@@ -183,11 +247,11 @@ class PluginArtifactScannerTest {
     }
 
     @Test
-    void correlatesManifestedDomainApiServiceMetadata() throws Exception {
-        ContributionKind domain = ContributionKind.DOMAIN_API;
+    void correlatesManifestedBundleOwnedServiceMetadata() throws Exception {
+        ContributionKind domain = TestKinds.DOMAIN;
         String id = "com.example.passport";
         String provider = "com.example.PassportDomainApiProvider";
-        Path artifact = emptyArtifact("domain-api");
+        Path artifact = emptyArtifact("bundle-owned");
         writeManifest(artifact, id, List.of(new BundleContribution(domain, id, provider)));
         writeService(artifact, domain, provider);
         writeProviderClass(artifact, provider);
@@ -239,15 +303,15 @@ class PluginArtifactScannerTest {
     }
 
     @Test
-    void rejectsUnmanifestedDomainApiInsteadOfSynthesizingLegacyEvidence() throws Exception {
-        Path artifact = emptyArtifact("legacy-domain-api");
+    void rejectsUnmanifestedManifestOnlyKindInsteadOfSynthesizingLegacyEvidence() throws Exception {
+        Path artifact = emptyArtifact("legacy-bundle-owned");
         String provider = "com.example.LegacyDomainApiProvider";
-        writeService(artifact, ContributionKind.DOMAIN_API, provider);
+        writeService(artifact, TestKinds.DOMAIN, provider);
         writeProviderClass(artifact, provider);
 
         assertThatThrownBy(() -> scanner.scan(artifact))
                 .isInstanceOf(PluginCatalogException.class)
-                .hasMessageContaining("domain-api")
+                .hasMessageContaining("fixture-domain")
                 .hasMessageContaining("require a bundle manifest")
                 .hasMessageContaining("cannot use legacy discovery");
     }
@@ -389,7 +453,7 @@ class PluginArtifactScannerTest {
         });
 
         PluginIndex index = new PluginIndexGenerator(
-                racingScanner, new PluginIndexCodec()).generate(List.of(artifact));
+                racingScanner, new PluginIndexCodec(TestKinds.REGISTRY)).generate(List.of(artifact));
 
         assertThat(index.bundles()).singleElement().satisfies(bundle ->
                 assertThat(bundle.manifest().id()).isEqualTo(id));
@@ -581,7 +645,7 @@ class PluginArtifactScannerTest {
     private static PluginArtifactScanner scanner(
             PluginArtifactScanner.ScanObserver observer
     ) {
-        return new PluginArtifactScanner(new BundleManifestParser(), observer);
+        return new PluginArtifactScanner(TestKinds.REGISTRY, observer);
     }
 
     private Path emptyArtifact(String name) throws IOException {
@@ -630,7 +694,7 @@ class PluginArtifactScannerTest {
     }
 
     private static String servicePath(ContributionKind kind) {
-        return "META-INF/services/" + kind.serviceType().getName();
+        return "META-INF/services/" + kind.serviceInterface();
     }
 
     private static void writeBytes(Path root, String relative, byte[] bytes) throws IOException {

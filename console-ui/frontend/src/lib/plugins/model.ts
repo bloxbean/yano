@@ -1,5 +1,5 @@
 import type { PluginOperationsSummary } from '$lib/api/types';
-import { objectValue, stringValue } from '../appchain/value';
+import { objectValue, stringValue } from '../value';
 
 export function normalizedList(value: unknown): Array<Record<string, unknown>> {
   if (Array.isArray(value)) return value.filter((item): item is Record<string, unknown> =>

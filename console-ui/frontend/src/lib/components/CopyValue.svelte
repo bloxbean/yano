@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
   import { copyText } from '$lib/clipboard';
-  import { shortHash, stringValue } from '$lib/appchain/value';
+  import { shortHash, stringValue } from '$lib/value';
 
   let {
     value,

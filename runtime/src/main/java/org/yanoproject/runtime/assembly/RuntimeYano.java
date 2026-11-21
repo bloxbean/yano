@@ -284,35 +284,9 @@ final class RuntimeYano implements Yano, DevnetRuntimeProvider {
     }
 
     @Override
-    public Optional<org.yanoproject.api.appchain.AppChainGateway> appChain() {
-        if (nodeLifecycle instanceof org.yanoproject.runtime.internal.RuntimeNode runtimeNode) {
-            return Optional.ofNullable(runtimeNode.appChainGateway());
-        }
-        return Optional.empty();
-    }
-
-    @Override
-    public org.yanoproject.api.appchain.AppChainGateways appChains() {
-        if (nodeLifecycle instanceof org.yanoproject.runtime.internal.RuntimeNode runtimeNode) {
-            return runtimeNode.appChainGateways();
-        }
-        return org.yanoproject.api.appchain.AppChainGateways.empty();
-    }
-
-    @Override
-    public org.yanoproject.api.plugin.domain.DomainApiGateway domainApis() {
-        if (nodeLifecycle instanceof org.yanoproject.runtime.internal.RuntimeNode runtimeNode) {
-            return runtimeNode.domainApis();
-        }
-        return org.yanoproject.api.plugin.domain.DomainApiGateway.empty();
-    }
-
-    @Override
-    public Optional<org.yanoproject.api.plugin.domain.LocalReadModelHost>
-            localReadModels() {
+    public <T> Optional<T> service(String key, Class<T> type) {
         return nodeLifecycle instanceof RuntimeNode runtimeNode
-                ? Optional.of(runtimeNode.localReadModels())
-                : Optional.empty();
+                ? runtimeNode.pluginService(key, type) : Optional.empty();
     }
 
     @Override

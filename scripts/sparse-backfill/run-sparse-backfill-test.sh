@@ -112,7 +112,8 @@ if [ ! -f "$YANO_JAR" ]; then
   log "building uber-jar (:app:quarkusBuild)"
   (cd "$PROJECT_ROOT" && ./gradlew :app:quarkusBuild) || die "build failed"
 elif [ "$SKIP_BUILD" != "1" ]; then
-  STALE=$(find "$PROJECT_ROOT/runtime" "$PROJECT_ROOT/core-api" "$PROJECT_ROOT/app" \
+  STALE=$(find "$PROJECT_ROOT/runtime" "$PROJECT_ROOT/node-api" "$PROJECT_ROOT/cardano-api" \
+    "$PROJECT_ROOT/host-api" "$PROJECT_ROOT/app" \
     -name '*.java' -newer "$YANO_JAR" -print -quit 2>/dev/null)
   if [ -n "$STALE" ]; then
     log "jar is older than $STALE — rebuilding so the test exercises the working tree"

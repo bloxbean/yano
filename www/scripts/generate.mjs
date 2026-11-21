@@ -45,7 +45,7 @@ function flatten(value, prefix = '', rows = []) {
   return rows;
 }
 const configFiles = [
-  'app/src/main/resources/application.yml',
+  'app-core/src/main/resources/application.yml',
   ...(await files(resolve(repo, 'app/config'), '.yml'))
     .filter((f) => /\/application[^/]*\.yml$/.test(f))
     .map((f) => relative(repo, f)),
@@ -65,14 +65,14 @@ for (const source of configFiles) {
         row.key.startsWith('quarkus.http.') ||
         row.key.startsWith('quarkus.swagger-ui.'),
     );
-    // Public demo identities are not copied into the machine-readable catalog.
+    // Secret-like values are not copied into the machine-readable catalog.
     for (const row of values)
       if (/signing-key|api-key|secret|password/i.test(row.key) && row.value)
-        row.value = '<configure privately; see local demo profile for test-only identity>';
+        row.value = '<configure privately>';
     if (values.length) configuration.push({ source, profile, values });
   }
 }
-const keysSource = 'core-api/src/main/java/org/yanoproject/api/config/YanoPropertyKeys.java';
+const keysSource = 'node-api/src/main/java/org/yanoproject/api/config/YanoPropertyKeys.java';
 const keyText = await readFile(resolve(repo, keysSource), 'utf8');
 // Resolve constants composed from literals and other constants (for example
 // `PREFIX + "dir"`). Nested classes are sequential, so a declaration belongs to
@@ -133,7 +133,7 @@ const inline = (value) =>
     .replaceAll('|', '&#124;')
     .replaceAll('\n', ' ') +
   '`';
-let catalog = `---\ntitle: Configuration catalog\ndescription: Active packaged configuration values and declared property keys, generated from source.\nsidebar:\n  order: 2\n---\n\nThis reference is generated from the checked-out source. It keeps **bundled defaults and profile overrides separate**. Values are not a merged runtime configuration. Environment expressions retain their exact syntax. Comments and commented examples are excluded.\n\nSee [configuration layering](/reference/configuration/) before applying settings. Download [the JSON catalog](/ai/configuration.json). Secret-like populated fields are redacted; the local app-chain demo identity is intentionally not an operator credential.\n`;
+let catalog = `---\ntitle: Configuration catalog\ndescription: Active packaged configuration values and declared property keys, generated from source.\nsidebar:\n  order: 2\n---\n\nThis reference is generated from the checked-out source. It keeps **bundled defaults and profile overrides separate**. Values are not a merged runtime configuration. Environment expressions retain their exact syntax. Comments and commented examples are excluded.\n\nSee [configuration layering](/reference/configuration/) before applying settings. Download [the JSON catalog](/ai/configuration.json). Secret-like populated fields are redacted.\n`;
 for (const group of configuration) {
   catalog += `\n## ${group.source === configFiles[0] ? 'Bundled application defaults' : group.source.split('/').pop()}${group.profile ? ` — ${group.profile} profile` : ''}\n\nSource: [${group.source}](https://github.com/bloxbean/yano/blob/${sha}/${group.source})\n\n| Property | Packaged value |\n| --- | --- |\n`;
   for (const { key, value } of group.values) catalog += `| ${inline(key)} | ${inline(value)} |\n`;
@@ -144,7 +144,7 @@ catalog += declaredKeys.map((key) => `- ${inline(key)}`).join('\n') + '\n';
 await save(resolve(docs, 'reference/configuration-catalog.md'), catalog);
 // A path inventory, deliberately not represented as an OpenAPI schema.
 const routes = [];
-for (const file of await files(resolve(repo, 'app/src/main/java'), '.java')) {
+for (const file of await files(resolve(repo, 'app-core/src/main/java'), '.java')) {
   const source = (await readFile(file, 'utf8'))
     .replace(/\/\*[\s\S]*?\*\//g, '')
     .replace(/^\s*\/\/.*$/gm, '');
@@ -212,13 +212,13 @@ for (const file of await files(docs, '.md')) {
   });
   full += `\n---\n\n${markdown}`;
 }
-const instructions = `# Yano coding context\n\nRead ${site}/llms.txt and the relevant Markdown pages before generating code.\n\n- For node onboarding, download the latest release from https://github.com/bloxbean/yano/releases/latest (other releases: https://github.com/bloxbean/yano/releases) and run the extracted launcher. Prefer the JVM distribution for app ledgers. Source builds are an advanced contributor workflow. This documentation tracks current source and may describe features newer than the installed release; match APIs, configuration, and SDK versions to the installed artifact. The version in manifest.json is the source development version, not a downloadable release.
-- Yano is a pre-release Cardano data node in Java, with devnet tooling and a multi-party app ledger host. Do not claim complete production consensus validation.\n- Use Java 25. The Maven group and package root are org.yanoproject. Keep dependency namespaces such as com.bloxbean.cardano.client unchanged. The npm package is @bloxbean/yano-testkit; install it with the @preview dist-tag until a stable release is promoted to latest.\n- Pin compatible node, library, plugin, and verifier versions. Check manifest.json and the installed artifact.\n- Multi-party app ledgers (app ledgers for short) are experimental: configuration keys, REST endpoints, and the plugin API can change between preview releases without a migration path. In configuration and APIs they appear as app-chain (yano.app-chain.*, /api/v1/app-chain/). Describe them as multi-party app ledgers (configured members, threshold finality, optional Cardano anchoring), not as an appchain, a sovereign blockchain, or a Cardano layer 2, and do not suggest using them to hold value.\n- The only built-in app state machine is ordered-log. Other stock extensions and SDKs belong to Yano X.\n- Distinguish accepted messages, member finality, and L1 confirmation. A proof needs an independently trusted root.\n- Native builds cannot load plugin JARs dynamically. DuckLake history is JVM-only and fresh-sync only.\n- Wallet indexes require complete historical coverage; unavailable is not empty.\n- Use the actual node's /q/openapi?format=json for client schemas. routes.json is only an annotation inventory.\n- Never place external I/O in deterministic state application. Never suggest deleting signing journals as a recovery shortcut.\n`;
+const instructions = `# Yano coding context\n\nRead ${site}/llms.txt and the relevant Markdown pages before generating code.\n\n- For node onboarding, download the latest release from https://github.com/bloxbean/yano/releases/latest (other releases: https://github.com/bloxbean/yano/releases) and run the extracted launcher. Source builds are an advanced contributor workflow. This documentation tracks current source and may describe features newer than the installed release; match APIs, configuration, and SDK versions to the installed artifact. The version in manifest.json is the source development version, not a downloadable release.
+- Yano is a pre-release Cardano data node in Java, with devnet tooling and an embeddable runtime. Do not claim complete production consensus validation.\n- Use Java 25. The Maven group and package root are org.yanoproject. Keep dependency namespaces such as com.bloxbean.cardano.client unchanged. The npm package is @bloxbean/yano-testkit; install it with the @preview dist-tag until a stable release is promoted to latest.\n- Pin compatible node, library, and plugin versions. Check manifest.json and the installed artifact.\n- Yano does not host application ledgers (app chains). They are a separate product, Yano X (https://github.com/bloxbean/yano-x), built on Yano.\n- Distinguish accepted transactions from on-chain confirmation.\n- Native builds cannot load plugin JARs dynamically. DuckLake history is JVM-only and fresh-sync only.\n- Wallet indexes require complete historical coverage; unavailable is not empty.\n- Use the actual node's /q/openapi?format=json for client schemas. routes.json is only an annotation inventory.\n- Never place external I/O in deterministic state application.\n`;
 await save(resolve(publicDir, 'ai/agent-instructions.md'), instructions);
 await save(resolve(publicDir, 'llms-full.txt'), full);
 await save(
   resolve(publicDir, 'llms.txt'),
-  `# Yano\n\n> A pre-release Cardano data node in Java: query chain state, test on local devnets, embed the runtime, and host multi-party app ledgers (experimental).\n\nJava 25. Maven group org.yanoproject. Built-in machine: ordered-log. Additional stock extensions: Yano X. No claim of complete production consensus validation.\n\n## Machine-readable resources\n\n- [Full docs](${site}/llms-full.txt)\n- [Agent instructions](${site}/ai/agent-instructions.md)\n- [Build manifest](${site}/ai/manifest.json)\n- [Configuration](${site}/ai/configuration.json)\n- [Route inventory](${site}/ai/routes.json)\n\n## Guides\n\n` +
+  `# Yano\n\n> A pre-release Cardano data node in Java: query chain state, test on local devnets, and embed the runtime.\n\nJava 25. Maven group org.yanoproject. Application ledgers (app chains): Yano X, a separate product. No claim of complete production consensus validation.\n\n## Machine-readable resources\n\n- [Full docs](${site}/llms-full.txt)\n- [Agent instructions](${site}/ai/agent-instructions.md)\n- [Build manifest](${site}/ai/manifest.json)\n- [Configuration](${site}/ai/configuration.json)\n- [Route inventory](${site}/ai/routes.json)\n\n## Guides\n\n` +
     pages.map((p) => `- [${p.title}](${p.markdown}): ${p.description}`).join('\n') +
     '\n',
 );

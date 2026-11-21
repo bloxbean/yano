@@ -9,6 +9,7 @@ import org.yanoproject.api.NodeLifecycle;
 import org.yanoproject.api.ProducerControl;
 import org.yanoproject.api.TxEvaluationGateway;
 import org.yanoproject.api.TxGateway;
+import org.yanoproject.api.host.PluginServiceLookup;
 import org.yanoproject.runtime.debug.DebugLedgerStateAccess;
 import org.yanoproject.runtime.kernel.NodeKernel;
 import org.yanoproject.runtime.maintenance.RuntimeMaintenanceGate;
@@ -19,7 +20,7 @@ import java.util.Optional;
 /**
  * Thin handle returned by runtime assembly recipes.
  */
-public interface Yano extends AutoCloseable {
+public interface Yano extends PluginServiceLookup, AutoCloseable {
     NodeLifecycle lifecycle();
 
     ChainQuery chain();
@@ -45,26 +46,11 @@ public interface Yano extends AutoCloseable {
     Optional<NodeKernel> kernel();
 
     /**
-     * App-chain gateway (adr/app-layer/005); empty when the app chain is
-     * disabled or when multiple chains are hosted (use {@link #appChains()}).
+     * A service registered through {@code PluginContext.registerService} by the currently initialized plugin
+     * generation, resolved on every call; empty before plugin initialization, after close, or when absent.
      */
-    default Optional<org.yanoproject.api.appchain.AppChainGateway> appChain() {
-        return Optional.empty();
-    }
-
-    /** All hosted app chains (adr/app-layer/006 E5.2); empty registry when disabled. */
-    default org.yanoproject.api.appchain.AppChainGateways appChains() {
-        return org.yanoproject.api.appchain.AppChainGateways.empty();
-    }
-
-    /** Host-owned ADR-011.3 domain API dispatcher; empty when none are selected. */
-    default org.yanoproject.api.plugin.domain.DomainApiGateway domainApis() {
-        return org.yanoproject.api.plugin.domain.DomainApiGateway.empty();
-    }
-
-    /** Host registration seam for bounded node-local derived read models. */
-    default Optional<org.yanoproject.api.plugin.domain.LocalReadModelHost>
-            localReadModels() {
+    @Override
+    default <T> Optional<T> service(String key, Class<T> type) {
         return Optional.empty();
     }
 

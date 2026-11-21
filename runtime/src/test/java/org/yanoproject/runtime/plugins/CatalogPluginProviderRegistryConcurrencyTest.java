@@ -1,11 +1,12 @@
 package org.yanoproject.runtime.plugins;
 
-import org.yanoproject.api.appchain.sink.FinalizedStreamSink;
-import org.yanoproject.api.appchain.sink.FinalizedStreamSinkFactory;
-import org.yanoproject.api.appchain.AppStateMachine;
-import org.yanoproject.api.appchain.AppStateMachineProvider;
 import org.yanoproject.api.plugin.PluginActivationException;
+import org.yanoproject.api.plugin.operations.PluginHealthContext;
+import org.yanoproject.api.plugin.operations.PluginHealthProvider;
+import org.yanoproject.api.plugin.operations.PluginHealthSource;
 import org.yanoproject.catalog.ContributionKind;
+import org.yanoproject.runtime.plugins.fixture.FixtureProduct;
+import org.yanoproject.runtime.plugins.fixture.FixtureProvider;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -37,7 +38,7 @@ class CatalogPluginProviderRegistryConcurrencyTest {
         CatalogPluginProviderRegistry.Entry primaryEntry = entry(
                 "primary-bundle", "primary", () -> {
                     List<String> names = await(worker.submit(() -> registryRef.get()
-                            .names(FinalizedStreamSinkFactory.class)));
+                            .names(FixtureProvider.class)));
                     if (!names.equals(List.of("primary", "secondary"))) {
                         throw new IllegalStateException("Unexpected provider names " + names);
                     }
@@ -45,13 +46,13 @@ class CatalogPluginProviderRegistryConcurrencyTest {
                 });
         CatalogPluginProviderRegistry.Entry secondaryEntry = entry(
                 "secondary-bundle", "secondary", () -> secondary);
-        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(
+        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(TestPluginKinds.KINDS,
                 List.of(primaryEntry, secondaryEntry),
                 List.of("primary-bundle", "secondary-bundle"), List.of());
         registryRef.set(registry);
 
         try {
-            assertThat(registry.find(FinalizedStreamSinkFactory.class, "primary"))
+            assertThat(registry.find(FixtureProvider.class, "primary"))
                     .isPresent();
         } finally {
             registry.close();
@@ -64,12 +65,12 @@ class CatalogPluginProviderRegistryConcurrencyTest {
         ExecutorService worker = Executors.newSingleThreadExecutor();
         AtomicReference<CatalogPluginProviderRegistry> registryRef = new AtomicReference<>();
         FixedFactory secondary = new FixedFactory("secondary");
-        FinalizedStreamSinkFactory primary = new FinalizedStreamSinkFactory() {
+        FixtureProvider primary = new FixtureProvider() {
             @Override
-            public String scheme() {
-                Optional<FinalizedStreamSinkFactory> resolved = await(worker.submit(() ->
+            public String id() {
+                Optional<FixtureProvider> resolved = await(worker.submit(() ->
                         registryRef.get().find(
-                                FinalizedStreamSinkFactory.class, "secondary")));
+                                FixtureProvider.class, "secondary")));
                 if (resolved.isEmpty()) {
                     throw new IllegalStateException("Secondary provider was not resolved");
                 }
@@ -77,14 +78,11 @@ class CatalogPluginProviderRegistryConcurrencyTest {
             }
 
             @Override
-            public List<FinalizedStreamSink> create(
-                    String chainId,
-                    Map<String, String> config
-            ) {
+            public List<FixtureProduct> createAll() {
                 return List.of();
             }
         };
-        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(
+        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(TestPluginKinds.KINDS,
                 List.of(
                         entry("primary-bundle", "primary", () -> primary),
                         entry("secondary-bundle", "secondary", () -> secondary)),
@@ -92,9 +90,9 @@ class CatalogPluginProviderRegistryConcurrencyTest {
         registryRef.set(registry);
 
         try {
-            assertThat(registry.find(FinalizedStreamSinkFactory.class, "primary"))
+            assertThat(registry.find(FixtureProvider.class, "primary"))
                     .isPresent();
-            assertThat(registry.find(FinalizedStreamSinkFactory.class, "secondary"))
+            assertThat(registry.find(FixtureProvider.class, "secondary"))
                     .isPresent();
         } finally {
             registry.close();
@@ -108,17 +106,14 @@ class CatalogPluginProviderRegistryConcurrencyTest {
         AtomicReference<CatalogPluginProviderRegistry> registryRef = new AtomicReference<>();
         AtomicBoolean closeObservedNames = new AtomicBoolean();
         AtomicInteger closeCalls = new AtomicInteger();
-        class MismatchedFactory implements FinalizedStreamSinkFactory, AutoCloseable {
+        class MismatchedFactory implements FixtureProvider, AutoCloseable {
             @Override
-            public String scheme() {
+            public String id() {
                 return "actual";
             }
 
             @Override
-            public List<FinalizedStreamSink> create(
-                    String chainId,
-                    Map<String, String> config
-            ) {
+            public List<FixtureProduct> createAll() {
                 return List.of();
             }
 
@@ -126,21 +121,21 @@ class CatalogPluginProviderRegistryConcurrencyTest {
             public void close() {
                 closeCalls.incrementAndGet();
                 closeObservedNames.set(await(worker.submit(() -> registryRef.get()
-                        .names(FinalizedStreamSinkFactory.class)))
+                        .names(FixtureProvider.class)))
                         .equals(List.of("declared")));
             }
         }
         MismatchedFactory provider = new MismatchedFactory();
-        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(
+        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(TestPluginKinds.KINDS,
                 List.of(entry("mismatch-bundle", "declared", () -> provider)),
                 List.of("mismatch-bundle"), List.of());
         registryRef.set(registry);
 
         try {
             assertThatThrownBy(() -> registry.find(
-                    FinalizedStreamSinkFactory.class, "declared"))
+                    FixtureProvider.class, "declared"))
                     .isInstanceOf(PluginActivationException.class)
-                    .hasRootCauseMessage("Provider '" + FinalizedStreamSinkFactory.class.getName()
+                    .hasRootCauseMessage("Provider '" + FixtureProvider.class.getName()
                             + "' selector mismatch: manifest='declared', provider='actual'");
             assertThat(closeObservedNames).isTrue();
             assertThat(closeCalls).hasValue(1);
@@ -159,7 +154,7 @@ class CatalogPluginProviderRegistryConcurrencyTest {
         CountDownLatch secondStarted = new CountDownLatch(1);
         AtomicInteger constructions = new AtomicInteger();
         FixedFactory provider = new FixedFactory("shared");
-        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(
+        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(TestPluginKinds.KINDS,
                 List.of(entry("shared-bundle", "shared", () -> {
                     constructions.incrementAndGet();
                     supplierEntered.countDown();
@@ -168,13 +163,13 @@ class CatalogPluginProviderRegistryConcurrencyTest {
                 })), List.of("shared-bundle"), List.of());
 
         try {
-            Future<FinalizedStreamSinkFactory> first = callers.submit(() -> registry
-                    .find(FinalizedStreamSinkFactory.class, "shared").orElseThrow());
+            Future<FixtureProvider> first = callers.submit(() -> registry
+                    .find(FixtureProvider.class, "shared").orElseThrow());
             await(supplierEntered);
-            Future<FinalizedStreamSinkFactory> second = callers.submit(() -> {
+            Future<FixtureProvider> second = callers.submit(() -> {
                 secondStarted.countDown();
                 return registry.find(
-                        FinalizedStreamSinkFactory.class, "shared").orElseThrow();
+                        FixtureProvider.class, "shared").orElseThrow();
             });
             await(secondStarted);
             releaseSupplier.countDown();
@@ -196,19 +191,16 @@ class CatalogPluginProviderRegistryConcurrencyTest {
         CountDownLatch secondStarted = new CountDownLatch(1);
         AtomicInteger closeCalls = new AtomicInteger();
         Exception checkedFailure = new Exception("checked-provider-secret");
-        class CheckedFailureFactory implements FinalizedStreamSinkFactory, AutoCloseable {
+        class CheckedFailureFactory implements FixtureProvider, AutoCloseable {
             @Override
-            public String scheme() {
+            public String id() {
                 selectorEntered.countDown();
                 await(releaseSelector);
                 return sneakyThrow(checkedFailure);
             }
 
             @Override
-            public List<FinalizedStreamSink> create(
-                    String chainId,
-                    Map<String, String> config
-            ) {
+            public List<FixtureProduct> createAll() {
                 return List.of();
             }
 
@@ -218,18 +210,18 @@ class CatalogPluginProviderRegistryConcurrencyTest {
             }
         }
         CheckedFailureFactory provider = new CheckedFailureFactory();
-        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(
+        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(TestPluginKinds.KINDS,
                 List.of(entry("checked-bundle", "checked", () -> provider)),
                 List.of("checked-bundle"), List.of());
 
         try {
             Future<Throwable> first = callers.submit(() -> captureFailure(() -> registry.find(
-                    FinalizedStreamSinkFactory.class, "checked")));
+                    FixtureProvider.class, "checked")));
             await(selectorEntered);
             Future<Throwable> second = callers.submit(() -> {
                 secondStarted.countDown();
                 return captureFailure(() -> registry.find(
-                        FinalizedStreamSinkFactory.class, "checked"));
+                        FixtureProvider.class, "checked"));
             });
             await(secondStarted);
             releaseSelector.countDown();
@@ -244,7 +236,7 @@ class CatalogPluginProviderRegistryConcurrencyTest {
             assertThat(closeCalls).hasValue(1);
 
             Throwable laterFailure = captureFailure(() -> registry.find(
-                    FinalizedStreamSinkFactory.class, "checked"));
+                    FixtureProvider.class, "checked"));
             assertThat(laterFailure).isSameAs(firstFailure);
             assertThat(closeCalls).hasValue(1);
         } finally {
@@ -259,17 +251,14 @@ class CatalogPluginProviderRegistryConcurrencyTest {
     void processFatalSelectorFailureStillEscapesAfterExactOnceCandidateClose() {
         AtomicInteger closeCalls = new AtomicInteger();
         TestVirtualMachineError fatal = new TestVirtualMachineError("fatal selector");
-        class FatalFactory implements FinalizedStreamSinkFactory, AutoCloseable {
+        class FatalFactory implements FixtureProvider, AutoCloseable {
             @Override
-            public String scheme() {
+            public String id() {
                 throw fatal;
             }
 
             @Override
-            public List<FinalizedStreamSink> create(
-                    String chainId,
-                    Map<String, String> config
-            ) {
+            public List<FixtureProduct> createAll() {
                 return List.of();
             }
 
@@ -279,12 +268,12 @@ class CatalogPluginProviderRegistryConcurrencyTest {
             }
         }
         FatalFactory provider = new FatalFactory();
-        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(
+        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(TestPluginKinds.KINDS,
                 List.of(entry("fatal-bundle", "fatal", () -> provider)),
                 List.of("fatal-bundle"), List.of());
 
         assertThatThrownBy(() -> registry.find(
-                FinalizedStreamSinkFactory.class, "fatal")).isSameAs(fatal);
+                FixtureProvider.class, "fatal")).isSameAs(fatal);
         assertThat(closeCalls).hasValue(1);
         registry.close();
         assertThat(closeCalls).hasValue(1);
@@ -295,7 +284,7 @@ class CatalogPluginProviderRegistryConcurrencyTest {
         AtomicInteger creations = new AtomicInteger();
         AtomicInteger closes = new AtomicInteger();
         TestVirtualMachineError fatal = new TestVirtualMachineError("nested fatal selector");
-        class RetryFactory implements FinalizedStreamSinkFactory, AutoCloseable {
+        class RetryFactory implements FixtureProvider, AutoCloseable {
             private final int generation;
 
             private RetryFactory(int generation) {
@@ -303,7 +292,7 @@ class CatalogPluginProviderRegistryConcurrencyTest {
             }
 
             @Override
-            public String scheme() {
+            public String id() {
                 if (generation == 1) {
                     throw new IllegalStateException("wrapper", fatal);
                 }
@@ -311,10 +300,7 @@ class CatalogPluginProviderRegistryConcurrencyTest {
             }
 
             @Override
-            public List<FinalizedStreamSink> create(
-                    String chainId,
-                    Map<String, String> config
-            ) {
+            public List<FixtureProduct> createAll() {
                 return List.of();
             }
 
@@ -323,16 +309,16 @@ class CatalogPluginProviderRegistryConcurrencyTest {
                 closes.incrementAndGet();
             }
         }
-        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(
+        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(TestPluginKinds.KINDS,
                 List.of(entry("fatal-bundle", "fatal", () -> {
                     int generation = creations.incrementAndGet();
                     return new RetryFactory(generation);
                 })), List.of("fatal-bundle"), List.of());
 
         assertThatThrownBy(() -> registry.find(
-                FinalizedStreamSinkFactory.class, "fatal")).isSameAs(fatal);
+                FixtureProvider.class, "fatal")).isSameAs(fatal);
         assertThat(closes).hasValue(1);
-        assertThat(registry.find(FinalizedStreamSinkFactory.class, "fatal")).isPresent();
+        assertThat(registry.find(FixtureProvider.class, "fatal")).isPresent();
         assertThat(creations).hasValue(2);
 
         registry.close();
@@ -343,18 +329,15 @@ class CatalogPluginProviderRegistryConcurrencyTest {
     void recursiveSameThreadRetrievalFailsFastAndCachesFailure() {
         AtomicReference<CatalogPluginProviderRegistry> registryRef = new AtomicReference<>();
         AtomicInteger closeCalls = new AtomicInteger();
-        class RecursiveFactory implements FinalizedStreamSinkFactory, AutoCloseable {
+        class RecursiveFactory implements FixtureProvider, AutoCloseable {
             @Override
-            public String scheme() {
-                registryRef.get().find(FinalizedStreamSinkFactory.class, "recursive");
+            public String id() {
+                registryRef.get().find(FixtureProvider.class, "recursive");
                 return "recursive";
             }
 
             @Override
-            public List<FinalizedStreamSink> create(
-                    String chainId,
-                    Map<String, String> config
-            ) {
+            public List<FixtureProduct> createAll() {
                 return List.of();
             }
 
@@ -364,21 +347,21 @@ class CatalogPluginProviderRegistryConcurrencyTest {
             }
         }
         RecursiveFactory provider = new RecursiveFactory();
-        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(
+        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(TestPluginKinds.KINDS,
                 List.of(entry("recursive-bundle", "recursive", () -> provider)),
                 List.of("recursive-bundle"), List.of());
         registryRef.set(registry);
 
         PluginActivationException first = assertThrows(
                 PluginActivationException.class,
-                () -> registry.find(FinalizedStreamSinkFactory.class, "recursive"));
+                () -> registry.find(FixtureProvider.class, "recursive"));
         PluginActivationException second = assertThrows(
                 PluginActivationException.class,
-                () -> registry.find(FinalizedStreamSinkFactory.class, "recursive"));
+                () -> registry.find(FixtureProvider.class, "recursive"));
 
         assertThat(first).hasRootCauseMessage(
                 "Recursive activation of provider '"
-                        + FinalizedStreamSinkFactory.class.getName() + "'");
+                        + FixtureProvider.class.getName() + "'");
         assertThat(second).isSameAs(first);
         assertThat(closeCalls).hasValue(1);
         registry.close();
@@ -392,15 +375,15 @@ class CatalogPluginProviderRegistryConcurrencyTest {
         CountDownLatch releaseSupplier = new CountDownLatch(1);
         AtomicInteger closeCalls = new AtomicInteger();
         ClosingFactory provider = new ClosingFactory("blocking", closeCalls);
-        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(
+        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(TestPluginKinds.KINDS,
                 List.of(entry("blocking-bundle", "blocking", () -> {
                     supplierEntered.countDown();
                     await(releaseSupplier);
                     return provider;
                 })), List.of("blocking-bundle"), List.of());
 
-        Future<FinalizedStreamSinkFactory> activation = callers.submit(() -> registry
-                .find(FinalizedStreamSinkFactory.class, "blocking").orElseThrow());
+        Future<FixtureProvider> activation = callers.submit(() -> registry
+                .find(FixtureProvider.class, "blocking").orElseThrow());
         await(supplierEntered);
         Future<?> close = callers.submit(registry::close);
         awaitClosing(registry);
@@ -412,7 +395,7 @@ class CatalogPluginProviderRegistryConcurrencyTest {
             assertThat(await(activation)).isNotNull();
             await(close);
             assertThat(closeCalls).hasValue(1);
-            assertThatThrownBy(() -> registry.names(FinalizedStreamSinkFactory.class))
+            assertThatThrownBy(() -> registry.names(FixtureProvider.class))
                     .isInstanceOf(IllegalStateException.class)
                     .hasMessageContaining("closing or closed");
         } finally {
@@ -429,30 +412,22 @@ class CatalogPluginProviderRegistryConcurrencyTest {
         CountDownLatch ownerSelectorEntered = new CountDownLatch(1);
         CountDownLatch releaseOwnerSelector = new CountDownLatch(1);
         AtomicInteger closeCalls = new AtomicInteger();
-        class SharedProvider implements AppStateMachineProvider,
-                FinalizedStreamSinkFactory, AutoCloseable {
+        class SharedProvider implements PluginHealthProvider,
+                FixtureProvider, AutoCloseable {
             @Override
-            public String id() {
-                return "machine";
-            }
-
-            @Override
-            public AppStateMachine create() {
+            public PluginHealthSource create(PluginHealthContext context) {
                 throw new AssertionError("unused");
             }
 
             @Override
-            public String scheme() {
+            public String id() {
                 ownerSelectorEntered.countDown();
                 await(releaseOwnerSelector);
                 return "actual-sink";
             }
 
             @Override
-            public List<FinalizedStreamSink> create(
-                    String chainId,
-                    Map<String, String> config
-            ) {
+            public List<FixtureProduct> createAll() {
                 return List.of();
             }
 
@@ -463,22 +438,22 @@ class CatalogPluginProviderRegistryConcurrencyTest {
         }
         SharedProvider provider = new SharedProvider();
         CatalogPluginProviderRegistry.Entry sinkEntry = new CatalogPluginProviderRegistry.Entry(
-                "sink-owner", ContributionKind.FINALIZED_SINK, "declared-sink",
+                "sink-owner", TestPluginKinds.FIXTURE, "declared-sink",
                 provider.getClass().getName(), null, () -> provider);
         CatalogPluginProviderRegistry.Entry machineEntry =
                 new CatalogPluginProviderRegistry.Entry(
-                        "machine-borrower", ContributionKind.APP_STATE_MACHINE, "machine",
+                        "machine-borrower", ContributionKind.HEALTH, "machine",
                         provider.getClass().getName(), null, () -> provider);
-        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(
+        CatalogPluginProviderRegistry registry = new CatalogPluginProviderRegistry(TestPluginKinds.KINDS,
                 List.of(sinkEntry, machineEntry),
                 List.of("sink-owner", "machine-borrower"), List.of());
 
         Future<?> owner = callers.submit(() -> registry.find(
-                FinalizedStreamSinkFactory.class, "declared-sink"));
+                FixtureProvider.class, "declared-sink"));
         await(ownerSelectorEntered);
         try {
             assertThatThrownBy(() -> registry.find(
-                    AppStateMachineProvider.class, "machine"))
+                    PluginHealthProvider.class, "machine"))
                     .isInstanceOf(PluginActivationException.class)
                     .hasRootCauseMessage("Plugin provider instance is already owned by another "
                             + "catalog entry or as a factory product");
@@ -504,15 +479,15 @@ class CatalogPluginProviderRegistryConcurrencyTest {
             java.util.function.Supplier<?> supplier
     ) {
         return new CatalogPluginProviderRegistry.Entry(
-                bundleId, ContributionKind.FINALIZED_SINK, selector,
-                FinalizedStreamSinkFactory.class.getName(), null, supplier);
+                bundleId, TestPluginKinds.FIXTURE, selector,
+                FixtureProvider.class.getName(), null, supplier);
     }
 
     private static void awaitClosing(CatalogPluginProviderRegistry registry) {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2);
         while (System.nanoTime() < deadline) {
             try {
-                registry.names(FinalizedStreamSinkFactory.class);
+                registry.names(FixtureProvider.class);
             } catch (IllegalStateException expected) {
                 return;
             }
@@ -557,7 +532,7 @@ class CatalogPluginProviderRegistryConcurrencyTest {
         throw (X) failure;
     }
 
-    private static class FixedFactory implements FinalizedStreamSinkFactory {
+    private static class FixedFactory implements FixtureProvider {
         private final String scheme;
 
         private FixedFactory(String scheme) {
@@ -565,15 +540,12 @@ class CatalogPluginProviderRegistryConcurrencyTest {
         }
 
         @Override
-        public String scheme() {
+        public String id() {
             return scheme;
         }
 
         @Override
-        public List<FinalizedStreamSink> create(
-                String chainId,
-                Map<String, String> config
-        ) {
+        public List<FixtureProduct> createAll() {
             return List.of();
         }
     }

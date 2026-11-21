@@ -1,0 +1,8 @@
+{
+  "baselineCoordinate": "org.yanoproject:yano-core-api:0.1.0-pre19",
+  "baselineSha256": "e8cc29db9c9e36dd743c9ae81bd42e806a4035e87d090d392af017c5f12554e9",
+  "baselineProvenance": "Local Maven artifact; no claim of remote release verification",
+  "compiler": "javac 25.0.2",
+  "sourceSha256": "310bf422b0decc7d7570e79ce89f38f74b4edef5199c6bf9f08ea38bf66c444b",
+  "fixtureSha256": "9dfd7573788a170d7c88807676868947798b7e8760489676fa7f50d38241b5b0"
+}

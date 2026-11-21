@@ -234,24 +234,8 @@ public final class YanoDevnetAssembly {
         }
 
         @Override
-        public Optional<org.yanoproject.api.appchain.AppChainGateway> appChain() {
-            return delegate.appChain();
-        }
-
-        @Override
-        public org.yanoproject.api.appchain.AppChainGateways appChains() {
-            return delegate.appChains();
-        }
-
-        @Override
-        public org.yanoproject.api.plugin.domain.DomainApiGateway domainApis() {
-            return delegate.domainApis();
-        }
-
-        @Override
-        public Optional<org.yanoproject.api.plugin.domain.LocalReadModelHost>
-                localReadModels() {
-            return delegate.localReadModels();
+        public <T> Optional<T> service(String key, Class<T> type) {
+            return delegate.service(key, type);
         }
 
         @Override

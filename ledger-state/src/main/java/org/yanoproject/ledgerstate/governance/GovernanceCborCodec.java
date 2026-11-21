@@ -6,6 +6,8 @@ import com.bloxbean.cardano.yaci.core.model.governance.actions.GovAction;
 import com.bloxbean.cardano.yaci.core.model.serializers.governance.GovActionSerializer;
 import com.bloxbean.cardano.yaci.core.util.CborSerializationUtil;
 import com.bloxbean.cardano.yaci.core.util.HexUtil;
+import org.yanoproject.api.governance.GovernanceProposalStatus;
+import org.yanoproject.api.governance.GovernanceProposalStatusReason;
 import org.yanoproject.ledgerstate.governance.model.CommitteeMemberRecord;
 import org.yanoproject.ledgerstate.governance.model.DRepStateRecord;
 import org.yanoproject.ledgerstate.governance.model.GovActionRecord;
@@ -106,9 +108,9 @@ public final class GovernanceCborCodec {
         int status = CborSerializationUtil.toInt(array.getDataItems().get(1));
         int reason = CborSerializationUtil.toInt(array.getDataItems().get(2));
         return new ProposalLifecycleRecord(
-                org.yanoproject.api.appchain.l1view.GovernanceActionType.values()[actionType],
-                org.yanoproject.api.appchain.l1view.GovernanceProposalStatus.values()[status],
-                org.yanoproject.api.appchain.l1view.GovernanceProposalStatusReason.values()[reason],
+                GovActionType.values()[actionType],
+                GovernanceProposalStatus.values()[status],
+                GovernanceProposalStatusReason.values()[reason],
                 CborSerializationUtil.toInt(array.getDataItems().get(3)),
                 CborSerializationUtil.toInt(array.getDataItems().get(4)));
     }

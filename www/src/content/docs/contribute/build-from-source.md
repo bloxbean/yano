@@ -141,10 +141,9 @@ loading with the build-only conformance bundle:
 
 The fixture is never bundled into the application index; the smoke loads it
 only from the external plugin directory, so startup proves it was selected from
-there. The task starts an isolated one-member app chain and asserts
-all ten catalog contribution kinds (`NodePlugin` plus nine typed SPIs),
-protected operations REST, the plugin health group, Prometheus metrics, and
-dashboard assets. The fixture's adversarial TCCL handoff also proves plugin
+there. The task asserts that the fixture's contributions activate, together
+with protected operations REST, the plugin health group, Prometheus metrics,
+and dashboard assets. The fixture's adversarial TCCL handoff also proves plugin
 callbacks crossed catalog facades.
 
 ## Native Zip Distribution
@@ -177,9 +176,8 @@ network genesis files, plus the same `LICENSE` and release SBOM. It deliberately
 has no plugin directory or
 `yano-plugins` JVM runtime: native images cannot load JARs dynamically. Run the
 standalone JVM CLI on a JDK 25 operator/build host when offline validation is
-needed. Native Yano embeds only retained core providers. Optional Yano X state
-machines, connectors, and products are supported by the JVM distribution, not
-by augmenting the native build.
+needed. Native Yano embeds only its core providers and has no application
+ledger (app chain) support.
 
 After the native zip task finishes, verify the final executable that it copied
 into the distribution:

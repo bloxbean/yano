@@ -1,0 +1,14 @@
+dependencies {
+    api project(':node-api')
+}
+
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            pom {
+                name = 'Yano Host API'
+                description = 'Versioned infrastructure contracts for independently released Yano extensions'
+            }
+        }
+    }
+}
