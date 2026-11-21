@@ -84,6 +84,7 @@ import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.FileTime;
 import java.security.MessageDigest;
 import java.time.Instant;
+import java.time.LocalDateTime;
 import java.util.AbstractSet;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -2130,8 +2131,15 @@ class PluginCatalogRuntimeTest {
                 deniedProvider, "collision-denied", "denied", "denied", true);
         Path selectedJar = tempDirectory.resolve("collision-selected.jar");
         Path deniedJar = tempDirectory.resolve("collision-denied.jar");
-        writeCollisionJar(selectedJar, selectedClasses, selectedId, "selected",
-                selectedProvider, "selected", List.of(), 0);
+        // Keep the selected digest in the upper half so a denied digest below it is found in a few tries.
+        int selectedPadding = 0;
+        do {
+            writeCollisionJar(selectedJar, selectedClasses, selectedId, "selected",
+                    selectedProvider, "selected", List.of(), selectedPadding++);
+        } while (artifactDigest(selectedJar).charAt(0) < '8' && selectedPadding < 1_024);
+        assertThat(artifactDigest(selectedJar).charAt(0))
+                .as("the selected artifact digest must be in the upper half")
+                .isGreaterThanOrEqualTo('8');
         int padding = 0;
         do {
             writeCollisionJar(deniedJar, deniedClasses, deniedId, "denied",
@@ -4020,10 +4028,15 @@ class PluginCatalogRuntimeTest {
         }
     }
 
+    /** A fixed entry time keeps the clock out of the test JAR bytes. */
+    private static final LocalDateTime FIXED_ENTRY_TIME = LocalDateTime.of(2020, 1, 1, 0, 0);
+
     private static void writeJar(Path jar, Map<String, byte[]> entries) throws IOException {
         try (JarOutputStream output = new JarOutputStream(Files.newOutputStream(jar))) {
             for (Map.Entry<String, byte[]> entry : entries.entrySet()) {
-                output.putNextEntry(new JarEntry(entry.getKey()));
+                JarEntry jarEntry = new JarEntry(entry.getKey());
+                jarEntry.setTimeLocal(FIXED_ENTRY_TIME);
+                output.putNextEntry(jarEntry);
                 output.write(entry.getValue());
                 output.closeEntry();
             }
