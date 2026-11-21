@@ -133,6 +133,9 @@ class WitnessDecodingTest {
                     StrictCbor.span(HexUtil.decodeHexString(script)))).as(script)
                     .isInstanceOf(TxDecodingException.class).hasMessageContaining("type 6");
         }
+        assertThatThrownBy(() -> HaskellPolicy.CONWAY.walk(FieldType.SCRIPT_REF,
+                StrictCbor.span(HexUtil.decodeHexString(scriptRef))))
+                .isInstanceOf(TxDecodingException.class).hasMessageContaining("type 6");
         // in a transaction's witness set, its auxiliary data (both forms), and an output's reference script
         String output = "a3" + "00581d60" + "00".repeat(28) + "0100" + "03" + scriptRef;
         for (String tx : List.of(

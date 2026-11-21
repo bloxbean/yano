@@ -184,6 +184,15 @@ class CborRuleTest {
                 .isInstanceOf(Exception.class);
     }
 
+    /** {@code script} is read as the policy reads a reference script, which refuses Dijkstra's guard in Conway. */
+    @Test
+    void theScriptRuleRefusesAGuard() {
+        String key = "8200" + HASH28;
+        accepts("script", HexFormat.of().parseHex("8200" + key));
+        assertThatThrownBy(() -> RULES.get("script").read(HexFormat.of().parseHex("8200" + "8206" + key)))
+                .hasMessageContaining("type 6");
+    }
+
     @Test
     void manualSamplesKeepTheirExpectation() {
         assertThat(CborDecodingDiversityReportTest.isValid("valid")).isTrue();

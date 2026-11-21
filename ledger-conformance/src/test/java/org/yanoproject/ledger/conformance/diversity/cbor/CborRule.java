@@ -41,7 +41,6 @@ import com.bloxbean.cardano.yaci.core.model.serializers.TransactionInputSerializ
 import com.bloxbean.cardano.yaci.core.model.serializers.TransactionOutputSerializer;
 import com.bloxbean.cardano.yaci.core.model.serializers.WitnessesSerializer;
 import org.yanoproject.ledger.rules.conway.tx.HaskellPolicy;
-import org.yanoproject.ledger.rules.conway.tx.RawScript;
 import org.yanoproject.ledger.rules.conway.tx.RawTransaction;
 
 import java.io.ByteArrayOutputStream;
@@ -139,7 +138,7 @@ record CborRule(String name, boolean exact, Decoder strict, Decoder library, Enc
                         c -> ((Redeemer) c).serializePreConway()),
                 inTransaction("redeemers", cbor -> tx(hex(MIN_BODY), cat("a105", cbor), null)),
                 model("relay", reads(FieldType.RELAY_LIST.record()), CborRule::relay, c -> ((Relay) c).serialize()),
-                model("script", cbor -> RawScript.readScript(CborSpan.of(cbor)),
+                model("script", CborRule::script,
                         cbor -> ((Array) item(cbor)).getDataItems().getFirst().equals(new UnsignedInteger(0))
                                 ? NativeScript.deserializeScriptRef(cbor) : PlutusScript.deserializeScriptRef(cbor),
                         c -> c instanceof NativeScript n ? n.scriptRefBytes() : ((PlutusScript) c).scriptRefBytes()),
@@ -242,6 +241,12 @@ record CborRule(String name, boolean exact, Decoder strict, Decoder library, Enc
             HaskellPolicy.CONWAY.walk(record, CborSpan.of(cbor));
             return null;
         };
+    }
+
+    /** A script as the policy reads one: in an output's reference script, {@code #6.24(bytes .cbor script)}. */
+    static Object script(byte[] script) throws Exception {
+        HaskellPolicy.CONWAY.walk(FieldType.SCRIPT_REF, CborSpan.of(cat(hex("d818"), wrapped(script))));
+        return null;
     }
 
     @FunctionalInterface
