@@ -7,11 +7,17 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.rocksdb.ColumnFamilyHandle;
+import org.rocksdb.ReadOptions;
+import org.rocksdb.RocksDB;
+import org.rocksdb.RocksDBException;
 
+import java.lang.reflect.Field;
 import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class DirectRocksDBChainStateRollbackTest {
 
@@ -251,6 +257,26 @@ class DirectRocksDBChainStateRollbackTest {
 
         chainState.rollbackTo(new Point(0L, null));
         assertThat(sequence()).as("a nested rollback to origin still counts once").isEqualTo(start + 6);
+    }
+
+    @Test
+    void hasBlockPropagatesReadFailure() throws Exception {
+        // A failed read reported as "absent" would let BodyFetchManager apply a duplicate body a second time.
+        Field dbField = DirectRocksDBChainState.class.getDeclaredField("db");
+        dbField.setAccessible(true);
+        RocksDB realDb = (RocksDB) dbField.get(chainState);
+        dbField.set(chainState, new RocksDB(0L) {
+            @Override
+            public byte[] get(ColumnFamilyHandle handle, ReadOptions options, byte[] key) throws RocksDBException {
+                throw new RocksDBException("synthetic read failure");
+            }
+        });
+        try {
+            assertThatThrownBy(() -> chainState.hasBlock(hash(1)))
+                    .hasRootCauseMessage("synthetic read failure");
+        } finally {
+            dbField.set(chainState, realDb);
+        }
     }
 
     private long sequence() {

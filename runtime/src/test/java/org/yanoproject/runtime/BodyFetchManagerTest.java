@@ -5,6 +5,8 @@ import com.bloxbean.cardano.yaci.core.model.BlockHeader;
 import com.bloxbean.cardano.yaci.core.model.Era;
 import com.bloxbean.cardano.yaci.core.model.HeaderBody;
 import com.bloxbean.cardano.yaci.core.model.byron.ByronEbBlock;
+import com.bloxbean.cardano.yaci.core.model.byron.ByronEbBlockCons;
+import com.bloxbean.cardano.yaci.core.model.byron.ByronEbHead;
 import com.bloxbean.cardano.yaci.core.model.byron.ByronMainBlock;
 import com.bloxbean.cardano.yaci.core.model.byron.ByronBlockBody;
 import com.bloxbean.cardano.yaci.core.model.byron.ByronBlockCons;
@@ -702,6 +704,36 @@ class BodyFetchManagerTest {
 
         assertEquals(List.of(101L, 102L), applied);
         assertEquals(102L, chainState.getTip().getBlockNumber());
+    }
+
+    @Test
+    @DisplayName("A Byron EBB sharing the tip's block number applies once; its redelivery is ignored")
+    void byronEbbSharingTipBlockNumberAppliesOnceAndRedeliveryIsIgnored() {
+        String main = "33".repeat(31) + "aa";
+        String ebb = "33".repeat(31) + "ab";
+        chainState.storeBlockHeader(hexToBytes(main), 1L, 21599L, "header".getBytes());
+        chainState.storeBlock(hexToBytes(main), 1L, 21599L, "body".getBytes());
+        chainState.storeByronEbHeader(hexToBytes(ebb), 1L, 21600L, "header".getBytes());
+
+        List<String> applied = new ArrayList<>();
+        eventBus.subscribe(BlockAppliedEvent.class, ctx -> applied.add(ctx.event().blockHash()),
+                SubscriptionOptions.builder().build());
+
+        // The EBB of epoch 1 has the same block number as the main block at the tip.
+        ByronEbBlock ebbBlock = ByronEbBlock.builder()
+                .header(ByronEbHead.builder()
+                        .prevBlock(main)
+                        .blockHash(ebb)
+                        .consensusData(ByronEbBlockCons.builder().epoch(1).difficulty(BigInteger.ONE).build())
+                        .build())
+                .cbor("00")
+                .build();
+
+        assertEquals(BodyFetchManager.BlockApplyResult.APPLIED, bodyFetchManager.applyByronEbBlock(ebbBlock));
+        assertEquals(BodyFetchManager.BlockApplyResult.SKIPPED_DUPLICATE, bodyFetchManager.applyByronEbBlock(ebbBlock));
+
+        assertEquals(List.of(ebb), applied);
+        assertArrayEquals(hexToBytes(ebb), chainState.getTip().getBlockHash());
     }
 
     @Test

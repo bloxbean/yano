@@ -1463,7 +1463,10 @@ public class BodyFetchManager implements BlockChainDataListener, Runnable, Heade
     /**
      * A rollback abandons the fetch in flight, so two fetches can answer with the same body. Applying it again would
      * feed every BlockAppliedEvent listener the block twice, and the nonce state would keep the error for good.
-     * A rollback deletes the bodies it removes and lowers the tip, so a block re-adopted afterwards still applies.
+     * Only a block at or below the body tip can be a duplicate: a rollback lowers the tip below the blocks it removes,
+     * so a block re-adopted afterwards applies again even if its body is still stored. The hash lookup, not the height
+     * alone, decides, so a Byron EBB still applies after the main block that shares its number. A failed lookup
+     * throws and fails the apply instead of letting a duplicate through.
      */
     private boolean isDuplicateBody(long blockNumber, long slot, String hash) {
         ChainTip tip = chainState.getTip();
