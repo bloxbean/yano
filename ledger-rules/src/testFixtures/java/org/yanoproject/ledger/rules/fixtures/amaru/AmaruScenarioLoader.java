@@ -82,7 +82,8 @@ import java.util.stream.Stream;
  * {@value #SCENARIOS_PROPERTY} or the environment variable {@value #SCENARIOS_ENV}. Either may name the
  * {@code transaction} data directory itself or the root of an Amaru checkout. Tests call
  * {@link #requireScenariosDir()}, which skips them (a JUnit assumption) when neither is set: the corpus
- * is Amaru's (Apache-2.0) and is not copied into Yano.</p>
+ * is Amaru's (Apache-2.0) and is not copied into Yano. A configured directory without the scenarios fails, so a
+ * moved corpus cannot turn the scenario tests into skips.</p>
  *
  * <p><b>Mapping to the view model.</b></p>
  * <ul>
@@ -144,12 +145,19 @@ public final class AmaruScenarioLoader {
         this.root = root;
     }
 
-    /** @return the configured corpus directory, if any and if it exists */
+    /**
+     * @return the configured corpus directory, or empty when none is configured
+     * @throws IllegalStateException when the configured directory holds no scenarios
+     */
     public static Optional<Path> locateScenariosDir() {
         String configured = System.getProperty(SCENARIOS_PROPERTY);
         if (configured == null || configured.isBlank()) {
             configured = System.getenv(SCENARIOS_ENV);
         }
+        return locateScenariosDir(configured);
+    }
+
+    static Optional<Path> locateScenariosDir(String configured) {
         if (configured == null || configured.isBlank()) {
             return Optional.empty();
         }
@@ -161,7 +169,8 @@ public final class AmaruScenarioLoader {
         if (Files.isDirectory(nested.resolve("scenarios"))) {
             return Optional.of(nested);
         }
-        return Optional.empty();
+        throw new IllegalStateException("Amaru scenarios configured at " + dir + ", but neither it nor its "
+                + TRANSACTION_DATA + " holds a scenarios directory");
     }
 
     /**
