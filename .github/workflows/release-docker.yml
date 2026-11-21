@@ -63,7 +63,9 @@ concurrency:
 
 env:
   IMAGE_NAME: bloxbean/yano
-  JVM_BASE_IMAGE: eclipse-temurin:25-jre
+  # Amazon Corretto 25.0.5.1 (fixes CVE-2026-114938; Temurin has no fixed 25 build yet), pinned by
+  # multi-arch index digest. Keep in sync with the default in docker/jvm/Dockerfile.
+  JVM_BASE_IMAGE: amazoncorretto:25.0.5-al2023-headless@sha256:d43cc2b87faf3e80d04659d315dd9f1dba2c1176cc9b48d9daed285856ac056c
 
 jobs:
   validate:
@@ -208,6 +210,21 @@ jobs:
 
       - name: Build local JVM smoke image
         run: docker build --build-arg JVM_BASE_IMAGE="${JVM_BASE_IMAGE}" -t yano:jvm-smoke app/build/docker/jvm/context
+
+      # CVE-2026-114938 ("Java4Shell") is fixed in 25.0.5.1; fail rather than ship an older runtime.
+      - name: Verify JVM image runtime version
+        shell: bash
+        run: |
+          set -euo pipefail
+          MIN_VERSION=25.0.5.1
+          RUNTIME_VERSION="$(docker run --rm --entrypoint java yano:jvm-smoke -XshowSettings:properties -version 2>&1 \
+            | awk -F' = ' '/^ *java\.runtime\.version = / { print $2; exit }')"
+          echo "JVM image runtime: ${RUNTIME_VERSION}"
+          RUNTIME_NUMBER="${RUNTIME_VERSION%%[+-]*}"
+          if [[ -z "$RUNTIME_NUMBER" || "$(printf '%s\n%s\n' "$MIN_VERSION" "$RUNTIME_NUMBER" | sort -V | head -1)" != "$MIN_VERSION" ]]; then
+            echo "JVM image runtime ${RUNTIME_VERSION:-unknown} is older than ${MIN_VERSION} (CVE-2026-114938)" >&2
+            exit 1
+          fi
 
       - name: Smoke test JVM image
         shell: bash
