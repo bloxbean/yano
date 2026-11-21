@@ -3,14 +3,17 @@
 ## ADR-062 Amaru validation engine removed
 
 The optional Amaru WebAssembly validation engine is gone. It was never in a distribution, Docker image or
-publication, so only nodes built with `-PwithAmaru=true` are affected.
+publication, so the configuration changes below affect only nodes built with `-PwithAmaru=true`. The engine-health
+metrics and health fields (last item) are removed in every build.
 
-- `yano.validation.engine`, `yano.validation.shadow-engines` or `yano.validation.shadow-sync-engines` naming `amaru`
-  or `amaru-scalus` now stops startup with "Unknown validation engine '…'. Available: …". Set
-  `yano.validation.engine=java-julc` (the default), or remove the entry from the list.
+- With transaction evaluation on (`yano.block-producer.tx-evaluation`, the default), `yano.validation.engine` or
+  `yano.validation.shadow-engines` naming `amaru` or `amaru-scalus` now stops startup with "Unknown validation
+  engine '…'. Available: …"; so does `yano.validation.shadow-sync-engines` when shadow sync
+  (`yano.validation.shadow-sync`) is also on. Set `yano.validation.engine=java-julc` (the default), or remove the
+  entry from the list.
 - The `yano.validation.amaru.*` keys (`pool-size`, `timeout-ms`, `max-abandoned`, `max-memory-pages`) are ignored.
 - The build property `-PwithAmaru` is ignored.
-- Engine health is gone with the only engine that could turn unhealthy: the metrics
+- In every build, engine health is gone with the only engine that could turn unhealthy: the metrics
   `yano_validation_engine_healthy` and `yano_validation_shadow_sync_engine_healthy` are removed, and the
   `validation-engine` readiness check (always UP) and the transaction subsystem's health details no longer carry
   health fields (`<engine>.healthy`, `shadowUnhealthy`, `shadowSync.<engine>.healthy`, `shadowSyncUnhealthy`,
