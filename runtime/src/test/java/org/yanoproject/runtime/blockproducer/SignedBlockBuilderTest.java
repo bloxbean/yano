@@ -748,6 +748,41 @@ class SignedBlockBuilderTest {
     }
 
     @Test
+    void commitPendingNonceState_usesTheBuiltValuesWhenTheCallerReusesItsBuffers() {
+        byte[][] stored = new byte[2][];
+        SignedBlockBuilder reusing = createFreshBuilder(snapshotStore(stored, 0));
+        SignedBlockBuilder untouched = createFreshBuilder(snapshotStore(stored, 1));
+        byte[] prevHash = new byte[32];
+        Arrays.fill(prevHash, (byte) 7);
+
+        untouched.buildBlock(1, 1, prevHash.clone(), List.of());
+        untouched.commitPendingNonceState();
+
+        byte[] buffer = prevHash.clone();
+        var result = reusing.buildBlock(1, 1, buffer, List.of());
+        Arrays.fill(buffer, (byte) 0);
+        Arrays.fill(result.blockHash(), (byte) 0);
+        reusing.commitPendingNonceState();
+
+        assertThat(stored[0]).isNotNull().isEqualTo(stored[1]);
+    }
+
+    /** A store keeping the latest serialized nonce snapshot in {@code holder[index]}. */
+    private static NonceStateStore snapshotStore(byte[][] holder, int index) {
+        return new NonceStateStore() {
+            @Override
+            public void storeEpochNonceState(byte[] serialized) {
+                holder[index] = serialized;
+            }
+
+            @Override
+            public byte[] getEpochNonceState() {
+                return holder[index];
+            }
+        };
+    }
+
+    @Test
     void storeProducedBlockStorageFailureRollsBackStagedNonceState() {
         EpochNonceState freshNonce = new EpochNonceState(EPOCH_LENGTH, SECURITY_PARAM, ACTIVE_SLOTS_COEFF);
         try {
