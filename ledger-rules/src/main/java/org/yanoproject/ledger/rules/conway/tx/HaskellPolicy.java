@@ -87,6 +87,11 @@ public final class HaskellPolicy implements FormatPolicy {
     private static final long MAX_COMPACT_MULTI_ASSET = 65535;
     private static final long COMPACT_ASSET = 44;
     private static final long COMPACT_POLICY = 28;
+    /**
+     * CCL's table of a transaction without its validity flag, {@code [body, witness_set, auxiliary_data / null]}, whose
+     * rows it gives to Mary and from Dijkstra ({@code RawTx}); it has no public constant.
+     */
+    private static final String WITHOUT_VALIDITY_FLAG = "pre_alonzo_transaction";
     /** A map's head with an 8-byte length, which cborg reports as {@code TypeMapLen64}. */
     private static final int MAP_HEAD_8_BYTES = 0xbb;
 
@@ -176,7 +181,12 @@ public final class HaskellPolicy implements FormatPolicy {
     }
 
     /**
-     * No unknown field, none outside its era, none repeated ({@code invalidField}, {@code decodeRecordSum},
+     * A transaction may leave out its validity flag, which is then {@code True}: Conway decodes a transaction with
+     * Alonzo's decoder, which peeks for a {@code TypeBool} and takes a list of 3 or 4 items (Alonzo/Tx.hs:538-553,
+     * {@code decodeRecordNamed "AlonzoTx"}), as a node does a transaction submitted to its mempool. A block's
+     * transactions are segregated, so this form is a submitted transaction's alone.
+     *
+     * <p>No unknown field, none outside its era, none repeated ({@code invalidField}, {@code decodeRecordSum},
      * {@code decodeMapByKey}), but a redeemer's key: the map of redeemers keeps its last value ({@code Map.fromList},
      * Alonzo/TxWits.hs:566-573). A hard fork's major version is at most {@code succVersion (ProtVerHigh ConwayEra)}
      * ({@code decodeProtVer @ConwayEra}, BaseTypes.hs:253-263, Procedures.hs:938-940); a header's may be one more.
@@ -191,7 +201,7 @@ public final class HaskellPolicy implements FormatPolicy {
         if (field == null) {
             throw new TxDecodingException("unknown " + at(record, key, value));
         }
-        if (!field.validIn(era)) {
+        if (!field.validIn(era) && !record.name().equals(WITHOUT_VALIDITY_FLAG)) {
             throw new TxDecodingException(at(record, key, value) + " is not in " + era);
         }
         if (record.shape() == RecordSpec.Shape.BY_MAJOR_TYPE) {

@@ -199,9 +199,25 @@ class HaskellPolicyTest {
         return size < 256 ? "b8%02x".formatted(size) : "b9%04x".formatted(size);
     }
 
+    /**
+     * Alonzo's decoder, which Conway's is, takes a transaction without its validity flag as valid (Alonzo/Tx.hs:538-553):
+     * it peeks for a {@code TypeBool}, and the list has 3 items or 4.
+     */
     @Test
-    void aTransactionWithoutItsValidityFlag() {
-        bothReject(HexUtil.decodeHexString("83" + BODY + "a0" + "f6"), "pre_alonzo_transaction item at 1 is not in");
+    void aTransactionWithoutItsValidityFlagIsValid() {
+        for (String aux : new String[]{"f6", "a0", "d90103a0"}) {
+            byte[] tx = HexUtil.decodeHexString("83" + BODY + "a0" + aux);
+            assertThatCode(() -> RawTx.walk(tx, Era.Conway, HaskellPolicy.CONWAY)).doesNotThrowAnyException();
+            RawTransaction raw = RawTransaction.parse(tx, null);
+            assertThat(raw.isValid()).isTrue();
+            assertThat(raw.size()).isEqualTo(tx.length);
+        }
+        assertThat(RawTransaction.parse(HexUtil.decodeHexString("9f" + BODY + "a0" + "f6" + "ff"), null).isValid())
+                .isTrue();
+        // a flag in the auxiliary data's place, or after it, which only a Dijkstra block's transaction has
+        assertThatThrownBy(() -> RawTransaction.parse(HexUtil.decodeHexString("83" + BODY + "a0" + "f5"), null))
+                .isInstanceOf(TxDecodingException.class).hasMessageContaining("auxiliary_data");
+        bothReject(HexUtil.decodeHexString("84" + BODY + "a0" + "f6" + "f5"), "block_transaction");
     }
 
     @Test
