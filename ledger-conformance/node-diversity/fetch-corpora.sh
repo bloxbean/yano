@@ -9,7 +9,8 @@
 # <dir>/uplc-conformance            the UPLC vectors, checked against UPLC_CORPUS_SHA256
 # <dir>/turbo                       the turbo scripts, checked against TURBO_CORPUS_SHA256
 #
-# Idempotent: a repository already at its pin and a tarball already extracted are kept.
+# Idempotent: a repository already at its pin and a tarball already extracted are kept. An existing directory at another
+# revision (for example a working clone, or a checkout of an older pin) is never replaced: the script stops, naming it.
 set -euo pipefail
 
 if [[ $# -ne 1 ]]; then
@@ -22,12 +23,16 @@ source "$(dirname "$0")/corpora.env"
 mkdir -p "$DIR"
 
 checkout() {
-    local repository=$1 revision=$2 target=$3
-    if [[ "$(git -C "$target" rev-parse HEAD 2>/dev/null)" == "$revision" ]]; then
-        echo "$target: at $revision"
-        return
+    local repository=$1 revision=$2 target=$3 actual
+    if [[ -e "$target" ]]; then
+        actual=$(git -C "$target" rev-parse HEAD 2>/dev/null || true)
+        if [[ "$actual" == "$revision" ]]; then
+            echo "$target: at $revision"
+            return
+        fi
+        echo "$target exists at ${actual:-no git revision}, expected $revision: remove it or use another <dir>" >&2
+        exit 1
     fi
-    rm -rf "$target"
     git init -q "$target"
     git -C "$target" fetch -q --depth 1 "$repository" "$revision"
     git -C "$target" checkout -q FETCH_HEAD
