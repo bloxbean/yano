@@ -9,19 +9,17 @@
 #   ./yano.sh start:preprod,projection # Preprod with the optional history archive
 #   ./yano.sh start:mainnet        # Mainnet relay alias
 #   ./yano.sh start:<profiles>     # Custom comma-separated Quarkus profiles
-#   ./yano.sh appchain ...         # App-chain tooling (ships with Yano X)
 #   ./yano.sh observability start  # Optional persistent metrics history
 #
 
 set -e
 
-CALLER_DIR="$PWD"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 YANO_ROOT="$SCRIPT_DIR"
 
 # In a release, this script lives beside yano.jar and config/. In the source
 # tree, app/yano.sh delegates here while this file remains under app/bin/.
-# Resolve both layouts without depending on optional Yano X tooling.
+# Resolve both layouts.
 if [ "$(basename "$SCRIPT_DIR")" = "bin" ] \
     && [ -d "$SCRIPT_DIR/../config" ]; then
     YANO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -31,7 +29,7 @@ cd "$YANO_ROOT"
 
 usage() {
     cat <<EOF
-Usage: ./yano.sh [start|start:<profiles>|appchain|observability|help] [args...]
+Usage: ./yano.sh [start|start:<profiles>|observability|help] [args...]
 
 Examples:
   ./yano.sh start
@@ -48,9 +46,6 @@ Examples:
   YANO_FILTERS_UTXO_ADDRESSES=addr_test1... \
       ./yano.sh start:preprod,selective-utxo
   ./yano.sh start:mydevnet
-  ./yano.sh appchain try
-  ./yano.sh appchain new
-  ./yano.sh appchain help
   ./yano.sh observability start
   ./yano.sh observability status
 
@@ -66,114 +61,7 @@ Environment:
                    overrides this value. Without either, a resource-profile
                    default applies, or 1536m when no resource profile is used.
   YANO_EXTRA_ARGS  Extra runtime args for jar and native distributions
-
-Advanced:
-  YANO_APPCHAIN_CLI  Internal version-matched app-chain tooling override
 EOF
-}
-
-appchain_usage() {
-    cat <<'EOF'
-Usage: ./yano.sh appchain <command> [args...]
-
-App-chain commands come from the app-chain tooling in the Yano X
-distribution, which was not found here. Install the release-matched Yano X
-JVM distribution; advanced users may set YANO_APPCHAIN_CLI.
-EOF
-}
-
-appchain_cli() {
-    local configured="${YANO_APPCHAIN_CLI:-}"
-    local candidate
-    local found=""
-
-    if [ -n "$configured" ]; then
-        case "$configured" in
-            /*) ;;
-            *) configured="$CALLER_DIR/$configured" ;;
-        esac
-        if [ ! -x "$configured" ]; then
-            echo "Error: YANO_APPCHAIN_CLI is not executable: $configured" >&2
-            exit 1
-        fi
-        printf '%s\n' "$configured"
-        return
-    fi
-
-    candidate="$YANO_ROOT/tools/yano-appchain/bin/yano-appchain"
-    if [ -x "$candidate" ]; then
-        printf '%s\n' "$candidate"
-        return
-    fi
-    candidate="$YANO_ROOT/yano-devtools/bin/yano-appchain"
-    if [ -x "$candidate" ]; then
-        printf '%s\n' "$candidate"
-        return
-    fi
-
-    for candidate in "$YANO_ROOT"/yano-devtools-*/bin/yano-appchain; do
-        if [ -x "$candidate" ]; then
-            if [ -n "$found" ] && [ "$found" != "$candidate" ]; then
-                echo "Error: Multiple yano-devtools installations found." >&2
-                echo "Set YANO_APPCHAIN_CLI to the version-matched launcher." >&2
-                exit 1
-            fi
-            found="$candidate"
-        fi
-    done
-    if [ -z "$found" ]; then
-        echo "Error: This app-chain command requires version-matched app-chain tooling." >&2
-        echo "Install the release-matched Yano X JVM distribution/tooling archive." >&2
-        echo "Advanced users may set YANO_APPCHAIN_CLI." >&2
-        exit 1
-    fi
-    printf '%s\n' "$found"
-}
-
-# The tooling owns the command list, so help always matches the installed
-# commands; without the tooling, explain where the commands come from. An
-# explicit YANO_APPCHAIN_CLI that cannot run reports its own error.
-appchain_help() {
-    local cli
-    if [ -n "${YANO_APPCHAIN_CLI:-}" ]; then
-        cli="$(appchain_cli)" || exit 1
-        cd "$CALLER_DIR"
-        exec "$cli" help
-    fi
-    if cli="$(appchain_cli 2>/dev/null)"; then
-        cd "$CALLER_DIR"
-        exec "$cli" help
-    fi
-    appchain_usage
-    exit 0
-}
-
-dispatch_appchain() {
-    shift
-    if [ "$#" -eq 0 ]; then
-        appchain_help
-    fi
-    case "$1" in
-        help|-h|--help)
-            appchain_help
-            ;;
-    esac
-    if [ "$1" = "cluster" ]; then
-        shift
-        if [ ! -x "$YANO_ROOT/appchain-cluster/cluster.sh" ]; then
-            echo "Error: appchain-cluster/cluster.sh is missing or not executable." >&2
-            echo "Install the release-matched Yano X JVM distribution." >&2
-            exit 1
-        fi
-        if [ "$#" -eq 0 ]; then
-            set -- help
-        fi
-        exec "$YANO_ROOT/appchain-cluster/cluster.sh" "$@"
-    fi
-    local cli
-    cli="$(appchain_cli)"
-    cd "$CALLER_DIR"
-    exec "$cli" "$@"
 }
 
 validate_profile_name() {
@@ -239,10 +127,6 @@ validate_profile_compatibility() {
 if [ "$#" -eq 0 ]; then
     usage
     exit 0
-fi
-
-if [ "$1" = "appchain" ]; then
-    dispatch_appchain "$@"
 fi
 
 if [ "$1" = "observability" ]; then

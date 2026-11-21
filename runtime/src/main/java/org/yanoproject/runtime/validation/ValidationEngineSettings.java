@@ -110,12 +110,6 @@ public record ValidationEngineSettings(String engine, List<String> shadowEngines
         return !engine.equals(LedgerValidationEngines.SCALUS);
     }
 
-    /** @return true when {@code name} is the admission engine or a shadow engine */
-    public boolean uses(String name) {
-        String key = LedgerValidationEngines.normalize(name);
-        return engine.equals(key) || shadowEngines.contains(key);
-    }
-
     private static String shadowList(Map<String, Object> g) {
         Object value = g.get(YanoPropertyKeys.Validation.SHADOW_ENGINES);
         if (value instanceof Collection<?> collection) {

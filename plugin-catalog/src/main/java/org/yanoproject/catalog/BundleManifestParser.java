@@ -33,10 +33,17 @@ public final class BundleManifestParser {
     public static final int MAX_MANIFEST_BYTES = 64 * 1024;
 
     private static final Pattern DUPLICATE_FIELD = Pattern.compile("Duplicate field ['\"]([^'\"]+)['\"]");
-    private static final ObjectMapper MAPPER = createMapper();
+    static final ObjectMapper MAPPER = createMapper();
 
-    /** Creates a strict schema-v1 parser. */
-    public BundleManifestParser() {
+    private final ContributionKindRegistry kinds;
+
+    /**
+     * Creates a strict schema-v1 parser.
+     *
+     * @param kinds the contribution kinds a manifest may declare
+     */
+    public BundleManifestParser(ContributionKindRegistry kinds) {
+        this.kinds = Objects.requireNonNull(kinds, "kinds");
     }
 
     /**
@@ -126,7 +133,7 @@ public final class BundleManifestParser {
                 .build();
     }
 
-    private static BundleManifest toManifest(RawManifest raw) {
+    private BundleManifest toManifest(RawManifest raw) {
         if (raw == null) {
             throw new IllegalArgumentException("$ must contain one JSON object");
         }
@@ -158,7 +165,7 @@ public final class BundleManifestParser {
                     throw new IllegalArgumentException("contributions must not contain null entries");
                 }
                 contributions.add(new BundleContribution(
-                        ContributionKind.fromManifestKey(contribution.kind),
+                        kinds.fromManifestKey(contribution.kind),
                         contribution.name,
                         contribution.provider));
             }

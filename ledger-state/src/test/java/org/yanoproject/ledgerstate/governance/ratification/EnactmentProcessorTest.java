@@ -71,9 +71,9 @@ class EnactmentProcessorTest {
             commit(batch);
         }
 
-        var newMembers = new LinkedHashMap<Credential, Integer>();
-        newMembers.put(new Credential(StakeCredType.ADDR_KEYHASH, COLD1), 242);
-        newMembers.put(new Credential(StakeCredType.ADDR_KEYHASH, COLD2), 372);
+        var newMembers = new LinkedHashMap<Credential, Long>();
+        newMembers.put(new Credential(StakeCredType.ADDR_KEYHASH, COLD1), 242L);
+        newMembers.put(new Credential(StakeCredType.ADDR_KEYHASH, COLD2), 372L);
 
         var action = UpdateCommittee.builder()
                 .newMembersAndTerms(newMembers)
@@ -136,8 +136,8 @@ class EnactmentProcessorTest {
         }
 
         // Now enact UpdateCommittee that adds this member with real expiry
-        var newMembers = new LinkedHashMap<Credential, Integer>();
-        newMembers.put(new Credential(StakeCredType.ADDR_KEYHASH, COLD3), 372);
+        var newMembers = new LinkedHashMap<Credential, Long>();
+        newMembers.put(new Credential(StakeCredType.ADDR_KEYHASH, COLD3), 372L);
 
         var action = UpdateCommittee.builder().newMembersAndTerms(newMembers).build();
         var id = new GovActionId(TX_HASH, 0);
@@ -164,8 +164,8 @@ class EnactmentProcessorTest {
             commit(batch);
         }
 
-        var newMembers = new LinkedHashMap<Credential, Integer>();
-        newMembers.put(new Credential(StakeCredType.ADDR_KEYHASH, COLD3), 372);
+        var newMembers = new LinkedHashMap<Credential, Long>();
+        newMembers.put(new Credential(StakeCredType.ADDR_KEYHASH, COLD3), 372L);
         var action = UpdateCommittee.builder().newMembersAndTerms(newMembers).build();
 
         try (WriteBatch batch = new WriteBatch()) {

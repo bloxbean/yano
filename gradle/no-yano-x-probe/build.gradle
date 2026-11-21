@@ -1,0 +1,14 @@
+configurations {
+    probe
+}
+
+dependencies {
+    probe 'org.yanoproject.x:yano-x-probe:1.0'
+}
+
+tasks.register('resolveProbe') {
+    def probe = configurations.probe
+    doLast {
+        probe.files
+    }
+}

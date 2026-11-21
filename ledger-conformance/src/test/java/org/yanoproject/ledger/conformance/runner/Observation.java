@@ -1,6 +1,5 @@
 package org.yanoproject.ledger.conformance.runner;
 
-import org.yanoproject.ledger.rules.LedgerFailure;
 import org.yanoproject.ledger.rules.TxValidationOutcome;
 
 import java.util.List;
@@ -94,11 +93,5 @@ public record Observation(boolean valid, List<Failure> failures) {
 
     static boolean isDecodingFailure(Failure failure) {
         return failure != null && "DecodingFailure".equals(failure.constructor());
-    }
-
-    /** @return true when the failure is Yano's refusal below protocol version 10 (invariant 6) */
-    public static boolean isEraNotSupported(Failure failure) {
-        return failure != null && "ENGINE".equals(failure.rule())
-                && LedgerFailure.ERA_NOT_SUPPORTED.equals(failure.constructor());
     }
 }

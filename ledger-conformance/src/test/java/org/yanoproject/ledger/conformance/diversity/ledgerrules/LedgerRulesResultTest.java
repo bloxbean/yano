@@ -37,6 +37,9 @@ class LedgerRulesResultTest {
                 "BadTranslation TimeTranslationPastHorizon ttl 9 for PlutusV3")))))
                 .isEqualTo("OutsideForecast");
         assertThat(result(new Expected.Pass(),
+                Observation.rejected(List.of(failure("GOV", "ZeroTreasuryWithdrawals")))))
+                .isEqualTo("TreasuryWithdrawalsAllZeros");
+        assertThat(result(new Expected.Pass(),
                 Observation.rejected(List.of(failure("DELEG", "StakeKeyNotRegisteredDELEG")))))
                 .isEqualTo("StakeCredentialInvalidPoolDelegation");
         assertThat(result(new Expected.Pass(),
@@ -45,6 +48,13 @@ class LedgerRulesResultTest {
         assertThat(result(new Expected.Pass(),
                 Observation.rejected(List.of(failure("GOVCERT", "ConwayDRepIncorrectRefund")))))
                 .isEqualTo("IncorrectDepositDRep");
+    }
+
+    @Test
+    void aConstructorSeveralCorpusNamesShareWithoutACheckerDefaultIsReportedBare() {
+        // UTXOS.CollectErrors: MissingCostModel, OutsideForecast, ByronTxOutInContext, ... (Run.hs:495-502).
+        assertThat(result(new Expected.Pass(), Observation.rejected(List.of(failure("UTXOS", "CollectErrors")))))
+                .isEqualTo("CollectErrors");
     }
 
     @Test

@@ -172,8 +172,8 @@ class CborRuleTest {
                 different.put(entry.getKey(), HexFormat.of().formatHex(encoded));
             }
         }
-        // CCL writes an
-        // output that came as a map as an array. This fails once CCL changes, and the rule then leaves this set.
+        // CCL writes an output that came as a map as an array. This fails once CCL changes, and the rule then leaves
+        // this set.
         assertThat(different.keySet()).as(different.toString())
                 .containsExactly("babbage_transaction_output");
     }

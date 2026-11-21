@@ -48,7 +48,8 @@ public final class BlueprintReport {
                 .append("` at `").append(BlueprintVectorLoader.BLUEPRINT_COMMIT).append("`), `")
                 .append(BlueprintVectorLoader.TARBALL_PATH).append("`, sha256 `")
                 .append(BlueprintVectorLoader.TARBALL_SHA256).append("`; the same files as Amaru's ")
-                .append("`crates/amaru-ledger/tests/data/rules-conformance` at tag `").append(ConformanceSettings.AMARU_TAG)
+                .append("`crates/amaru-ledger/tests/data/rules-conformance` at tag `")
+                .append(ConformanceSettings.amaruTag())
                 .append("` (corpus digest `").append(BlueprintVectorLoader.CORPUS_DIGEST).append("`). ")
                 .append("cardano-blueprint `main` (`0f0c17e1`) still carries the older JSON, one-transaction-per-file ")
                 .append("tarball, which is a different format. The extracted vectors are vendored under ")
@@ -105,7 +106,8 @@ public final class BlueprintReport {
 
         md.append("## Comparison with Amaru\n\n");
         md.append("Amaru's harness (`evaluate_ledger_states.rs`) records ").append(amaruFailures.size())
-                .append(" known failures (`rules-conformance.failures.toml` at `").append(ConformanceSettings.AMARU_TAG)
+                .append(" known failures (`rules-conformance.failures.toml` at `")
+                .append(ConformanceSettings.amaruTag())
                 .append("`); it passes the other ").append(results.size() - amaruFailures.size())
                 .append(" vectors. The gate requires the Java engine to pass every vector Amaru passes, unless the ")
                 .append("exception is recorded below.\n\n");

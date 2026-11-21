@@ -70,18 +70,20 @@ import java.util.stream.Stream;
 
 /**
  * Reads Amaru's implementation-generic transaction scenarios
- * ({@code crates/amaru-ledger/tests/data/transaction} at the tag ADR-057 pins, {@code v10.11.20260925};
+ * ({@code crates/amaru-ledger/tests/data/transaction} at {@code AMARU_TAG} of
+ * {@code ledger-conformance/node-diversity/corpora.env}, ADR-062 D5;
  * format in that directory's {@code README.md} and {@code schema.json}) into {@link AmaruScenario}s:
  * an {@link InMemoryLedgerView}, the transaction bytes, a {@link ValidationEnv} and the expected verdict
  * with its Haskell name.
  *
- * <p>Shared by ADR-056 Phase 2 (the Java engine) and ADR-057 Phase B (the Amaru engine).</p>
+ * <p>Read by the ADR-056 conformance harness and the ADR-060 ledger-rules report.</p>
  *
  * <p><b>Locating the corpus.</b> The directory comes from the system property
  * {@value #SCENARIOS_PROPERTY} or the environment variable {@value #SCENARIOS_ENV}. Either may name the
  * {@code transaction} data directory itself or the root of an Amaru checkout. Tests call
  * {@link #requireScenariosDir()}, which skips them (a JUnit assumption) when neither is set: the corpus
- * is Amaru's (Apache-2.0) and is not copied into Yano.</p>
+ * is Amaru's (Apache-2.0) and is not copied into Yano. A configured directory without the scenarios fails, so a
+ * moved corpus cannot turn the scenario tests into skips.</p>
  *
  * <p><b>Mapping to the view model.</b></p>
  * <ul>
@@ -109,13 +111,13 @@ public final class AmaruScenarioLoader {
     public static final String SCENARIOS_PROPERTY = "amaru.scenarios.dir";
     public static final String SCENARIOS_ENV = "AMARU_SCENARIOS_DIR";
 
-    /** Scenario count at the pinned tag (same as {@code EXPECTED_SCENARIOS} in the Rust gate). */
-    public static final int EXPECTED_SCENARIOS = 276;
+    /** Scenario count at the pinned tag ({@code AMARU_TAG} in ledger-conformance/node-diversity/corpora.env). */
+    public static final int EXPECTED_SCENARIOS = 368;
 
     private static final String TRANSACTION_DATA = "crates/amaru-ledger/tests/data/transaction";
     private static final String COMMON = "common/";
 
-    // Haskell hardcodes these (Amaru's ProtocolParameters decoder defaults, INTERFACE.md request key 7).
+    // Haskell hardcodes these (Amaru's ProtocolParameters decoder defaults).
     private static final long DEFAULT_MAX_REF_SCRIPT_SIZE_PER_TX = 200 * 1024;
     private static final long DEFAULT_MAX_REF_SCRIPT_SIZE_PER_BLOCK = 1024 * 1024;
     private static final long DEFAULT_REF_SCRIPT_COST_STRIDE = 25_600;
@@ -143,12 +145,19 @@ public final class AmaruScenarioLoader {
         this.root = root;
     }
 
-    /** @return the configured corpus directory, if any and if it exists */
+    /**
+     * @return the configured corpus directory, or empty when none is configured
+     * @throws IllegalStateException when the configured directory holds no scenarios
+     */
     public static Optional<Path> locateScenariosDir() {
         String configured = System.getProperty(SCENARIOS_PROPERTY);
         if (configured == null || configured.isBlank()) {
             configured = System.getenv(SCENARIOS_ENV);
         }
+        return locateScenariosDir(configured);
+    }
+
+    static Optional<Path> locateScenariosDir(String configured) {
         if (configured == null || configured.isBlank()) {
             return Optional.empty();
         }
@@ -160,7 +169,8 @@ public final class AmaruScenarioLoader {
         if (Files.isDirectory(nested.resolve("scenarios"))) {
             return Optional.of(nested);
         }
-        return Optional.empty();
+        throw new IllegalStateException("Amaru scenarios configured at " + dir + ", but neither it nor its "
+                + TRANSACTION_DATA + " holds a scenarios directory");
     }
 
     /**
@@ -171,7 +181,8 @@ public final class AmaruScenarioLoader {
         Optional<Path> dir = locateScenariosDir();
         Assumptions.assumeTrue(dir.isPresent(), () -> "Amaru scenarios not configured: set -D"
                 + SCENARIOS_PROPERTY + " or " + SCENARIOS_ENV + " to a clone of https://github.com/pragma-org/amaru"
-                + " at tag v10.11.20260925 (or its " + TRANSACTION_DATA + " directory)");
+                + " at AMARU_TAG of ledger-conformance/node-diversity/corpora.env (or its " + TRANSACTION_DATA
+                + " directory)");
         return dir.orElseThrow();
     }
 
@@ -236,6 +247,10 @@ public final class AmaruScenarioLoader {
         LedgerConstants constants = ledgerConstants(pp);
 
         JsonNode s = fixture.path("initial_state");
+        // Schema v10.11.20261105: `voting_state` would override dreps, committee and governance_activity below.
+        if (s.has("voting_state")) {
+            throw new IllegalStateException("initial_state.voting_state is not read by this loader");
+        }
         InMemoryLedgerView.Builder view = InMemoryLedgerView.builder().protocolParams(params);
 
         List<RawUtxo> utxo = new ArrayList<>();
@@ -339,7 +354,7 @@ public final class AmaruScenarioLoader {
                 slotConfig(eras, network.globalParameters()), new byte[32]);
 
         return new AmaruScenario(name, file, fixture.path("title").asText(name), hex(fixture.get("transaction")),
-                view.build(), env, params, expected(fixture.get("expected")), network, constants, state);
+                view.build(), env, params, expected(name, fixture.get("expected")), network, constants, state);
     }
 
     /** {@code $ref} to a shared document, with an optional shallow {@code $override}. */
@@ -361,7 +376,7 @@ public final class AmaruScenarioLoader {
         return document;
     }
 
-    private static Expected expected(JsonNode expected) {
+    private static Expected expected(String scenario, JsonNode expected) {
         if (expected.isTextual() && "Pass".equals(expected.asText())) {
             return new Expected.Pass();
         }
@@ -369,7 +384,7 @@ public final class AmaruScenarioLoader {
             return new Expected.DecodingFailure();
         }
         String predicate = expected.get("predicate").asText();
-        AmaruCorpusNames.HaskellName haskell = AmaruCorpusNames.haskellName(predicate)
+        AmaruCorpusNames.HaskellName haskell = AmaruCorpusNames.haskellName(scenario, predicate)
                 .orElseThrow(() -> new IllegalStateException("corpus predicate " + predicate
                         + " has no Haskell alias (AmaruCorpusNames)"));
         String description = expected.hasNonNull("description") ? expected.get("description").asText() : null;

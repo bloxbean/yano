@@ -42,8 +42,15 @@ public final class PluginIndexCodec {
                     .thenComparing(BundleContribution::provider);
     private static final ObjectMapper MAPPER = createMapper();
 
-    /** Creates a strict schema-v1 aggregate-index codec. */
-    public PluginIndexCodec() {
+    private final ContributionKindRegistry kinds;
+
+    /**
+     * Creates a strict schema-v1 aggregate-index codec.
+     *
+     * @param kinds the contribution kinds an index may contain
+     */
+    public PluginIndexCodec(ContributionKindRegistry kinds) {
+        this.kinds = Objects.requireNonNull(kinds, "kinds");
     }
 
     /**
@@ -204,7 +211,7 @@ public final class PluginIndexCodec {
         json.writeEndObject();
     }
 
-    private static PluginIndex toIndex(RawIndex raw) {
+    private PluginIndex toIndex(RawIndex raw) {
         if (raw == null || raw.schemaVersion == null) {
             throw new IllegalArgumentException("schemaVersion must be present");
         }
@@ -236,7 +243,7 @@ public final class PluginIndexCodec {
                 throw new IllegalArgumentException("legacyProviders must not contain null");
             }
             legacyProviders.add(new IndexedLegacyProvider(
-                    ContributionKind.fromManifestKey(rawProvider.kind),
+                    kinds.fromManifestKey(rawProvider.kind),
                     rawProvider.provider,
                     rawProvider.digest,
                     digestMode(rawProvider.digestMode)));
@@ -270,7 +277,7 @@ public final class PluginIndexCodec {
         }
     }
 
-    private static BundleManifest toManifest(RawManifest raw) {
+    private BundleManifest toManifest(RawManifest raw) {
         if (raw.schemaVersion == null) {
             throw new IllegalArgumentException("manifest schemaVersion must be present");
         }
@@ -306,7 +313,7 @@ public final class PluginIndexCodec {
                     throw new IllegalArgumentException("manifest contributions must not contain null");
                 }
                 contributions.add(new BundleContribution(
-                        ContributionKind.fromManifestKey(contribution.kind),
+                        kinds.fromManifestKey(contribution.kind),
                         contribution.name,
                         contribution.provider));
             }

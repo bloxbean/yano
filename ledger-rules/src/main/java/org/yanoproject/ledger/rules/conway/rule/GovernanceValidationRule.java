@@ -211,7 +211,7 @@ public class GovernanceValidationRule implements LedgerRule {
                 if (Long.compareUnsigned(expiration, currentEpoch) <= 0) {
                     String credHashStr = credHash(entry.getKey());
                     errors.add(error("Proposal[" + proposalIndex + "] UpdateCommittee: member "
-                            + credHashStr + " expiration epoch " + expiration
+                            + credHashStr + " expiration epoch " + Long.toUnsignedString(expiration)
                             + " is not greater than currentEpoch " + currentEpoch));
                 }
             }

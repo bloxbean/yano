@@ -22,8 +22,6 @@ services:
     volumes:
       - ${YANO_RUNTIME_DATA_PATH:-../data-preprod/runtime-data}:/app/data
       - ${YANO_CHAINSTATE_PATH:-../data-preprod/chainstate}:/app/data/chainstate
-      - ${YANO_APPCHAIN_STATE_PATH:-../data-preprod/appchain-chainstate}:/app/appchain-chainstate
-      - ${YANO_APPCHAIN_INDEXER_PATH:-../data-preprod/appchain-indexers}:/app/appchain-indexers
       - ../logs:/app/logs
       - ../config:/app/config:ro
       # Network files must remain writable for seeding and devnet genesis updates.

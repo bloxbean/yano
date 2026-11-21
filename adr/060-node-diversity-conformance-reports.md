@@ -3,7 +3,8 @@
 **Status:** Accepted. Phases 1–5 implemented; results and findings below.
 **Date:** 2026-10-23
 **Authors:** Claude Code (Opus 5.5)
-**Related:** ADR-056 (Conway Java ledger rules, `ledger-conformance` harness), ADR-057 (Amaru wasm validator),
+**Related:** ADR-056 (Conway Java ledger rules, `ledger-conformance` harness), ADR-057 (Amaru's fixture format
+only; ADR-062 removed the validator),
 `ledger-conformance/`, `.github/workflows/release-dist.yml`
 
 ## Context

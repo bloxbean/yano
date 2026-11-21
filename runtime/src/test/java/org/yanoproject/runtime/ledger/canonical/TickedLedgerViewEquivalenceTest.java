@@ -266,9 +266,9 @@ class TickedLedgerViewEquivalenceTest {
             store.storeProposal(A_SIB_CHILD.yaci(), proposal(GovActionType.PARAMETER_CHANGE_ACTION, U1, A_SIB,
                     new ParameterChangeAction(A_SIB.yaci(), ProtocolParamUpdate.builder().maxTxSize(2).build(),
                             null)), batch, ops);
-            Map<Credential, Integer> added = new LinkedHashMap<>();
-            added.put(new Credential(StakeCredType.ADDR_KEYHASH, C3), 120);
-            added.put(new Credential(StakeCredType.ADDR_KEYHASH, C4), 130);
+            Map<Credential, Long> added = new LinkedHashMap<>();
+            added.put(new Credential(StakeCredType.ADDR_KEYHASH, C3), 120L);
+            added.put(new Credential(StakeCredType.ADDR_KEYHASH, C4), 130L);
             store.storeProposal(B.yaci(), proposal(GovActionType.UPDATE_COMMITTEE, R1, null,
                     UpdateCommittee.builder()
                             .membersForRemoval(new LinkedHashSet<>(List.of(

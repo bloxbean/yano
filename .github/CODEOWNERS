@@ -31,5 +31,5 @@
 # Plugin and library versions, resolved and executed by the same credentialed release job.
 /gradle/libs.versions.toml @bloxbean/release-owners
 
-# Shared build scripts applied by subprojects (native image target, runtime plugin bundles).
+# Shared build scripts applied by subprojects (native image target, dependency-direction guardrail).
 /gradle/*.gradle           @bloxbean/release-owners

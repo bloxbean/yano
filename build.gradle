@@ -23,9 +23,19 @@ def cryptoTestLock = gradle.sharedServices.registerIfAbsent(
     maxParallelUsages = 1
 }
 
+// Opt in explicitly for coordinated local host development; never let locally
+// republished third-party artifacts mask missing or incompatible remote inputs.
+def useMavenLocalValue = providers.gradleProperty('useMavenLocal').getOrElse('false')
+if (!(useMavenLocalValue in ['true', 'false'])) {
+    throw new GradleException('useMavenLocal must be true or false')
+}
+def useLocalRepository = Boolean.parseBoolean(useMavenLocalValue)
+
 repositories {
     mavenCentral()
-    mavenLocal()
+    if (useLocalRepository) {
+        mavenLocal { content { includeGroupByRegex 'org\\.yanoproject(\\..+)?' } }
+    }
     maven {
         url "https://central.sonatype.com/repository/maven-snapshots/"
     }
@@ -36,8 +46,6 @@ repositories {
     }
 }
 
-def aggregateSbomJson = layout.buildDirectory.file(
-        "reports/cyclonedx/yano-${project.version}.cdx.json")
 allprojects { candidate ->
     candidate.tasks.named('cyclonedxDirectBom') {
         includeConfigs = ['runtimeClasspath']
@@ -45,15 +53,6 @@ allprojects { candidate ->
         includeBuildSystem = false
     }
 }
-tasks.named('cyclonedxBom') {
-    includeBomSerialNumber = false
-    includeBuildSystem = false
-    componentName = 'yano'
-    projectType = 'application'
-    jsonOutput = aggregateSbomJson
-    xmlOutput.convention((org.gradle.api.file.RegularFile) null)
-}
-ext.yanoAggregateSbomJson = aggregateSbomJson
 
 compileJava {
     sourceCompatibility = '25'
@@ -64,7 +63,6 @@ compileJava {
 
 
 dependencies {
-    api project(':core-api')
     api project(':runtime')
 }
 
@@ -81,7 +79,7 @@ tasks.withType(Test) {
 
 // Keep the Quarkus host's Jackson security override observable at build time:
 // a direct catalog upgrade is not enough because Quarkus imports its platform
-// as an enforced BOM. Yano X verifies its own extension runtime closures.
+// as an enforced BOM. Downstream applications verify their own runtime closures.
 def adr013ReleaseScopes = [
         app: ':app'
 ]
@@ -213,47 +211,29 @@ tasks.named('check') {
     dependsOn tasks.named('verifyAdr013Slf4jAlignment')
 }
 
-def firstPartyPluginManifestTemplates = fileTree(rootProject.projectDir) {
-    include 'appchain/**/src/main/resources/META-INF/yano/plugins/*.json'
-}
-def firstPartyPluginManifestTemplateFiles = firstPartyPluginManifestTemplates.files
-
-tasks.register('verifyFirstPartyPluginManifestTemplates') {
+tasks.register('verifyCardanoClientLibAlignment') {
     group = 'verification'
-    description = 'Validates generated-version placeholders in first-party plugin manifests.'
-    inputs.files(firstPartyPluginManifestTemplateFiles)
+    description = 'Rejects mixed cardano-client-lib family versions in the executable runtime closure'
 
     doLast {
-        def failures = []
-        firstPartyPluginManifestTemplateFiles.sort { left, right ->
-            left.path <=> right.path
-        }.each { manifestFile ->
-            def manifestTemplate = manifestFile.getText('UTF-8')
-            def pluginManifest = new groovy.json.JsonSlurper().parseText(manifestTemplate)
-            if (pluginManifest.version != '${pluginVersion}') {
-                failures.add("first-party plugin version must be generated: "
-                        + rootProject.projectDir.toPath().relativize(manifestFile.toPath()))
-            }
-            def templateKeys = (manifestTemplate =~ /\$\{([^}]+)\}/).collect {
-                it[1]
-            }.toSet()
-            if (templateKeys != ['pluginVersion'] as Set) {
-                failures.add("first-party plugin template keys must be [pluginVersion]: "
-                        + rootProject.projectDir.toPath().relativize(manifestFile.toPath())
-                        + " has ${templateKeys.sort()}")
-            }
-        }
+        def expectedVersion = libs.versions.cardano.client.lib.get()
+        def failures = project(':app').configurations.getByName('runtimeClasspath')
+                .incoming.resolutionResult.allComponents
+                .collect { it.id }
+                .findAll { id ->
+                    id instanceof org.gradle.api.artifacts.component.ModuleComponentIdentifier
+                            && id.group == 'com.bloxbean.cardano' && id.module.startsWith('cardano-client-')
+                            && id.version != expectedVersion
+                }.collect { "app resolves ${it.displayName}; expected ${expectedVersion}" }
         if (!failures.isEmpty()) {
-            throw new GradleException('First-party plugin manifest template verification failed:\n - '
-                    + failures.join('\n - '))
+            throw new GradleException('cardano-client-lib alignment failed:\n - ' + failures.sort().join('\n - '))
         }
-        logger.lifecycle('First-party plugin manifest templates verified: {} files',
-                firstPartyPluginManifestTemplateFiles.size())
+        logger.lifecycle('cardano-client-lib family aligned to {} in the app runtime closure', expectedVersion)
     }
 }
 
 tasks.named('check') {
-    dependsOn tasks.named('verifyFirstPartyPluginManifestTemplates')
+    dependsOn tasks.named('verifyCardanoClientLibAlignment')
 }
 
 tasks.register('verifyLegacyAccountHistoryRemoved') {
@@ -292,7 +272,7 @@ tasks.register('verifyLegacyAccountHistoryRemoved') {
             }
         }
         fileTree(rootProject.projectDir) {
-            include 'app/src/main/resources/**/*.yml'
+            include 'app-core/src/main/resources/**/*.yml'
             include 'app/config/**/*.yml'
         }.files.each { configFile ->
             if (configFile.getText('UTF-8').contains('account-history:')) {
@@ -379,7 +359,7 @@ publishing {
             // exempt, which is how :yano-bom already publishes.
             //
             // yano-runtime api-depends on plugin-catalog, consensus, p2p,
-            // ledger-rules and ledger-state, so these two coordinates give a
+            // ledger-rules and ledger-state, so this coordinate gives a
             // downstream application the whole node stack transitively.
             // Optional modules -- scalus-bridge, script-evaluators, archive-*,
             // tx-services, bootstrap-providers -- stay opt-in, and the testkits
@@ -389,7 +369,7 @@ publishing {
                 packaging = 'pom'
                 withXml {
                     def dependencies = asNode().appendNode('dependencies')
-                    ['yano-core-api', 'yano-runtime'].each { artifact ->
+                    ['yano-runtime'].each { artifact ->
                         def dependency = dependencies.appendNode('dependency')
                         dependency.appendNode('groupId', project.group)
                         dependency.appendNode('artifactId', artifact)
@@ -486,7 +466,9 @@ subprojects {
     }
 
     repositories {
-        mavenLocal()
+        if (useLocalRepository) {
+            mavenLocal { content { includeGroupByRegex 'org\\.yanoproject(\\..+)?' } }
+        }
         mavenCentral()
         maven {
             url "https://central.sonatype.com/repository/maven-snapshots/"
@@ -650,19 +632,6 @@ subprojects {
         }
 
     }
-
-    // First-party app-chain manifests are source templates. Their bundle and
-    // dependency versions must follow the owning Gradle publication rather
-    // than being copied into every JSON file at release time.
-    tasks.matching { it.name == 'processResources' }.configureEach {
-        def pluginManifestVersion = project.version.toString()
-        inputs.property('pluginManifestVersion', pluginManifestVersion)
-        filesMatching('META-INF/yano/plugins/*.json') {
-            filter { line ->
-                line.replace('${pluginVersion}', pluginManifestVersion)
-            }
-        }
-    }
 }
 
 // Phase/release rehearsals publish the same Maven publications to an isolated
@@ -684,21 +653,16 @@ allprojects { candidate ->
 // The Maven Central deployment scope. Derived from the projects that own a
 // publication rather than restated by hand, so it cannot drift from what the
 // build actually publishes: `nonLibraryModules` holds the application and
-// aggregator projects, `:yano-bom` publishes through its own build script, and
-// the conformance fixture deliberately removes its publication (see
-// appchain/fixtures/appchain-plugin-conformance/build.gradle).
+// aggregator projects, and `:yano-bom` publishes through its own build script.
 //
 // The root is included: it publishes org.yanoproject:yano, the POM-only starter
 // aggregate that gives a downstream application the node stack in one
 // coordinate.
 //
-// `amaru-validator` (ADR-057) exists only in builds run with -PwithAmaru=true
-// and never publishes (amaru-validator/build.gradle removes its publication), so
-// even such a build deploys exactly the default scope. Listing a name that is
-// not a project is harmless. `ledger-conformance` (ADR-056 §8) is a test-only
-// harness that removes its publication the same way.
+// `ledger-conformance` (ADR-056 §8) is a test-only harness that removes its
+// publication in its own build script.
 def centralDeploymentExclusions = nonLibraryModules +
-        ['appchain-plugin-conformance', 'amaru-validator', 'ledger-conformance'] as Set
+        ['ledger-conformance'] as Set
 def centralDeploymentProjects = ([rootProject] + subprojects.toList()).findAll { candidate ->
     !(candidate.name in centralDeploymentExclusions)
 } + project(':yano-bom')
@@ -749,7 +713,8 @@ tasks.register('distributionCheck') {
     group = 'verification'
     description = 'Validates the core JVM distribution and directory-plugin contract.'
     dependsOn ':app:verifyCoreJvmDistribution',
-            ':app:packagedJvmPluginCatalogSmoke'
+            ':app:packagedJvmPluginCatalogSmoke',
+            ':app:packagedJvmAppLedgerSmoke'
 }
 
 tasks.register('extendedTest') {

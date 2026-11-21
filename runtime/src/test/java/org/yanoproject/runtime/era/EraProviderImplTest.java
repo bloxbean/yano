@@ -95,7 +95,7 @@ class EraProviderImplTest {
     @Test
     void startsAfterConway_dijkstra_returnsZero() {
         // Future devnet starting in a post-Conway era (no Conway slot, but era > Conway)
-        // Simulate with era value 8 (hypothetical Dijkstra)
+        // Simulate with era value 8 (Dijkstra)
         chainState.setEraStartSlot(8, 0); // era value > Conway(7)
 
         var svc = new EraProviderImpl(chainState, PREVIEW_CALC);
@@ -104,9 +104,8 @@ class EraProviderImplTest {
         assertThat(svc.startsInOrAfter(Era.Conway)).isTrue();
         assertThat(svc.resolveFirstConwayEpochOrNull()).isEqualTo(0);
         assertThat(svc.resolveKnownFirstEpochOrNull(Era.Conway.getValue())).isNull();
-        // Era value 8 is not in the Era enum, so getEarliestKnownEra returns empty
-        assertThat(svc.getEarliestKnownEra()).isEmpty();
-        // But the numeric value is available
+        // Yaci's Era enum knows Dijkstra (value 8)
+        assertThat(svc.getEarliestKnownEra()).hasValue(Era.Dijkstra);
         assertThat(svc.getEarliestKnownEraValue()).hasValue(8);
     }
 

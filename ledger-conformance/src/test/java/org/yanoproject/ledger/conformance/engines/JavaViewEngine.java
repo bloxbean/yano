@@ -18,7 +18,6 @@ import org.yanoproject.ledger.rules.phase2.ScriptPhaseEvaluator;
 import org.yanoproject.ledger.scripteval.phase2.JulcScriptPhaseEvaluator;
 import org.yanoproject.scalusbridge.ScalusScriptPhaseEvaluator;
 
-import java.util.Optional;
 import java.util.function.Function;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
@@ -112,11 +111,6 @@ public final class JavaViewEngine implements ConformanceEngine {
     private static EngineContext context(ScriptPhaseEvaluator scalus, ScriptPhaseEvaluator julc) {
         return new EngineContext() {
             @Override
-            public Optional<String> config(String key) {
-                return Optional.empty();
-            }
-
-            @Override
             public Supplier<NetworkParameters> network() {
                 return () -> {
                     throw new IllegalStateException("not used by the conformance harness");
@@ -150,11 +144,6 @@ public final class JavaViewEngine implements ConformanceEngine {
             @Override
             public ScriptPhaseEvaluator julcScriptPhaseEvaluator() {
                 return julc;
-            }
-
-            @Override
-            public int validationThreads() {
-                return 1;
             }
         };
     }

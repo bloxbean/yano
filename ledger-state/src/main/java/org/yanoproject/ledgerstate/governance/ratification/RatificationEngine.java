@@ -486,18 +486,7 @@ public class RatificationEngine {
         if (!checkSPO(votes, poolStakeDist, poolDRepDelegation,
                 GovActionType.UPDATE_COMMITTEE, isBootstrapPhase, spoThresholds)) return false;
 
-        // Term validation: all new members' expiration must be <= currentEpoch + maxTermLength
-        if (proposal.govAction() instanceof com.bloxbean.cardano.yaci.core.model.governance.actions.UpdateCommittee uc) {
-            if (uc.getNewMembersAndTerms() != null) {
-                int maxExpiry = currentEpoch + committeeMaxTermLength;
-                for (Integer expiryEpoch : uc.getNewMembersAndTerms().values()) {
-                    if (expiryEpoch != null && expiryEpoch > maxExpiry) {
-                        return false; // Member term exceeds maximum allowed
-                    }
-                }
-            }
-        }
-        return true;
+        return !updateCommitteeTermExceedsMax(proposal, currentEpoch, committeeMaxTermLength);
     }
 
     private boolean evaluateNewConstitution(
@@ -830,13 +819,18 @@ public class RatificationEngine {
         return totalWithdrawal;
     }
 
+    /**
+     * Whether a new member's term ends after {@code currentEpoch + committeeMaxTermLength}
+     * (Conway/Rules/Ratify.hs:370-382, {@code validCommitteeTerm}). A term is a Word64 epoch, held as its 64 bits;
+     * {@code committeeMaxTermLength} is a Word32 interval, held as its 32 bits.
+     */
     private static boolean updateCommitteeTermExceedsMax(GovActionRecord proposal, int currentEpoch,
                                                          int committeeMaxTermLength) {
         if (proposal.govAction() instanceof com.bloxbean.cardano.yaci.core.model.governance.actions.UpdateCommittee uc
                 && uc.getNewMembersAndTerms() != null) {
-            int maxExpiry = currentEpoch + committeeMaxTermLength;
-            for (Integer expiryEpoch : uc.getNewMembersAndTerms().values()) {
-                if (expiryEpoch != null && expiryEpoch > maxExpiry) {
+            long maxExpiry = currentEpoch + Integer.toUnsignedLong(committeeMaxTermLength);
+            for (Long expiryEpoch : uc.getNewMembersAndTerms().values()) {
+                if (expiryEpoch != null && Long.compareUnsigned(expiryEpoch, maxExpiry) > 0) {
                     return true;
                 }
             }

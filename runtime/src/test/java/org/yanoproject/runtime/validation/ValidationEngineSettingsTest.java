@@ -43,21 +43,20 @@ class ValidationEngineSettingsTest {
     @Test
     void parsesEveryKey() {
         ValidationEngineSettings settings = ValidationEngineSettings.fromGlobals(Map.of(
-                YanoPropertyKeys.Validation.ENGINE, " Amaru ",
+                YanoPropertyKeys.Validation.ENGINE, " Java-Scalus ",
                 YanoPropertyKeys.Validation.SHADOW_ENGINES, "scalus",
                 YanoPropertyKeys.Validation.SHADOW_DUMP_DIR, "/tmp/dumps",
                 YanoPropertyKeys.Validation.SHADOW_SYNC, "true",
                 YanoPropertyKeys.Validation.SNAPSHOT_MAX_AGE_MS, "5000",
                 YanoPropertyKeys.Validation.MAX_LIVE_SNAPSHOTS, 6));
 
-        assertThat(settings.engine()).isEqualTo("amaru");
+        assertThat(settings.engine()).isEqualTo("java-scalus");
         assertThat(settings.shadowEngines()).containsExactly("scalus");
         assertThat(settings.shadowDumpDir()).isEqualTo(Path.of("/tmp/dumps"));
         assertThat(settings.shadowSync()).isTrue();
         assertThat(settings.snapshotMaxAgeMs()).isEqualTo(5_000);
         assertThat(settings.maxLiveSnapshots()).isEqualTo(6);
         assertThat(settings.usesEngineApi()).isTrue();
-        assertThat(settings.uses("AMARU")).isTrue();
     }
 
     @Test

@@ -47,7 +47,7 @@ public final class NonceEvolutionListenerFactory {
                 cursorResolver,
                 replayService);
         List<SubscriptionHandle> subscriptionHandles = register(eventBus, listener);
-        log.info("NonceEvolutionListener registered (skipping own blocks with issuerVkey={})", issuerVkeyHex);
+        log.info("NonceEvolutionListener registered (own issuerVkey={})", issuerVkeyHex);
         return new Registration(listener, subscriptionHandles);
     }
 

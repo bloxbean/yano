@@ -1,7 +1,11 @@
 package org.yanoproject.ledgerstate.governance.ratification;
 
+import com.bloxbean.cardano.yaci.core.model.Credential;
+import com.bloxbean.cardano.yaci.core.model.certs.StakeCredType;
 import com.bloxbean.cardano.yaci.core.model.governance.GovActionId;
 import com.bloxbean.cardano.yaci.core.model.governance.GovActionType;
+import com.bloxbean.cardano.yaci.core.model.governance.actions.UpdateCommittee;
+import com.bloxbean.cardano.yaci.core.types.UnitInterval;
 import org.yanoproject.ledgerstate.governance.GovernanceStateStore;
 import org.yanoproject.ledgerstate.governance.epoch.DRepDistributionCalculator.DRepDistKey;
 import org.yanoproject.ledgerstate.governance.model.CommitteeMemberRecord;
@@ -269,6 +273,54 @@ class RatificationEngineTest {
 
             assertThat(results).hasSize(1);
             assertThat(results.get(0).status()).isEqualTo(Status.ACTIVE);
+        }
+    }
+
+    @Test
+    @DisplayName("UpdateCommittee: a term past currentEpoch + committeeMaxTermLength is not ratified, read as 64 bits")
+    void updateCommittee_termIsCheckedOnItsSixtyFourBits() throws Exception {
+        // currentEpoch 3 + committeeMaxTermLength 146: the latest term is epoch 149. Narrowed to an int,
+        // 2^32 + 1 read as 1; compared signed, 2^64 - 1 read as -1. Both were within the maximum.
+        assertThat(updateCommitteeStatus(149L)).isEqualTo(Status.RATIFIED);
+        assertThat(updateCommitteeStatus(150L)).isEqualTo(Status.ACTIVE);
+        assertThat(updateCommitteeStatus((1L << 32) + 1)).isEqualTo(Status.ACTIVE);
+        assertThat(updateCommitteeStatus(-1L)).isEqualTo(Status.ACTIVE);
+    }
+
+    @Test
+    @DisplayName("UpdateCommittee: committeeMaxTermLength is a Word32, read unsigned")
+    void updateCommittee_maxTermLengthIsReadUnsigned() throws Exception {
+        // committeeMaxTermLength 2^32 - 1 arrives as the int -1. Read signed, the maximum was epoch 2.
+        int maxTermLength = (int) 0xFFFF_FFFFL;
+        assertThat(updateCommitteeStatus(100L, maxTermLength)).isEqualTo(Status.RATIFIED);
+        assertThat(updateCommitteeStatus(3L + 0xFFFF_FFFFL, maxTermLength)).isEqualTo(Status.RATIFIED);
+        assertThat(updateCommitteeStatus(4L + 0xFFFF_FFFFL, maxTermLength)).isEqualTo(Status.ACTIVE);
+    }
+
+    private Status updateCommitteeStatus(long term) throws Exception {
+        return updateCommitteeStatus(term, 146);
+    }
+
+    private Status updateCommitteeStatus(long term, int committeeMaxTermLength) throws Exception {
+        Path dir = java.nio.file.Files.createTempDirectory(tempDir, "term");
+        try (var rocks = TestRocksDBHelper.create(dir)) {
+            var engine = new RatificationEngine(rocks.governanceStore(), new VoteTallyCalculator());
+            GovActionId id = new GovActionId(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 0);
+            Map<Credential, Long> terms = Map.of(new Credential(StakeCredType.ADDR_KEYHASH, "cc".repeat(28)), term);
+            UpdateCommittee action = UpdateCommittee.builder().newMembersAndTerms(terms)
+                    .threshold(new UnitInterval(BigInteger.ONE, BigInteger.TWO)).build();
+            var proposal = new GovActionRecord(new BigInteger("100000000000"), "", 1, 6,
+                    GovActionType.UPDATE_COMMITTEE, null, null, action, 0L);
+
+            var results = engine.evaluateAll(
+                    Map.of(id, proposal), Map.<DRepDistKey, BigInteger>of(), Set.of(), Map.of(), Map.of(),
+                    Map.of(), BigDecimal.ZERO, NO_PREV, 3, false, 0, committeeMaxTermLength, "NORMAL",
+                    BigInteger.ZERO, Map.of(GovActionType.UPDATE_COMMITTEE, BigDecimal.ZERO),
+                    Map.of(GovActionType.UPDATE_COMMITTEE, BigDecimal.ZERO), null);
+
+            assertThat(results).hasSize(1);
+            return results.get(0).status();
         }
     }
 

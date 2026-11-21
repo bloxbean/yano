@@ -181,8 +181,8 @@ class CanonicalLedgerViewLookupTest {
         open(true);
         setTip(10);
         GovernanceStateStore gov = new GovernanceStateStore(stores.db(), stores.cfState());
-        Map<Credential, Integer> newMembers = new LinkedHashMap<>();
-        newMembers.put(Credential.builder().type(StakeCredType.ADDR_KEYHASH).hash(CANDIDATE).build(), 90);
+        Map<Credential, Long> newMembers = new LinkedHashMap<>();
+        newMembers.put(Credential.builder().type(StakeCredType.ADDR_KEYHASH).hash(CANDIDATE).build(), 90L);
         UpdateCommittee update = UpdateCommittee.builder()
                 .newMembersAndTerms(newMembers)
                 .threshold(new UnitInterval(BigInteger.ONE, BigInteger.TWO))
