@@ -621,16 +621,16 @@ public class DirectRocksDBChainState implements ChainState, AutoCloseable, Rocks
         }
     }
 
+    /**
+     * A read failure throws rather than reporting the body absent: BodyFetchManager must not take a failed lookup
+     * for "not applied yet" and apply a block twice.
+     */
     @Override
     public boolean hasBlock(byte[] blockHash) {
-        try {
-            try (ReadOptions ro = new ReadOptions().setFillCache(false)) {
-                byte[] val = db.get(blocksHandle, ro, blockHash);
-                return val != null;
-            }
-        } catch (Exception e) {
-            log.warn("hasBlock check failed", e);
-            return false;
+        try (ReadOptions ro = new ReadOptions().setFillCache(false)) {
+            return db.get(blocksHandle, ro, blockHash) != null;
+        } catch (RocksDBException e) {
+            throw new IllegalStateException("Failed to read block body " + HexUtil.encodeHexString(blockHash), e);
         }
     }
 
