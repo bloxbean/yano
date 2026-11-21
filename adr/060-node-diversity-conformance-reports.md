@@ -186,12 +186,17 @@ The scenario is meant to exercise the decoder the node relies on. In Yano that i
 
 - CCL's model decoders (`Transaction.deserialize` and the element types it uses), which `java-julc` decodes with
   first;
-- followed by Yano's strict `RawTransaction` family (`StrictCbor`, `RawOutput`, `RawCertificate`, `RawProposal`,
-  `RawParamUpdate`, `RawVoter`, `RawAuxData`, `PlutusData`), which apply Haskell's decoding rules.
+- followed by Yano's strict reader: CCL's walk and views (`RawTx` and its record tables) with `HaskellPolicy`, which
+  applies Haskell's decoding rules, read by `RawTransaction`.
+
+Whether a sample decodes is the strict reader's alone (ADR 0003 D9), so the report measures one reader and one
+policy. The model's decoding is a diagnostic, with one exception: as admission runs the model first, the gate
+(`CborRejectionGate`) fails on a valid sample the report passes and the model rejects, which the node would refuse.
+There is none.
 
 For each corpus rule:
 
-- **valid** samples (`valid`, `manual-valid`) must pass both decoders and re-encode to the reference:
+- **valid** samples (`valid`, `manual-valid`) must pass the strict reader and re-encode to the reference:
   - for the seven rules the dataset compares exactly (`mkByteExactRule` in its `EraSpec.hs`: `auxiliary_data`,
     `header`, `native_script`, `plutus_data`, `redeemers`, `transaction_body`, `transaction_witness_set`), byte for
     byte, from the original bytes the node keeps, as Haskell's `MemoBytes` does;
@@ -203,10 +208,10 @@ For each corpus rule:
   - for every other rule, after re-encoding the decoded CCL model, with both sides normalized by the dataset's
     specification (`CborNormalizer`). The normalizer reproduces the dataset's normalization vectors, and the report
     test checks it against them before every run.
-- **every other sample** (`invalid-zap-<n>`, `manual-invalid`) must be rejected by the decoder pair.
+- **every other sample** (`invalid-zap-<n>`, `manual-invalid`) must be rejected by the strict reader.
 
-**How elements reach the decoders.** The strict readers are package-private. A test fixture in their package,
-`StrictElements` (`ledger-rules` test fixtures), exposes one method per element and adds no decoding of its own.
+**How elements reach the decoders.** A rule that is one type or one record of CCL's tables is walked by itself with
+`HaskellPolicy` (`CborRule.reads`); `script` is read as an output's reference script, `#6.24(bytes .cbor script)`.
 
 - An item the node reads only inside a larger structure is placed in a minimal, valid one first: a transaction for
   `auxiliary_data`, `redeemer(s)`, `transaction_body`, `transaction_input`, `transaction_witness_set` and
@@ -333,8 +338,8 @@ Findings, none of them masked in the harness except the temporary 00280 alias (i
    encodings.
 
 The cbor-decoding report prints each decoder alone as a diagnostic: Yano's strict readers 865/866 valid and
-8039/8334 invalid, the library decoders 611/866 and 5534/8334 (CCL, and yaci for headers). The report itself counts
-the two together, as the node runs them.
+8039/8334 invalid, the library decoders 611/866 and 5534/8334 (CCL, and yaci for headers). The report then counted
+the two together; since ADR 0003 it counts the strict reader alone (section 6).
 
 ## Results on the regenerated dataset (2026-11-05, `main` dc1a2ac4e with this harness, CCL 0.8.0-pre7)
 

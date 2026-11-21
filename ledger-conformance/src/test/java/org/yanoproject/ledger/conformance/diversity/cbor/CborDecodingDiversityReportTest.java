@@ -58,7 +58,8 @@ class CborDecodingDiversityReportTest {
             c[offset + 1]++;
             String name = relative.toString().replace('\\', '/');
             boolean strictRejected = Boolean.FALSE.equals(accepts(rule.strict(), read(sample)));
-            gated.add(new CborRejectionGate.Sample(name, valid, strictRejected, failure.isEmpty()));
+            boolean modelRejected = !Boolean.TRUE.equals(accepts(rule.library(), read(sample)));
+            gated.add(new CborRejectionGate.Sample(name, valid, strictRejected, modelRejected, failure.isEmpty()));
             if (failure.isEmpty()) {
                 c[offset]++;
                 results.put(name, true);

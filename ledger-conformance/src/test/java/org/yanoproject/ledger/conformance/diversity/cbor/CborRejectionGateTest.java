@@ -14,7 +14,7 @@ class CborRejectionGateTest {
     private static final Baseline BASELINE = new Baseline(Set.of("missed"), Set.of("accepted"));
 
     private static Sample invalid(String name, boolean strictRejected, boolean passed) {
-        return new Sample(name, false, strictRejected, passed);
+        return new Sample(name, false, strictRejected, false, passed);
     }
 
     @Test
@@ -43,8 +43,19 @@ class CborRejectionGateTest {
 
     @Test
     void aValidSampleTheStrictReaderRejectsIsAReportMissOnly() {
-        assertThat(CborRejectionGate.violations(BASELINE, List.of(new Sample("valid", true, true, false))))
+        assertThat(CborRejectionGate.violations(BASELINE, List.of(new Sample("valid", true, true, false, false))))
                 .containsExactly("new report miss: valid");
+    }
+
+    /** Admission decodes with CCL's model before the strict reader, so a valid sample it rejects is a violation. */
+    @Test
+    void aValidSampleTheModelRejectsFails() {
+        assertThat(CborRejectionGate.violations(BASELINE, List.of(new Sample("valid", true, false, true, true))))
+                .containsExactly("valid sample the model rejects: valid");
+        // one the report misses already is a report miss, of the baseline's or new
+        assertThat(CborRejectionGate.violations(BASELINE, List.of(new Sample("missed", true, true, true, false))))
+                .isEmpty();
+        assertThat(CborRejectionGate.violations(BASELINE, List.of(invalid("rejected", true, true)))).isEmpty();
     }
 
     @Test

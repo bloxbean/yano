@@ -12,6 +12,9 @@ import java.util.Set;
 /**
  * ADR 0003 I7, per sample and not by count, so a rejection lost cannot hide behind one gained: the report misses only
  * samples its baseline missed, and the strict reader alone rejects every invalid sample it rejected in the baseline.
+ * The report counts the strict reader alone, but admission decodes with CCL's model first
+ * ({@code Transaction.deserialize}), so the model, the library decoder, refuses no valid sample the report passes: the
+ * node would refuse that one.
  *
  * <p>The baseline holds both sets' complements on the pinned dataset: the samples the report missed, and the invalid
  * samples the strict reader did not reject. Its first lines say what it was measured on.</p>
@@ -38,9 +41,10 @@ final class CborRejectionGate {
      * @param name           its path under the era's directory
      * @param valid          whether it must decode
      * @param strictRejected whether the strict reader alone rejected it, a crash not being a rejection
+     * @param modelRejected  whether the library decoder rejected it or crashed
      * @param passed         whether it met its expectation in the report
      */
-    record Sample(String name, boolean valid, boolean strictRejected, boolean passed) {
+    record Sample(String name, boolean valid, boolean strictRejected, boolean modelRejected, boolean passed) {
     }
 
     static Baseline baseline() {
@@ -69,6 +73,9 @@ final class CborRejectionGate {
             }
             if (!sample.valid() && !sample.strictRejected() && !baseline.strictAccepts().contains(sample.name())) {
                 violations.add("strict rejection lost: " + sample.name());
+            }
+            if (sample.valid() && sample.passed() && sample.modelRejected()) {
+                violations.add("valid sample the model rejects: " + sample.name());
             }
         }
         return violations;
