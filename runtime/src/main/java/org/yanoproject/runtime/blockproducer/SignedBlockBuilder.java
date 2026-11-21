@@ -161,6 +161,10 @@ public class SignedBlockBuilder extends DevnetBlockBuilder {
     /**
      * Evolve the nonce state with the most recent successful build. This must be called only after the produced
      * block has been durably stored in ChainState, in the same canonical write section.
+     * <p>
+     * Not retryable: the state evolves before the durable writes, so after a failed write the pending record stays,
+     * every later build refuses, and a restart repairs the nonce state from the stored chain. Calling it again would
+     * evolve the state twice.
      */
     public void commitPendingNonceState() {
         PendingNonceCommit pending = pendingNonceCommit;
@@ -205,6 +209,12 @@ public class SignedBlockBuilder extends DevnetBlockBuilder {
 
     private record PendingNonceCommit(long slot, long blockNumber, byte[] blockHash, byte[] prevHash,
                                       byte[] vrfOutput) {
+        // Copies: a caller may reuse its buffers before the commit, which must use the values the block was built with
+        PendingNonceCommit {
+            blockHash = blockHash.clone();
+            prevHash = prevHash != null ? prevHash.clone() : null;
+            vrfOutput = vrfOutput.clone();
+        }
     }
 
     /**
