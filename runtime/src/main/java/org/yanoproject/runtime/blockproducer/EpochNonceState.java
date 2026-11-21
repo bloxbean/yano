@@ -315,6 +315,13 @@ public class EpochNonceState {
     }
 
     /**
+     * Drop every checkpoint, for a rollback to origin: origin lies before every block, one at slot 0 included.
+     */
+    public void clearCheckpoints() {
+        checkpoints.clear();
+    }
+
+    /**
      * Roll back nonce state to the most recent checkpoint at or before the target slot.
      *
      * @param slot the target rollback slot

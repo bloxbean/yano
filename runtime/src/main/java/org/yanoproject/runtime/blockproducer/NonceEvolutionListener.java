@@ -137,7 +137,15 @@ public class NonceEvolutionListener {
     @DomainEventListener(order = 50)
     public void onRollback(RollbackEvent event) {
         long targetSlot = event.target().getSlot();
-        boolean restored = nonceState.rollbackTo(targetSlot);
+        boolean restored;
+        if (event.target().getHash() == null) {
+            // Origin shares slot 0 with a block there but lies before it, so no checkpoint applies: the repair
+            // below re-establishes the genesis state the way startup does on an empty chain.
+            nonceState.clearCheckpoints();
+            restored = false;
+        } else {
+            restored = nonceState.rollbackTo(targetSlot);
+        }
         if (restored) {
             log.info("Nonce state rolled back to slot {}", targetSlot);
             if (nonceStore != null) {

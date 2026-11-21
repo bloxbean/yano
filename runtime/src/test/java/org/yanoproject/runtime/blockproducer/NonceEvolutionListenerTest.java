@@ -151,6 +151,59 @@ class NonceEvolutionListenerTest {
         assertThat(state.hasCheckpointAt(11)).isFalse();
     }
 
+    @Test
+    void ownBlockDeliveredAgainAfterARollbackBelowEveryCheckpointEvolvesTheNonce() {
+        EpochNonceState state = producerState();
+        NonceEvolutionListener listener = listenerRepairingFromAnEmptyChain(state, OWN_ISSUER);
+        listener.onBlockApplied(issuedBlockEvent(10, OTHER_ISSUER, 2));
+        forge(state, 11, 3);
+        listener.onBlockApplied(issuedBlockEvent(11, OWN_ISSUER, 3));
+
+        // Below the checkpoint of slot 10 as well, so the state is repaired and the forged checkpoint must go.
+        listener.onRollback(new RollbackEvent(new Point(9, "cc".repeat(32)), true));
+        listener.onBlockApplied(issuedBlockEvent(10, OTHER_ISSUER, 2));
+        listener.onBlockApplied(issuedBlockEvent(11, OWN_ISSUER, 3));
+        listener.onBlockApplied(issuedBlockEvent(12, OTHER_ISSUER, 4));
+
+        assertThat(state.getEvolvingNonce()).isEqualTo(evolvingNonceWithoutProducerKeys());
+    }
+
+    @Test
+    void rollbackToOriginDropsTheBlockAtSlotZero() {
+        EpochNonceState state = producerState();
+        NonceEvolutionListener listener = listenerRepairingFromAnEmptyChain(state, null);
+        listener.onBlockApplied(issuedBlockEvent(0, OTHER_ISSUER, 2));
+
+        listener.onRollback(new RollbackEvent(Point.ORIGIN, true));
+
+        assertThat(state.hasCheckpointAt(0)).isFalse();
+        assertThat(state.serialize()).isEqualTo(producerState().serialize());
+    }
+
+    @Test
+    void rollbackToAHashedSlotZeroPointKeepsTheBlockThere() {
+        EpochNonceState state = producerState();
+        NonceEvolutionListener listener = new NonceEvolutionListener(state, null, null);
+        listener.onBlockApplied(issuedBlockEvent(0, OTHER_ISSUER, 2));
+        byte[] afterSlotZero = state.serialize();
+        listener.onBlockApplied(issuedBlockEvent(1, OTHER_ISSUER, 3));
+
+        listener.onRollback(new RollbackEvent(new Point(0, "cc".repeat(32)), true));
+
+        assertThat(state.hasCheckpointAt(0)).isTrue();
+        assertThat(state.serialize()).isEqualTo(afterSlotZero);
+    }
+
+    /** A listener whose repair finds an empty chain and so restores genesis: the state before these tests' blocks. */
+    private static NonceEvolutionListener listenerRepairingFromAnEmptyChain(EpochNonceState state, String issuer) {
+        InMemoryChainState chain = new InMemoryChainState();
+        NonceReplayService replayService = new NonceReplayService(
+                chain, chain, new EpochNonceEvolver(null, true, 0L), GENESIS_HASH);
+        return new NonceEvolutionListener(state, chain, issuer, null, true, 0L,
+                (slot, hashHex, serialized) -> NonceStateSnapshot.of(slot, slot + 1, hashHex, serialized),
+                replayService);
+    }
+
     private static EpochNonceState producerState() {
         EpochNonceState state = new EpochNonceState(1000, 1, 1.0);
         state.initFromGenesisHash(GENESIS_HASH);
