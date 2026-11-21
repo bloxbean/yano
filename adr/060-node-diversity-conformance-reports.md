@@ -17,7 +17,7 @@ cardano-node, Amaru and Dingo are listed today.
 
 | Scenario | Kind | Corpus | Report entry |
 |---|---|---|---|
-| `ledger-rules` | functional | 368 transaction fixtures (from corpus `9dc68a75`) in the pragma repository, `scenarios/ledger-rules/fixtures/` (Amaru's fixture format) | `{id, result}`: `"pass"`, a predicate name from the scenario schema, or `"DecodingFailure"` |
+| `ledger-rules` | functional | 368 transaction fixtures (from corpus `62800627`) in the pragma repository, `scenarios/ledger-rules/fixtures/` (Amaru's fixture format) | `{id, result}`: `"pass"`, a predicate name from the scenario schema, or `"DecodingFailure"` |
 | `uplc-conformance` | functional | 1,064 UPLC vectors (`uplc-conformance.tar.zst`), protocol versions 10 and 11, cost models included | `{id, title, group, plutus_version, protocol_version, evaluation, budget}` |
 | `uplc-turbo` | performance | 3,997 Flat-encoded mainnet scripts (`turbo.tar.zst`), by epoch | per script: `cpu_us`, `mem_bytes`, `budget_cpu`, `budget_mem`, plus the machine |
 | `cbor-decoding` | functional | `r2rationality/cardano-cbor-dataset`, `dataset/conway`: 97 rules, 10,914 valid and 31,761 invalid samples | format version 2: the outcome of every sample, and the dataset and node commits |
@@ -118,7 +118,12 @@ verifies them. Each report records the corpus it ran on where the schema allows 
   site marks it outdated. 32 fixtures name three protocol-parameter files the pragma repository lacks;
   `fetch-corpora.sh` adds them from Amaru at that commit, checked by sha256, and fails once pragma has them, so that the
   workaround is removed. Score: 368/368.
-- **Expected score:** 368/368 at corpus `9dc68a75`; earlier, 290/290 at `e02a9e1c` (284/284 at `9d14fd8c`). Fixture 00280 expects `OutputTooBigUTxO` for
+- **Corpus `62800627` (2026-11-20).** The five commits after `9dc68a75` change only the ledger-rules and uplc-turbo
+  READMEs and add a node (`nodes/scarab`); the fixtures are unchanged. The CBOR dataset is pinned at `ed6c49a4`, four
+  commits after `4fd977b2` that change only `dataset/conway/coverage.json` and the Haskell reference reports under
+  `dataset/reports`; no sample changed, so the report's `dataset_commit` names the revision of the newest reference
+  report.
+- **Expected score:** 368/368 at corpus `62800627` (and `9dc68a75`); earlier, 290/290 at `e02a9e1c` (284/284 at `9d14fd8c`). Fixture 00280 expects `OutputTooBigUTxO` for
   a Byron address with oversized attributes. Yano reports `OutputBootAddrAttrsTooBig`, as current Haskell does: the
   value is 5 bytes against `max_value_size` 5,000, so `validateOutputTooBigUTxO` (`Alonzo/Rules/Utxo.hs`) cannot fire.
   Haskell before cardano-ledger `c0f8975c0c` (2026-09-07, `cardano-ledger-conway` 1.24.0.0) renamed that failure to
