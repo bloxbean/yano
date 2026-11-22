@@ -52,11 +52,12 @@ python3 - "$SITE/_site/catalog.json" <<'PY'
 import json
 import sys
 
+# The builder gives each score as a ratio (0-1) since node-diversity-conformance 62800627.
 node = next(n for n in json.load(open(sys.argv[1]))["nodes"] if n["id"] == "yano")
 for score in node["scenario_scores"]:
     if score["configured"]:
-        print(f'{score["id"]:<18} {score["passed"]:>5} / {score["total"]:<5} {score["percentage"]}%')
+        print(f'{score["id"]:<18} {score["passed"]:>5} / {score["total"]:<5} {score["ratio"] * 100:.2f}%')
     else:
         print(f'{score["id"]:<18} no report')
-print(f'{"overall":<18} {node["conformance"]["percentage"]}%')
+print(f'{"overall":<18} {node["conformance"]["ratio"] * 100:.2f}%')
 PY
