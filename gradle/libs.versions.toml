@@ -2,7 +2,6 @@
 yaci = "0.5.0-pre17"
 cardano-client-lib = "0.8.0-pre8"
 julc="0.1.0-pre22"
-zeroj = "0.1.0-pre13"
 bouncycastle = "1.84"
 aws-sdk = "2.48.0"
 # AWS SDK 2.48.0 declares this optional CRT version; review and update them together.
@@ -83,18 +82,6 @@ aws-crt = { module = "software.amazon.awssdk.crt:aws-crt", version.ref = "aws-cr
 spring-boot-autoconfigure = "org.springframework.boot:spring-boot-autoconfigure:3.5.6"
 spring-context = "org.springframework:spring-context:6.2.11"
 spring-boot-test = "org.springframework.boot:spring-boot-test:3.5.6"
-zeroj-verifier-groth16 = { module = "org.zeroj:zeroj-verifier-groth16", version.ref = "zeroj" }
-zeroj-verifier-plonk = { module = "org.zeroj:zeroj-verifier-plonk", version.ref = "zeroj" }
-zeroj-api = { module = "org.zeroj:zeroj-api", version.ref = "zeroj" }
-zeroj-bbs = { module = "org.zeroj:zeroj-bbs", version.ref = "zeroj" }
-zeroj-backend-spi = { module = "org.zeroj:zeroj-backend-spi", version.ref = "zeroj" }
-zeroj-bls12381 = { module = "org.zeroj:zeroj-bls12381", version.ref = "zeroj" }
-zeroj-circuit-dsl = { module = "org.zeroj:zeroj-circuit-dsl", version.ref = "zeroj" }
-zeroj-circuit-lib = { module = "org.zeroj:zeroj-circuit-lib", version.ref = "zeroj" }
-zeroj-codec = { module = "org.zeroj:zeroj-codec", version.ref = "zeroj" }
-zeroj-crypto = { module = "org.zeroj:zeroj-crypto", version.ref = "zeroj" }
-zeroj-mpf-poseidon = { module = "org.zeroj:zeroj-mpf-poseidon", version.ref = "zeroj" }
-zeroj-onchain-julc = { module = "org.zeroj:zeroj-onchain-julc", version.ref = "zeroj" }
 archunit = "com.tngtech.archunit:archunit:1.4.1"
 
 rocksdb="org.rocksdb:rocksdbjni:9.11.2"
