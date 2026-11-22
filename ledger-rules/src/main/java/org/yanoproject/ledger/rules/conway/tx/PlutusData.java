@@ -1,5 +1,7 @@
 package org.yanoproject.ledger.rules.conway.tx;
 
+import com.bloxbean.cardano.client.common.cbor.CborSpan;
+
 import java.math.BigInteger;
 
 /**
@@ -38,7 +40,18 @@ public final class PlutusData {
      * @throws TxDecodingException when plutus-core would not decode it
      */
     public static void validate(byte[] bytes) {
-        CborCursor cursor = new CborCursor(bytes, 0, bytes.length);
+        validate(new CborCursor(bytes, 0, bytes.length));
+    }
+
+    /**
+     * @param item one {@code Data} item of a transaction, as encoded
+     * @throws TxDecodingException when plutus-core would not decode it
+     */
+    static void validate(CborSpan item) {
+        validate(new CborCursor(item.buffer(), item.offset(), item.offset() + item.length()));
+    }
+
+    private static void validate(CborCursor cursor) {
         data(cursor);
         if (!cursor.atEnd()) {
             throw new TxDecodingException("Data: trailing bytes");

@@ -23,6 +23,15 @@ public final class AddressBytes {
 
     private static final int NETWORK_TESTNET = 0;
     private static final int NETWORK_MAINNET = 1;
+    private static final int BYRON_HEADER = 0x82;
+    private static final int BYRON_ROOT_LENGTH = 28;
+    private static final long ATTR_DERIVATION_PATH = 1;
+    private static final long ATTR_PROTOCOL_MAGIC = 2;
+    private static final long BYRON_TYPE_VERKEY = 0;
+    private static final long BYRON_TYPE_REDEEM = 2;
+    private static final long MAX_WORD8 = 0xFF;
+    private static final long MAX_WORD16 = 0xFFFF;
+    private static final long MAX_WORD32 = 0xFFFF_FFFFL;
 
     private AddressBytes() {
     }
@@ -61,7 +70,7 @@ public final class AddressBytes {
         }
         int header = address[0] & 0xff;
         if (header == 0x82) {
-            byronAttributes(address);
+            byron(address);
             return;
         }
         if ((header & 0b1000_1100) != 0) {
@@ -153,7 +162,7 @@ public final class AddressBytes {
      */
     public static int network(byte[] address) {
         if (isBootstrap(address)) {
-            return byronAttributes(address).networkMagicPresent() ? NETWORK_TESTNET : NETWORK_MAINNET;
+            return byron(address).protocolMagic() ? NETWORK_TESTNET : NETWORK_MAINNET;
         }
         // headerNetworkId (Address.hs:556-559): bit 0 alone; the decoder leaves bit 1 unchecked
         return address[0] & 0x01;
@@ -164,7 +173,7 @@ public final class AddressBytes {
      * payload (attribute 1) plus the lengths of the unknown attributes' values.
      */
     public static int bootstrapAttrsSize(byte[] address) {
-        return byronAttributes(address).attrsSize();
+        return byron(address).attrsSize();
     }
 
     /**
@@ -172,70 +181,105 @@ public final class AddressBytes {
      * data, which the address's bootstrap witness must reproduce.
      */
     public static byte[] bootstrapRoot(byte[] address) {
-        List<CborSpan> outer = StrictCbor.array(StrictCbor.first(address));
-        if (outer.isEmpty() || outer.getFirst().tag() == -1) {
-            throw new TxDecodingException("a bootstrap address wraps its payload in a tag");
-        }
-        List<CborSpan> payload = StrictCbor.array(StrictCbor.first(StrictCbor.definiteBytes(outer.getFirst().untag())));
-        if (payload.isEmpty()) {
-            throw new TxDecodingException("a bootstrap address payload is [root, attributes, type]");
-        }
-        byte[] root = StrictCbor.definiteBytes(payload.getFirst());
-        if (root.length != 28) {
-            throw new TxDecodingException("a bootstrap address root is 28 bytes");
-        }
-        return root;
+        return byron(address).root();
     }
 
-    /** The parts of a Byron address's attributes that the ledger reads. */
-    record ByronAttributes(boolean networkMagicPresent, int attrsSize) {
+    /** What the ledger reads from a Byron address: its root, whether it names a network, its attributes' size. */
+    private record Byron(byte[] root, boolean protocolMagic, int attrsSize) {
     }
 
     /**
-     * Decodes a Byron address's attributes ({@code decCBORAttributes}, Byron Attributes.hs:213-235,
-     * AddrAttributes.hs:121-143): a map from a byte key to a byte string; key 1 holds the CBOR-encoded
-     * derivation path, key 2 the network magic, every other key is unparsed and counted by size.
+     * A Byron address, decoded as the Byron ledger decodes it ({@code DecCBOR Address}) and as CCL's
+     * {@code ByronAddress} does, with the same outcome: the envelope {@code [#6.24(bytes), crc32]} and its CRC, a
+     * payload {@code [root, attributes, type]} with a 28-byte root, attributes with definite lengths and strictly
+     * increasing keys up to 255, a canonical derivation path (1) and protocol magic (2, a {@code Word32}) with nothing
+     * after them, and a canonical address type of 0 or 2; every array, map and byte string definite.
+     *
+     * <p>A workaround: CCL's {@code ByronAddress(byte[])} encodes the address in Base58 when it is built, in time
+     * quadratic in its length, so an output with 16 KB of attributes took most of a second to read
+     * (cardano-client-lib#757). Once a CCL release builds it lazily, read it with {@code ByronAddress} again;
+     * {@code AddressBytesTest} fails then.
      */
-    static ByronAttributes byronAttributes(byte[] address) {
-        CborSpan outer = StrictCbor.span(address);
-        List<CborSpan> parts = StrictCbor.array(outer);
-        if (outer.isIndefinite() || parts.size() != 2) {
-            throw new TxDecodingException("a bootstrap address is a two-element array");
+    private static Byron byron(byte[] address) {
+        if (address.length == 0 || (address[0] & 0xff) != BYRON_HEADER) {
+            throw invalid("it does not start with 0x82");
         }
+        List<CborSpan> parts = definiteArray(StrictCbor.span(address), 2);
         if (parts.get(0).tag() != 24) {
-            throw new TxDecodingException("a bootstrap address wraps its payload in tag 24");
+            throw invalid("the payload is not in tag 24");
         }
         byte[] payload = StrictCbor.definiteBytes(parts.get(0).untag());
-        long crc = StrictCbor.unsignedLong(parts.get(1));
-        CRC32 expected = new CRC32();
-        expected.update(payload);
-        if (expected.getValue() != crc) {
-            throw new TxDecodingException("bootstrap address CRC mismatch");
+        CRC32 crc = new CRC32();
+        crc.update(payload);
+        if (crc.getValue() != uint(parts.get(1), MAX_WORD32)) {
+            throw invalid("CRC32 checksum mismatch");
         }
-        CborSpan payloadSpan = StrictCbor.span(payload);
-        List<CborSpan> fields = StrictCbor.array(payloadSpan);
-        if (payloadSpan.isIndefinite() || fields.size() != 3) {
-            throw new TxDecodingException("a bootstrap address payload is [root, attributes, type]");
+        List<CborSpan> fields = definiteArray(StrictCbor.span(payload), 3);
+        byte[] root = StrictCbor.definiteBytes(fields.get(0));
+        if (root.length != BYRON_ROOT_LENGTH) {
+            throw invalid("the root is " + root.length + " bytes");
         }
-        if (StrictCbor.definiteBytes(fields.get(0)).length != 28) {
-            throw new TxDecodingException("a bootstrap address root is 28 bytes");
+        CborSpan attributes = fields.get(1);
+        List<Map.Entry<CborSpan, CborSpan>> entries = StrictCbor.map(attributes);
+        if (attributes.isIndefinite()) {
+            throw invalid("indefinite-length attributes");
         }
-        boolean magic = false;
+        boolean protocolMagic = false;
         int size = 0;
-        for (Map.Entry<CborSpan, CborSpan> entry : StrictCbor.map(fields.get(1))) {
-            long key = StrictCbor.unsignedLong(entry.getKey());
+        long previous = -1;
+        for (Map.Entry<CborSpan, CborSpan> entry : entries) {
+            long key = uint(entry.getKey(), MAX_WORD8);
+            if (key <= previous) {
+                throw invalid("attribute keys are not strictly increasing");
+            }
+            previous = key;
             byte[] value = StrictCbor.definiteBytes(entry.getValue());
-            if (key == 1) {
-                size += StrictCbor.definiteBytes(StrictCbor.first(value)).length;
-            } else if (key == 2) {
-                magic = true;
+            if (key == ATTR_DERIVATION_PATH) {
+                CborSpan path = StrictCbor.span(value);
+                int length = StrictCbor.definiteLength(path);
+                canonical(path, length);
+                size += length;
+            } else if (key == ATTR_PROTOCOL_MAGIC) {
+                CborSpan magic = StrictCbor.span(value);
+                canonical(magic, uint(magic, MAX_WORD32));
+                protocolMagic = true;
             } else {
                 size += value.length;
             }
         }
-        if (StrictCbor.unsignedLong(fields.get(2)) > 2) {
-            throw new TxDecodingException("bad bootstrap address type or trailing bytes");
+        long type = uint(fields.get(2), MAX_WORD8);
+        canonical(fields.get(2), type);
+        if (type != BYRON_TYPE_VERKEY && type != BYRON_TYPE_REDEEM) {
+            throw invalid("unknown address type " + type);
         }
-        return new ByronAttributes(magic, size);
+        return new Byron(root, protocolMagic, size);
+    }
+
+    private static List<CborSpan> definiteArray(CborSpan item, int size) {
+        List<CborSpan> items = StrictCbor.array(item);
+        if (item.isIndefinite() || items.size() != size) {
+            throw invalid("expected a definite array of " + size + " items at " + item.offset());
+        }
+        return items;
+    }
+
+    private static long uint(CborSpan item, long max) {
+        long value = StrictCbor.word64(item);
+        if (Long.compareUnsigned(value, max) > 0) {
+            throw invalid("unsigned integer out of range at " + item.offset());
+        }
+        return value;
+    }
+
+    /** An integer or a byte string's head is as short as its argument, {@code 0 <= argument <= 2^32 - 1}, allows. */
+    private static void canonical(CborSpan item, long argument) {
+        int shortest = argument < 24 ? 1 : argument <= MAX_WORD8 ? 2 : argument <= MAX_WORD16 ? 3 : 5;
+        if (item.headerLength() != shortest) {
+            throw invalid("non-canonical encoding at " + item.offset());
+        }
+    }
+
+    private static TxDecodingException invalid(String reason) {
+        return new TxDecodingException("Invalid Byron address: " + reason);
     }
 }

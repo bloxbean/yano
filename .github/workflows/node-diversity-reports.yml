@@ -48,6 +48,8 @@ jobs:
 
       - name: Score the reports
         run: |
+          # A scorer failure is a harness failure: without pipefail, tee would hide it.
+          set -o pipefail
           {
             echo '### Node-diversity scores'
             echo '```'
