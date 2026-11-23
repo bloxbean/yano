@@ -692,6 +692,17 @@ tasks.register('verifyMavenReleasePublicationScope') {
                             "Publishing but not deployed: ${missing.sort()}; " +
                             "deployed but publishes nothing: ${extra.sort()}")
         }
+        // Maven Central rejects a deployment whose POM has no name or description, and it
+        // checks only after the BloxBean repository already holds the release (v0.1.0-pre20).
+        def incomplete = centralDeploymentProjects.collectMany { candidate ->
+            candidate.publishing.publications.withType(MavenPublication).findAll { publication ->
+                !publication.pom.name.getOrNull()?.trim() || !publication.pom.description.getOrNull()?.trim()
+            }.collect { "${candidate.path}:${it.name}" }
+        }
+        if (!incomplete.isEmpty()) {
+            throw new GradleException(
+                    "Maven Central requires a POM name and description; missing in ${incomplete.sort()}")
+        }
         logger.lifecycle("Central deployment scope: ${expected.size()} projects")
     }
 }
