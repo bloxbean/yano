@@ -1,6 +1,6 @@
 {
-  "sourceRevision": "40f2637c429a866b3808507312daf4a058284d21",
-  "version": "0.1.0-pre20-SNAPSHOT",
+  "sourceRevision": "06b8033b6eea8e9ec2ba20a9a72b7bc84ab46b3b",
+  "version": "0.1.0-pre20",
   "note": "Active packaged YAML values by source file, not resolved runtime defaults. Declared keys may require feature-specific validation. Comments and commented examples are excluded.",
   "configuration": [
     {
@@ -494,22 +494,6 @@
         {
           "key": "yano.validation.max-live-snapshots",
           "value": 4
-        },
-        {
-          "key": "yano.validation.amaru.pool-size",
-          "value": 0
-        },
-        {
-          "key": "yano.validation.amaru.timeout-ms",
-          "value": 2000
-        },
-        {
-          "key": "yano.validation.amaru.max-abandoned",
-          "value": 2
-        },
-        {
-          "key": "yano.validation.amaru.max-memory-pages",
-          "value": 2048
         },
         {
           "key": "yano.utxo.rebuild-unmarked-from-genesis",
@@ -2323,10 +2307,6 @@
     "yano.utxo.pruneDepth",
     "yano.utxo.rebuild-unmarked-from-genesis",
     "yano.utxo.rollbackWindow",
-    "yano.validation.amaru.max-abandoned",
-    "yano.validation.amaru.max-memory-pages",
-    "yano.validation.amaru.pool-size",
-    "yano.validation.amaru.timeout-ms",
     "yano.validation.default-validator-enabled",
     "yano.validation.engine",
     "yano.validation.max-live-snapshots",
