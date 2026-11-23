@@ -77,7 +77,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          VERSION=$(./gradlew -q properties -PskipSigning=true | awk '/^version:/ { print $2; exit }')
+          VERSION=$(./gradlew -q properties -PskipSigning=true | awk '/^version:/ && !found { print $2; found = 1 }')
           if [[ "$VERSION" != *-SNAPSHOT ]]; then
             echo "::error::Snapshot publishing requires a -SNAPSHOT version. Got: $VERSION" >&2
             exit 1

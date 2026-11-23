@@ -41,7 +41,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          VERSION=$(./gradlew -q properties | awk '/^version:/ { print $2; exit }')
+          VERSION=$(./gradlew -q properties | awk '/^version:/ && !found { print $2; found = 1 }')
           if [[ "${GITHUB_REF_NAME}" != "v${VERSION}" ]]; then
             echo "Git tag ${GITHUB_REF_NAME} does not match Gradle version ${VERSION}" >&2
             exit 1
@@ -60,13 +60,13 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           # An npm version is public and immutable once published, so it is
           # opt-in per release rather than an automatic consequence of tagging.
-          NPM_PUBLISH=$(./gradlew -q properties | awk '/^npm_publish:/ { print $2; exit }')
+          NPM_PUBLISH=$(./gradlew -q properties | awk '/^npm_publish:/ && !found { print $2; found = 1 }')
           echo "npm_publish=${NPM_PUBLISH:-false}" >> "$GITHUB_OUTPUT"
           echo "npm publish for this tag: ${NPM_PUBLISH:-false}"
           # A GitHub release is deletable, unlike npm and Docker, but it still
           # notifies watchers and advertises the tag as a real release. Gating it
           # lets a tag rehearse the whole pipeline and stage Maven Central only.
-          GITHUB_RELEASE=$(./gradlew -q properties | awk '/^github_release:/ { print $2; exit }')
+          GITHUB_RELEASE=$(./gradlew -q properties | awk '/^github_release:/ && !found { print $2; found = 1 }')
           echo "github_release=${GITHUB_RELEASE:-false}" >> "$GITHUB_OUTPUT"
           echo "GitHub release for this tag: ${GITHUB_RELEASE:-false}"
 
