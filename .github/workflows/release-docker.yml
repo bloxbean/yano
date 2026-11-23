@@ -168,7 +168,7 @@ jobs:
           CHECKOUT_REF: ${{ steps.validate.outputs.checkout_ref }}
         run: |
           set -euo pipefail
-          GRADLE_VERSION=$(./gradlew -q properties | awk '/^version:/ { print $2; exit }')
+          GRADLE_VERSION=$(./gradlew -q properties | awk '/^version:/ && !found { print $2; found = 1 }')
           if [[ "$GRADLE_VERSION" != "$VERSION" ]]; then
             echo "Gradle version ${GRADLE_VERSION} at ${CHECKOUT_REF} does not match requested Docker version ${VERSION}" >&2
             exit 1
@@ -216,9 +216,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # The first fixed build of the Java 25 line. Any later major version passes this check, so when
+          # JVM_BASE_IMAGE moves to a new major version, raise MIN_VERSION to that line's first fixed build.
+          # awk reads all of its input: exiting at the match would close the pipe while `docker run` is still
+          # writing, and under pipefail the SIGPIPE (exit 141) fails the step.
           MIN_VERSION=25.0.5.1
           RUNTIME_VERSION="$(docker run --rm --entrypoint java yano:jvm-smoke -XshowSettings:properties -version 2>&1 \
-            | awk -F' = ' '/^ *java\.runtime\.version = / { print $2; exit }')"
+            | awk -F' = ' '/^ *java\.runtime\.version = / && !found { print $2; found = 1 }')"
           echo "JVM image runtime: ${RUNTIME_VERSION}"
           RUNTIME_NUMBER="${RUNTIME_VERSION%%[+-]*}"
           if [[ -z "$RUNTIME_NUMBER" || "$(printf '%s\n%s\n' "$MIN_VERSION" "$RUNTIME_NUMBER" | sort -V | head -1)" != "$MIN_VERSION" ]]; then
