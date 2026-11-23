@@ -1,6 +1,6 @@
 {
-  "sourceRevision": "06b8033b6eea8e9ec2ba20a9a72b7bc84ab46b3b",
-  "version": "0.1.0-pre20",
+  "sourceRevision": "319e93776c4f0f6fa6c3177f188351a915849947",
+  "version": "0.1.0-pre21",
   "note": "Active packaged YAML values by source file, not resolved runtime defaults. Declared keys may require feature-specific validation. Comments and commented examples are excluded.",
   "configuration": [
     {
