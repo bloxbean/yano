@@ -34,7 +34,13 @@ def useLocalRepository = Boolean.parseBoolean(useMavenLocalValue)
 repositories {
     mavenCentral()
     if (useLocalRepository) {
-        mavenLocal { content { includeGroupByRegex 'org\\.yanoproject(\\..+)?' } }
+        mavenLocal {
+            content {
+                includeGroupByRegex 'org\\.yanoproject(\\..+)?'
+                // Locally published Yaci snapshots for coordinated protocol work (never release versions).
+                includeVersionByRegex 'com\\.bloxbean\\.cardano', 'yaci.*', '.*-SNAPSHOT'
+            }
+        }
     }
     maven {
         url "https://central.sonatype.com/repository/maven-snapshots/"
@@ -467,7 +473,13 @@ subprojects {
 
     repositories {
         if (useLocalRepository) {
-            mavenLocal { content { includeGroupByRegex 'org\\.yanoproject(\\..+)?' } }
+            mavenLocal {
+                content {
+                    includeGroupByRegex 'org\\.yanoproject(\\..+)?'
+                    // Locally published Yaci snapshots for coordinated protocol work (never release versions).
+                    includeVersionByRegex 'com\\.bloxbean\\.cardano', 'yaci.*', '.*-SNAPSHOT'
+                }
+            }
         }
         mavenCentral()
         maven {
